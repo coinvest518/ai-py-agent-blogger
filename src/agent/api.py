@@ -5,8 +5,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
-from agent.graph import graph
-from agent.scheduler import start_scheduler, get_status, run_agent_task
+from src.agent.graph import graph
+from src.agent.scheduler import start_scheduler, get_status, run_agent_task
 
 app = FastAPI(title="FDWA Social Media Agent")
 
