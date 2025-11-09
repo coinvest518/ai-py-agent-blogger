@@ -9,3 +9,4 @@ schedule>=1.2.0
 fastapi>=0.121.0
 uvicorn>=0.38.0
 apscheduler>=3.10.0
+langserve>=0.3.0
