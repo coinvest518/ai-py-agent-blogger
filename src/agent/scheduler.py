@@ -59,10 +59,12 @@ async def run_agent_task() -> dict:
             "results": {
                 "tweet": result.get("tweet_text", "N/A"),
                 "linkedin": result.get("linkedin_text", "N/A"),
+                "instagram": result.get("instagram_caption", "N/A"),
                 "image": result.get("image_url", ""),
                 "twitter": "Posted" if "twitter_url" in result else "Failed",
                 "facebook": "Posted" if "facebook_post_id" in result else "Failed",
                 "linkedin_status": result.get("linkedin_status", "N/A"),
+                "instagram_status": result.get("instagram_status", "N/A"),
                 "comment": result.get("comment_status", "N/A")
             }
         }

@@ -21,6 +21,8 @@ from langchain_google_genai import GoogleGenerativeAI
 from langsmith import traceable
 from langgraph.graph import StateGraph
 from src.agent.linkedin_agent import convert_to_linkedin_post
+from src.agent.instagram_agent import convert_to_instagram_caption
+from src.agent.instagram_comment_agent import generate_instagram_reply
 
 # Load environment variables from .env file
 load_dotenv()
@@ -52,12 +54,16 @@ class AgentState(TypedDict):
     insight: str
     tweet_text: str
     linkedin_text: str
+    instagram_caption: str
     image_url: str
     image_path: str
     twitter_url: str
     facebook_status: str
     facebook_post_id: str
     linkedin_status: str
+    instagram_status: str
+    instagram_post_id: str
+    instagram_comment_status: str
     comment_status: str
     error: str
 
@@ -197,24 +203,23 @@ TRENDING DATA (last 90 days):
 TASK:
 Extract 2-3 concrete insights (adoption rates, cost savings, productivity improvements, SMB tech urgency) and create a social post.
 
-SOCIAL POST REQUIREMENTS (100-150 words):
-- Hook: Start with compelling trend/statistic
-- Problem: State what SMBs face
-- Solution: How FWDA solves it (AI Agents, Workflow Automation, System Integration)
-- Benefits: Tangible results (time restored, better leads, reduced costs, more capacity)
-- CTA: Direct call to action
-- Tone: Direct, confident, helpful (not corporate)
-- Max 3 emojis
-- Include: https://fwda.site or https://cal.com/bookme-daniel/ai-consultation-smb
-- 5-8 hashtags: #AIAutomation #SmallBusiness #BusinessGrowth #Productivity #AIAgents
+TWITTER POST REQUIREMENTS (MAX 240 CHARACTERS including spaces, emojis, hashtags, links):
+- Hook: One compelling sentence about SMB AI trend
+- Problem + Solution: Brief statement of problem and how FWDA solves it
+- Include EXACTLY 2 emojis (placed naturally in text)
+- Include 3-5 hashtags at end
+- Include ONE link: https://fwda.site
+- Tone: Direct, confident, conversational
+- Format: Short, punchy, Twitter-native style
+- Count ALL characters including spaces
 
 QUALITY RULES:
 - No generic clichés
-- Benefits must be measurable
+- Must be under 240 characters total
+- Benefits must be clear
 - Active voice
-- Clarity over complexity
 
-Return ONLY the social post text. No explanations.
+Return ONLY the Twitter post text. No explanations. No extra content.
 """
 
     try:
@@ -272,6 +277,76 @@ def generate_image_node(state: AgentState) -> dict:
     return {"image_url": image_url}
 
 
+def monitor_instagram_comments_node(state: AgentState) -> dict:
+    """Monitor Instagram post for comments and reply.
+
+    Args:
+        state: Current agent state with instagram_post_id.
+
+    Returns:
+        Dictionary with instagram_comment_status.
+    """
+    logger.info("---MONITORING INSTAGRAM COMMENTS---")
+    instagram_post_id = state.get("instagram_post_id")
+
+    if not instagram_post_id:
+        logger.warning("No Instagram post ID, skipping comment monitoring")
+        return {"instagram_comment_status": "Skipped: No post ID"}
+
+    # Wait 30 seconds for comments to come in
+    logger.info("Waiting 30 seconds for comments...")
+    time.sleep(30)
+
+    try:
+        # Get comments on the post
+        comments_response = composio_client.tools.execute(
+            "INSTAGRAM_GET_POST_COMMENTS",
+            {"ig_post_id": instagram_post_id, "limit": 5},
+            connected_account_id=os.getenv("INSTAGRAM_ACCOUNT_ID"),
+        )
+
+        logger.info("Instagram comments response: %s", comments_response)
+        
+        if not comments_response.get("successful", False):
+            return {"instagram_comment_status": "No comments yet"}
+
+        comments_data = comments_response.get("data", {}).get("data", [])
+        
+        if not comments_data:
+            logger.info("No comments found")
+            return {"instagram_comment_status": "No comments yet"}
+
+        # Reply to first comment
+        first_comment = comments_data[0]
+        comment_id = first_comment.get("id", "")
+        comment_text = first_comment.get("text", "")
+        commenter_username = first_comment.get("username", "user")
+
+        logger.info("Replying to comment from @%s: %s", commenter_username, comment_text)
+
+        # Generate reply
+        reply_text = generate_instagram_reply(comment_text, commenter_username)
+
+        # Post reply
+        reply_response = composio_client.tools.execute(
+            "INSTAGRAM_REPLY_TO_COMMENT",
+            {"ig_comment_id": comment_id, "message": reply_text},
+            connected_account_id=os.getenv("INSTAGRAM_ACCOUNT_ID"),
+        )
+
+        if reply_response.get("successful", False):
+            logger.info("Instagram reply posted successfully!")
+            return {"instagram_comment_status": f"Replied to @{commenter_username}"}
+        else:
+            error_msg = reply_response.get("error", "Reply failed")
+            logger.error("Instagram reply failed: %s", error_msg)
+            return {"instagram_comment_status": f"Failed: {error_msg}"}
+
+    except Exception as e:
+        logger.exception("Instagram comment monitoring failed: %s", e)
+        return {"instagram_comment_status": f"Failed: {e!s}"}
+
+
 def comment_on_facebook_node(state: AgentState) -> dict:
     """Comment on the Facebook post with company URL.
 
@@ -314,6 +389,78 @@ def comment_on_facebook_node(state: AgentState) -> dict:
     except Exception as e:
         logger.exception("Facebook comment failed: %s", e)
         return {"comment_status": f"Failed: {e!s}"}
+
+
+def post_instagram_node(state: AgentState) -> dict:
+    """Post to Instagram with image and caption.
+
+    Args:
+        state: Current agent state with instagram_caption and image_url.
+
+    Returns:
+        Dictionary with instagram_status.
+    """
+    logger.info("---POSTING TO INSTAGRAM---")
+    tweet_text = state.get("tweet_text", "")
+    image_url = state.get("image_url")
+
+    if not tweet_text or not image_url:
+        return {"instagram_status": "Skipped: No content or image"}
+
+    # Convert tweet to Instagram caption
+    instagram_caption = convert_to_instagram_caption(tweet_text)
+    logger.info("Instagram caption: %s", instagram_caption[:100])
+
+    try:
+        # Get Instagram user ID from environment
+        ig_user_id = os.getenv("INSTAGRAM_USER_ID")
+        
+        if not ig_user_id:
+            logger.error("Instagram user ID not configured")
+            return {"instagram_status": "Failed: No user ID", "instagram_caption": instagram_caption}
+
+        # Create media container
+        container_params = {
+            "ig_user_id": ig_user_id,
+            "image_url": image_url,
+            "caption": instagram_caption,
+            "content_type": "photo"
+        }
+
+        container_response = composio_client.tools.execute(
+            "INSTAGRAM_CREATE_MEDIA_CONTAINER",
+            container_params,
+            connected_account_id=os.getenv("INSTAGRAM_ACCOUNT_ID"),
+        )
+
+        logger.info("Instagram container response: %s", container_response)
+        
+        if container_response.get("successful", False):
+            container_id = container_response.get("data", {}).get("id", "")
+            
+            # Publish the container
+            publish_response = composio_client.tools.execute(
+                "INSTAGRAM_CREATE_POST",
+                {"ig_user_id": ig_user_id, "creation_id": container_id},
+                connected_account_id=os.getenv("INSTAGRAM_ACCOUNT_ID"),
+            )
+            
+            if publish_response.get("successful", False):
+                post_id = publish_response.get("data", {}).get("id", "")
+                logger.info("Instagram posted successfully! Post ID: %s", post_id)
+                return {"instagram_status": "Posted", "instagram_caption": instagram_caption, "instagram_post_id": post_id}
+            else:
+                error_msg = publish_response.get("error", "Publish failed")
+                logger.error("Instagram publish failed: %s", error_msg)
+                return {"instagram_status": f"Failed: {error_msg}", "instagram_caption": instagram_caption}
+        else:
+            error_msg = container_response.get("error", "Container creation failed")
+            logger.error("Instagram container failed: %s", error_msg)
+            return {"instagram_status": f"Failed: {error_msg}", "instagram_caption": instagram_caption}
+
+    except Exception as e:
+        logger.exception("Instagram posting failed: %s", e)
+        return {"instagram_status": f"Failed: {e!s}", "instagram_caption": instagram_caption}
 
 
 def post_linkedin_node(state: AgentState) -> dict:
@@ -511,6 +658,8 @@ workflow.add_node("generate_content", generate_tweet_node)
 workflow.add_node("generate_image", generate_image_node)
 workflow.add_node("post_social_media", post_social_media_node)
 workflow.add_node("post_linkedin", post_linkedin_node)
+workflow.add_node("post_instagram", post_instagram_node)
+workflow.add_node("monitor_instagram_comments", monitor_instagram_comments_node)
 workflow.add_node("comment_on_facebook", comment_on_facebook_node)
 
 # Set the entrypoint
@@ -521,7 +670,9 @@ workflow.add_edge("research_trends", "generate_content")
 workflow.add_edge("generate_content", "generate_image")
 workflow.add_edge("generate_image", "post_social_media")
 workflow.add_edge("post_social_media", "post_linkedin")
-workflow.add_edge("post_linkedin", "comment_on_facebook")
+workflow.add_edge("post_linkedin", "post_instagram")
+workflow.add_edge("post_instagram", "monitor_instagram_comments")
+workflow.add_edge("monitor_instagram_comments", "comment_on_facebook")
 workflow.add_edge("comment_on_facebook", "__end__")
 
 # Compile the graph
@@ -545,7 +696,9 @@ if __name__ == "__main__":
         logger.info("Twitter: %s", final_state.get("twitter_url", "N/A"))
         logger.info("Facebook: %s", final_state.get("facebook_status", "N/A"))
         logger.info("LinkedIn: %s", final_state.get("linkedin_status", "N/A"))
-        logger.info("Comment: %s", final_state.get("comment_status", "N/A"))
+        logger.info("Instagram: %s", final_state.get("instagram_status", "N/A"))
+        logger.info("Instagram Comments: %s", final_state.get("instagram_comment_status", "N/A"))
+        logger.info("Facebook Comment: %s", final_state.get("comment_status", "N/A"))
 
         if final_state.get("error"):
             logger.error("Error: %s", final_state.get("error"))

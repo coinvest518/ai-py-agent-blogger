@@ -147,7 +147,7 @@
 <body>
     <div class="container">
         <h1>🚀 FDWA Social Media Agent</h1>
-        <p class="subtitle">Autonomous posting to Twitter, Facebook & LinkedIn</p>
+        <p class="subtitle">Autonomous posting to Twitter, Facebook, LinkedIn & Instagram</p>
         
         <div class="status-card">
             <div class="status-row">
@@ -197,11 +197,17 @@
             </div>
             
             <div class="result-item">
+                <span class="result-label">📸 Instagram Caption:</span>
+                <div class="post-text" id="instagram">-</div>
+            </div>
+            
+            <div class="result-item">
                 <span class="result-label">📊 Platform Status:</span>
                 <div class="result-value">
                     🐦 Twitter: <span id="twitter">-</span><br>
                     📘 Facebook: <span id="facebook">-</span><br>
                     💼 LinkedIn: <span id="linkedinStatus">-</span><br>
+                    📸 Instagram: <span id="instagramStatus">-</span><br>
                     💬 Comment: <span id="comment">-</span>
                 </div>
             </div>
@@ -237,11 +243,13 @@
                     document.getElementById('tweet').textContent = data.results.tweet || '-';
                     document.getElementById('facebookPost').textContent = data.results.tweet || '-';
                     document.getElementById('linkedin').textContent = data.results.linkedin || '-';
+                    document.getElementById('instagram').textContent = data.results.instagram || '-';
                     
                     // Show statuses
                     document.getElementById('twitter').textContent = data.results.twitter || '-';
                     document.getElementById('facebook').textContent = data.results.facebook || '-';
                     document.getElementById('linkedinStatus').textContent = data.results.linkedin_status || '-';
+                    document.getElementById('instagramStatus').textContent = data.results.instagram_status || '-';
                     document.getElementById('comment').textContent = data.results.comment || '-';
                 }
             } catch (e) {
