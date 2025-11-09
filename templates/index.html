@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FDWA Social Media Agent</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .status-card {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        .status-label { color: #666; }
+        .status-value { 
+            font-weight: 600;
+            color: #333;
+        }
+        .status-success { color: #10b981; }
+        .status-error { color: #ef4444; }
+        .btn {
+            width: 100%;
+            padding: 16px;
+            font-size: 16px;
+            font-weight: 600;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 10px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .results {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f0fdf4;
+            border-radius: 8px;
+            border-left: 4px solid #10b981;
+            display: none;
+        }
+        .results.show { display: block; }
+        .results h3 {
+            color: #065f46;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .result-item {
+            padding: 8px 0;
+            font-size: 14px;
+            color: #064e3b;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        .loading.show { display: block; }
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 FDWA Social Media Agent</h1>
+        <p class="subtitle">Autonomous posting to Twitter & Facebook</p>
+        
+        <div class="status-card">
+            <div class="status-row">
+                <span class="status-label">Status:</span>
+                <span class="status-value" id="status">Loading...</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Last Run:</span>
+                <span class="status-value" id="lastRun">Never</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Next Run:</span>
+                <span class="status-value" id="nextRun">In 6 hours</span>
+            </div>
+        </div>
+
+        <button class="btn btn-primary" id="runBtn" onclick="runAgent()">
+            🚀 Run Agent Now
+        </button>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Agent is running... This may take 30-60 seconds</p>
+        </div>
+
+        <div class="results" id="results">
+            <h3>✅ Last Run Results</h3>
+            <div class="result-item">📝 Tweet: <span id="tweet">-</span></div>
+            <div class="result-item">🐦 Twitter: <span id="twitter">-</span></div>
+            <div class="result-item">📘 Facebook: <span id="facebook">-</span></div>
+            <div class="result-item">💬 Comment: <span id="comment">-</span></div>
+        </div>
+    </div>
+
+    <script>
+        async function loadStatus() {
+            try {
+                const res = await fetch('/status');
+                const data = await res.json();
+                
+                document.getElementById('status').textContent = data.status;
+                document.getElementById('status').className = 'status-value ' + 
+                    (data.status === 'Success' ? 'status-success' : 'status-error');
+                
+                if (data.last_run) {
+                    const date = new Date(data.last_run);
+                    document.getElementById('lastRun').textContent = date.toLocaleString();
+                }
+                
+                if (data.results && Object.keys(data.results).length > 0) {
+                    document.getElementById('results').classList.add('show');
+                    document.getElementById('tweet').textContent = data.results.tweet || '-';
+                    document.getElementById('twitter').textContent = data.results.twitter || '-';
+                    document.getElementById('facebook').textContent = data.results.facebook || '-';
+                    document.getElementById('comment').textContent = data.results.comment || '-';
+                }
+            } catch (e) {
+                console.error('Failed to load status:', e);
+            }
+        }
+
+        async function runAgent() {
+            const btn = document.getElementById('runBtn');
+            const loading = document.getElementById('loading');
+            
+            btn.disabled = true;
+            loading.classList.add('show');
+            
+            try {
+                const res = await fetch('/run', { method: 'POST' });
+                const data = await res.json();
+                
+                // Reload status
+                await loadStatus();
+                
+                alert('Agent completed! Check results below.');
+            } catch (e) {
+                alert('Error running agent: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                loading.classList.remove('show');
+            }
+        }
+
+        // Load status on page load
+        loadStatus();
+        
+        // Refresh status every 30 seconds
+        setInterval(loadStatus, 30000);
+    </script>
+</body>
+</html>
