@@ -438,6 +438,10 @@ def post_instagram_node(state: AgentState) -> dict:
         if container_response.get("successful", False):
             container_id = container_response.get("data", {}).get("id", "")
             
+            # Wait for Instagram to process the media (required by Instagram API)
+            logger.info("Waiting 10 seconds for Instagram to process media...")
+            time.sleep(10)
+            
             # Publish the container
             publish_response = composio_client.tools.execute(
                 "INSTAGRAM_CREATE_POST",
@@ -506,8 +510,13 @@ def post_linkedin_node(state: AgentState) -> dict:
         logger.info("Author URN: %s", author_urn)
         
         if not author_urn:
-            logger.error("Failed to get author URN from response")
-            return {"linkedin_status": "Failed: No author URN", "linkedin_text": linkedin_text}
+            # Fallback to env variable
+            author_urn = os.getenv("LINKEDIN_AUTHOR_URN", "")
+            logger.warning("Using fallback author URN from env: %s", author_urn)
+            
+            if not author_urn:
+                logger.error("Failed to get author URN from response and no fallback in env")
+                return {"linkedin_status": "Failed: No author URN", "linkedin_text": linkedin_text}
 
         linkedin_params = {
             "author": author_urn,
