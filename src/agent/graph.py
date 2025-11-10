@@ -58,6 +58,8 @@ class AgentState(TypedDict):
     image_url: str
     image_path: str
     twitter_url: str
+    twitter_post_id: str
+    twitter_reply_status: str
     facebook_status: str
     facebook_post_id: str
     linkedin_status: str
@@ -347,6 +349,50 @@ def monitor_instagram_comments_node(state: AgentState) -> dict:
         return {"instagram_comment_status": f"Failed: {e!s}"}
 
 
+def reply_to_twitter_node(state: AgentState) -> dict:
+    """Reply to own Twitter post with FWDA link.
+
+    Args:
+        state: Current agent state with twitter_post_id.
+
+    Returns:
+        Dictionary with twitter_reply_status.
+    """
+    logger.info("---REPLYING TO TWITTER POST---")
+    twitter_post_id = state.get("twitter_post_id")
+
+    if not twitter_post_id:
+        logger.warning("No Twitter post ID, skipping reply")
+        return {"twitter_reply_status": "Skipped: No post ID"}
+
+    # Wait 60 seconds before replying
+    logger.info("Waiting 60 seconds before replying...")
+    time.sleep(60)
+    logger.info("Proceeding with reply")
+
+    reply_message = "Learn more about AI automation for your business: https://fwda.site 🚀"
+
+    try:
+        reply_response = composio_client.tools.execute(
+            "TWITTER_CREATION_OF_A_POST",
+            {
+                "text": reply_message,
+                "reply_in_reply_to_tweet_id": twitter_post_id
+            },
+            connected_account_id="ca_tu9cBVOMM94b",
+        )
+
+        reply_data = reply_response.get("data", {})
+        reply_id = reply_data.get("id", "replied")
+        logger.info("Twitter reply posted successfully!")
+        logger.info("Reply ID: %s", reply_id)
+        return {"twitter_reply_status": f"Replied: {reply_id}"}
+
+    except Exception as e:
+        logger.exception("Twitter reply failed: %s", e)
+        return {"twitter_reply_status": f"Failed: {e!s}"}
+
+
 def comment_on_facebook_node(state: AgentState) -> dict:
     """Comment on the Facebook post with company URL.
 
@@ -596,7 +642,9 @@ def post_social_media_node(state: AgentState) -> dict:
             else "Twitter posted successfully"
         )
         results["twitter_url"] = twitter_url
+        results["twitter_post_id"] = twitter_id
         logger.info("Twitter posted successfully! URL: %s", twitter_url)
+        logger.info("Twitter Post ID: %s", twitter_id)
     except Exception as e:
         logger.exception("Twitter posting failed: %s", e)
         results["twitter_url"] = f"Twitter failed: {e!s}"
@@ -669,6 +717,7 @@ workflow.add_node("post_social_media", post_social_media_node)
 workflow.add_node("post_linkedin", post_linkedin_node)
 workflow.add_node("post_instagram", post_instagram_node)
 workflow.add_node("monitor_instagram_comments", monitor_instagram_comments_node)
+workflow.add_node("reply_to_twitter", reply_to_twitter_node)
 workflow.add_node("comment_on_facebook", comment_on_facebook_node)
 
 # Set the entrypoint
@@ -681,7 +730,8 @@ workflow.add_edge("generate_image", "post_social_media")
 workflow.add_edge("post_social_media", "post_linkedin")
 workflow.add_edge("post_linkedin", "post_instagram")
 workflow.add_edge("post_instagram", "monitor_instagram_comments")
-workflow.add_edge("monitor_instagram_comments", "comment_on_facebook")
+workflow.add_edge("monitor_instagram_comments", "reply_to_twitter")
+workflow.add_edge("reply_to_twitter", "comment_on_facebook")
 workflow.add_edge("comment_on_facebook", "__end__")
 
 # Compile the graph
@@ -707,6 +757,7 @@ if __name__ == "__main__":
         logger.info("LinkedIn: %s", final_state.get("linkedin_status", "N/A"))
         logger.info("Instagram: %s", final_state.get("instagram_status", "N/A"))
         logger.info("Instagram Comments: %s", final_state.get("instagram_comment_status", "N/A"))
+        logger.info("Twitter Reply: %s", final_state.get("twitter_reply_status", "N/A"))
         logger.info("Facebook Comment: %s", final_state.get("comment_status", "N/A"))
 
         if final_state.get("error"):
