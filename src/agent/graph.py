@@ -534,14 +534,37 @@ def post_linkedin_node(state: AgentState) -> dict:
     logger.info("LinkedIn post: %s", linkedin_text[:100])
 
     try:
-        # Use author URN directly from env to avoid rate limits
-        author_urn = os.getenv("LINKEDIN_AUTHOR_URN", "")
+        linkedin_account_id = os.getenv("LINKEDIN_ACCOUNT_ID")
+        
+        if not linkedin_account_id:
+            logger.error("LINKEDIN_ACCOUNT_ID not set in environment")
+            return {"linkedin_status": "Failed: No account ID", "linkedin_text": linkedin_text}
+        
+        # First, get the user info to retrieve the correct author URN
+        logger.info("Fetching LinkedIn user info to get author URN...")
+        user_info_response = composio_client.tools.execute(
+            "LINKEDIN_GET_MY_INFO",
+            {},
+            connected_account_id=linkedin_account_id,
+        )
+        
+        logger.info("LinkedIn user info response: %s", user_info_response)
+        
+        if not user_info_response.get("successful", False):
+            error_msg = user_info_response.get("error", "Failed to get user info")
+            logger.error("Failed to get LinkedIn user info: %s", error_msg)
+            return {"linkedin_status": f"Failed: {error_msg}", "linkedin_text": linkedin_text}
+        
+        # Extract author_id (URN) from nested response_dict
+        user_data = user_info_response.get("data", {})
+        response_dict = user_data.get("response_dict", {})
+        author_urn = response_dict.get("author_id", "")
         
         if not author_urn:
-            logger.error("LINKEDIN_AUTHOR_URN not set in environment")
-            return {"linkedin_status": "Failed: No author URN in env", "linkedin_text": linkedin_text}
+            logger.error("No author_id found in user info response")
+            return {"linkedin_status": "Failed: No author URN in response", "linkedin_text": linkedin_text}
         
-        logger.info("Using author URN from env: %s", author_urn)
+        logger.info("Using author URN from API: %s", author_urn)
 
         linkedin_params = {
             "author": author_urn,
@@ -552,7 +575,7 @@ def post_linkedin_node(state: AgentState) -> dict:
         linkedin_response = composio_client.tools.execute(
             "LINKEDIN_CREATE_LINKED_IN_POST",
             linkedin_params,
-            connected_account_id=os.getenv("LINKEDIN_ACCOUNT_ID"),
+            connected_account_id=linkedin_account_id,
         )
 
         logger.info("LinkedIn response: %s", linkedin_response)
