@@ -488,9 +488,9 @@ def reply_to_twitter_node(state: AgentState) -> dict:
         logger.warning("No Twitter post ID, skipping reply")
         return {"twitter_reply_status": "Skipped: No post ID"}
 
-    # Wait 60 seconds before replying
-    logger.info("Waiting 60 seconds before replying...")
-    time.sleep(60)
+    # Wait 5 seconds before replying
+    logger.info("Waiting 5 seconds before replying...")
+    time.sleep(5)
     logger.info("Proceeding with reply")
 
     reply_message = "Learn more about AI Consulting and Development for your business: https://fdwa.site 🚀"
@@ -908,8 +908,8 @@ workflow.set_entry_point("research_trends")
 workflow.add_edge("research_trends", "generate_content")
 workflow.add_edge("generate_content", "generate_image")
 workflow.add_edge("generate_image", "post_social_media")
-workflow.add_edge("post_social_media", "post_linkedin")
-workflow.add_edge("post_linkedin", "post_instagram")
+workflow.add_edge("post_social_media", "post_instagram")
+# workflow.add_edge("post_linkedin", "post_instagram")  # LinkedIn bypassed
 workflow.add_edge("post_instagram", "monitor_instagram_comments")
 workflow.add_edge("monitor_instagram_comments", "reply_to_twitter")
 workflow.add_edge("reply_to_twitter", "comment_on_facebook")

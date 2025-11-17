@@ -41,7 +41,7 @@ REQUIREMENTS:
 - Tone: Engaging, visual, conversational
 - Structure:
   * Hook (1-2 sentences)
-  * Value statement about AI automation for SMBs
+  * Value statement about AI automation, Credit Repair with AI and AI Strategist and Building.
   * Benefits (time, leads, efficiency)
   * CTA with link in bio reference
 - Include 5-8 emojis throughout (not just at end)
