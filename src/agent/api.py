@@ -13,6 +13,7 @@ load_dotenv()
 
 from src.agent.graph import graph
 from src.agent.scheduler import start_scheduler, get_status, run_agent_task
+from src.agent.blog_email_agent import generate_and_send_blog
 
 app = FastAPI(title="FDWA Social Media Agent")
 
@@ -48,6 +49,16 @@ async def run_agent():
     """Manually trigger agent run."""
     result = await run_agent_task()
     return result
+
+
+@app.post("/blog")
+async def generate_blog():
+    """Manually trigger blog email generation."""
+    try:
+        result = generate_and_send_blog()
+        return {"success": True, "result": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.on_event("shutdown")

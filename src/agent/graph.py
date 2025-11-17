@@ -25,6 +25,7 @@ from langgraph.graph import StateGraph
 from src.agent.linkedin_agent import convert_to_linkedin_post
 from src.agent.instagram_agent import convert_to_instagram_caption
 from src.agent.instagram_comment_agent import generate_instagram_reply
+from src.agent.blog_email_agent import generate_and_send_blog
 
 # Load environment variables from .env file
 load_dotenv()
@@ -73,6 +74,8 @@ class AgentState(TypedDict):
     instagram_post_id: str
     instagram_comment_status: str
     comment_status: str
+    blog_status: str
+    blog_title: str
     error: str
 
 
@@ -548,6 +551,39 @@ def comment_on_facebook_node(state: AgentState) -> dict:
         return {"comment_status": f"Failed: {e!s}"}
 
 
+def generate_blog_email_node(state: AgentState) -> dict:
+    """Generate blog content and send via email.
+
+    Args:
+        state: Current agent state with trend_data.
+
+    Returns:
+        Dictionary with blog_status and blog_title.
+    """
+    logger.info("---GENERATING AND SENDING BLOG EMAIL---")
+    trend_data = state.get("trend_data", "")
+    
+    try:
+        blog_result = generate_and_send_blog(trend_data)
+        
+        if "error" in blog_result:
+            logger.error("Blog generation failed: %s", blog_result["error"])
+            return {"blog_status": f"Failed: {blog_result['error']}", "blog_title": ""}
+        
+        logger.info("Blog email process completed successfully!")
+        logger.info("Blog title: %s", blog_result["blog_title"])
+        logger.info("Email status: %s", blog_result["email_status"])
+        
+        return {
+            "blog_status": blog_result["email_status"],
+            "blog_title": blog_result["blog_title"]
+        }
+        
+    except Exception as e:
+        logger.exception("Blog email node failed: %s", e)
+        return {"blog_status": f"Failed: {str(e)}", "blog_title": ""}
+
+
 def post_instagram_node(state: AgentState) -> dict:
     """Post to Instagram with image and caption.
 
@@ -854,6 +890,7 @@ workflow.add_node("post_instagram", post_instagram_node)
 workflow.add_node("monitor_instagram_comments", monitor_instagram_comments_node)
 workflow.add_node("reply_to_twitter", reply_to_twitter_node)
 workflow.add_node("comment_on_facebook", comment_on_facebook_node)
+workflow.add_node("generate_blog_email", generate_blog_email_node)
 
 # Set the entrypoint
 workflow.set_entry_point("research_trends")
@@ -867,7 +904,8 @@ workflow.add_edge("post_linkedin", "post_instagram")
 workflow.add_edge("post_instagram", "monitor_instagram_comments")
 workflow.add_edge("monitor_instagram_comments", "reply_to_twitter")
 workflow.add_edge("reply_to_twitter", "comment_on_facebook")
-workflow.add_edge("comment_on_facebook", "__end__")
+workflow.add_edge("comment_on_facebook", "generate_blog_email")
+workflow.add_edge("generate_blog_email", "__end__")
 
 # Compile the graph
 graph = workflow.compile()
@@ -894,6 +932,8 @@ if __name__ == "__main__":
         logger.info("Instagram Comments: %s", final_state.get("instagram_comment_status", "N/A"))
         logger.info("Twitter Reply: %s", final_state.get("twitter_reply_status", "N/A"))
         logger.info("Facebook Comment: %s", final_state.get("comment_status", "N/A"))
+        logger.info("Blog Email: %s", final_state.get("blog_status", "N/A"))
+        logger.info("Blog Title: %s", final_state.get("blog_title", "N/A"))
 
         if final_state.get("error"):
             logger.error("Error: %s", final_state.get("error"))
