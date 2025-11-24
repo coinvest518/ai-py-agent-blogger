@@ -90,11 +90,11 @@ def start_scheduler() -> AsyncIOScheduler:
     """Start the background scheduler."""
     scheduler = AsyncIOScheduler()
     
-    # Run every 1 hour 30 minutes (90 minutes)
+    # Run every 1 hour 20 minutes (80 minutes)
     scheduler.add_job(
         run_agent_task,
         'interval',
-        minutes=90,
+        minutes=80,
         id='agent_task',
         name='Run FDWA Agent',
         replace_existing=True

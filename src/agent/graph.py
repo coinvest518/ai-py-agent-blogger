@@ -276,270 +276,42 @@ def generate_tweet_node(state: AgentState) -> dict:
         google_api_key=os.getenv("GOOGLE_AI_API_KEY")
     )
 
-    # FWDA Marketing Intelligence prompt
+    # Content generation prompt
     prompt = f"""
-You are Nefatari, the AI Social Media Manager and Content Engine for FDWA, DisputeAI, and all brands within Daniel's ecosystem. Your job is to automatically create content, posts, captions, marketing copy, product descriptions, and image prompts following this exact strategy:
+Create a Twitter post (max 240 characters) based on this trending data:
 
-🔧 CORE MISSION
+{trend_data[:1000]}
 
-You produce content that sells solutions, teaches how to fix problems, explains why the user should act now, and promotes digital products, credit repair tools, AI automations, and financial guides.
+Topic: Credit repair, AI automation, digital products, or financial empowerment
 
-Every output must be based on:
-One problem → One solution → One clear price → One CTA.
+Format:
+- Hook (1 line problem/question)
+- Quick value/tip
+- CTA with link: https://fdwa.site
+- 2 emojis
+- 3-5 hashtags
 
-🧠 BRAND THEMES
-
-Always align with:
-
-AI automation
-
-Credit repair expertise
-
-How-to guides
-
-Digital product education
-
-Financial empowerment
-
-Urgency + value
-
-Simple explanations
-
-African-American representation
-
-Futuristic digital wealth aesthetic
-
-🗣️ TONE & VOICE GUIDELINES
-
-Direct
-
-Helpful
-
-Clear
-
-Motivational
-
-Slight urgency
-
-Uses emojis
-
-Talks like a modern creator + educator
-
-Uses buyer psychology ("don't wait," "before the update," "last people who downloaded saw results")
-
-📌 CONTENT FRAMEWORK (EVERY POST MUST FOLLOW THIS)
-
-1. PAIN POINT (1–2 lines)
-Call out a common worry, frustration, or misunderstanding:
-"Struggling with credit denials?"
-"Tired of paying $3,000 for credit repair?"
-
-2. QUICK TIP OR TRICK (value in 10 seconds)
-Give 1 simple step, law, or method that works.
-
-3. AI MENTION (Nefatari helps)
-Show how the AI automates, explains, or simplifies the process.
-
-4. ONE SOLUTION OFFER
-Reference an ebook, tool, template, digital product, or service.
-
-5. CTA WITH URGENCY
-Example CTAs:
-
-"Comment FIX 👇"
-
-"Download before the update drops."
-
-"Tap the link to get the solution now."
-
-"Don't wait until they deny you again."
-
-🎨 IMAGE / VIDEO PROMPT STYLE
-
-When generating image or video prompts:
-
-Futuristic neon cyberpunk
-
-Credit report visuals
-
-Clean business graphics
-
-Urban + modern energy
-
-African-American models
-
-Digital holograms
-
-AI automation scenes
-
-Minimalist typography
-
-Gen Z design flair
-
-📚 PRODUCT CATEGORIES TO PROMOTE
-
-Always generate posts around these:
-
-Credit Repair Digital Products
-
-Dispute letters
-
-E-books
-
-Templates
-
-Step-by-step guides
-
-AI Tools for Credit & Business
-
-AI dispute writer
-
-AI report analyzer
-
-Automation bots
-
-Workflow tools
-
-Digital Product Education
-
-How to create and sell ebooks
-
-How to build passive income
-
-How to automate business tasks
-
-📈 POST TYPES TO GENERATE
-
-Your outputs must rotate through these categories:
-
-Daily "Credit Hack of the Day"
-
-"Did You Know?" law facts
-
-One-minute breakdowns
-
-Step-by-step fix guides
-
-Urgency posts
-
-Results-based posts
-
-AI tool explanations
-
-Digital product promos
-
-Why AI > traditional methods
-
-Mini-teachings
-
-CTA-driven posts
-
-⚡ CONTENT GOAL
-
-Everything you output should:
-✔ Teach fast
-✔ Build trust
-✔ Show AI value
-✔ Make the user want to click
-✔ Direct traffic to products or tools
-✔ Convert viewers into buyers
-
-🚀 ALWAYS OUTPUT IN THIS FORMAT
-
-Your responses should ALWAYS include:
-
-Caption / Post
-
-CTA
-
-Hashtags
-
-Image Prompt (Gemini / Flux / Pollinations style)
-
-Optional: Short version for Twitter
-
-TRENDING DATA (last 90 days):
-{trend_data[:2000]}
-
-TASK:
-Based on the trending data, create a social media post following the exact framework above. Focus on credit repair, AI automation, digital products, or financial empowerment. Make it engaging, urgent, and promotional.
-
-Return ONLY the complete post in the specified format. No explanations.
+Must be under 240 characters total. No markdown. Plain text only.
 """
 
     try:
-        # Invoke the model
         response = llm.invoke(prompt)
         generated_text = response.strip()
 
-        # Remove problematic unicode characters
+        # Remove markdown and problematic characters
+        generated_text = re.sub(r'\*\*', '', generated_text)
+        generated_text = re.sub(r'\*', '', generated_text)
+        generated_text = re.sub(r'#{1,6}\s', '', generated_text)
         generated_text = generated_text.encode("ascii", "ignore").decode("ascii")
+        
+        # Ensure under 280 characters
+        if len(generated_text) > 280:
+            generated_text = generated_text[:277] + "..."
 
-        logger.info("Generated Tweet (raw): %s", generated_text)
-        logger.info("Character count (raw): %d", len(generated_text))
+        logger.info("Generated Tweet: %s", generated_text)
+        logger.info("Character count: %d", len(generated_text))
 
-        # Attempt to parse structured sections from the LLM output so we can
-        # construct a clean, correctly formatted Twitter post.
-        try:
-            caption = None
-            cta = None
-            hashtags = None
-            short_version = None
-
-            # Patterns to extract sections (Caption / Post, CTA, Hashtags, Short version)
-            caption_match = re.search(r"(?s)Caption\s*/\s*Post\s*[:\-]?\s*(.*?)\n\s*(?:CTA|Hashtags|Image Prompt|Optional:|Short version|$)", generated_text)
-            if not caption_match:
-                caption_match = re.search(r"(?s)Caption\s*[:\-]?\s*(.*?)\n\s*(?:CTA|Hashtags|Image Prompt|Optional:|Short version|$)", generated_text)
-
-            if caption_match:
-                caption = caption_match.group(1).strip()
-
-            cta_match = re.search(r"(?s)CTA\s*[:\-]?\s*(.*?)\n\s*(?:Hashtags|Image Prompt|Optional:|Short version|$)", generated_text)
-            if cta_match:
-                cta = cta_match.group(1).strip()
-
-            hashtags_match = re.search(r"(?s)Hashtags\s*[:\-]?\s*(.*?)\n\s*(?:Image Prompt|Optional:|Short version|$)", generated_text)
-            if hashtags_match:
-                hashtags = hashtags_match.group(1).strip()
-
-            short_match = re.search(r"(?s)Optional:\s*Short version for Twitter\s*[:\-]?\s*(.*?)\n\s*(?:$)", generated_text)
-            if not short_match:
-                short_match = re.search(r"(?s)Short version for Twitter\s*[:\-]?\s*(.*?)\n\s*(?:$)", generated_text)
-            if short_match:
-                short_version = short_match.group(1).strip()
-
-            # Build the twitter text using parsed parts. Prefer explicit short_version when present.
-            twitter_text = None
-            if short_version:
-                twitter_text = short_version
-            elif caption:
-                # Combine caption + CTA + hashtags if present
-                parts = [caption]
-                if cta:
-                    parts.append(cta)
-                if hashtags:
-                    parts.append(hashtags)
-                twitter_text = " \n".join([p for p in parts if p])
-
-            # Fallback: if parsing failed, try to extract the first paragraph or 240 chars
-            if not twitter_text:
-                # Use the first paragraph (split on two newlines) as the tweet
-                first_para = generated_text.split("\n\n")[0].strip()
-                twitter_text = (first_para[:240] + "...") if len(first_para) > 280 else first_para
-
-            # Ensure within 280 characters
-            if len(twitter_text) > 280:
-                twitter_text = twitter_text[:277] + "..."
-
-            logger.info("Parsed twitter_text: %s", twitter_text)
-
-        except Exception as e:
-            logger.exception("Failed parsing generated tweet into sections: %s", e)
-            # Safe fallback
-            twitter_text = generated_text[:277] + "..." if len(generated_text) > 280 else generated_text
-
-        # Return both the raw generated text and the parsed short twitter-ready text
-        return {"tweet_text": generated_text, "twitter_post_text": twitter_text}
+        return {"tweet_text": generated_text}
 
     except Exception as e:
         logger.exception("Error generating tweet: %s", e)
@@ -964,8 +736,7 @@ def post_social_media_node(state: AgentState) -> dict:
     """
     logger.info("---POSTING TO SOCIAL MEDIA---")
     tweet_text = state.get("tweet_text")
-    # Prefer an explicit parsed twitter post if the generator returned one
-    twitter_text = state.get("twitter_post_text") or tweet_text
+    twitter_text = tweet_text
     image_url = state.get("image_url")
     image_path = state.get("image_path")
 
@@ -995,14 +766,8 @@ def post_social_media_node(state: AgentState) -> dict:
     logger.info("Posting to Twitter: %s", twitter_text)
     try:
         twitter_params = {"text": twitter_text}
-
-        # Ensure we have a connected Composio Twitter account configured
-        twitter_account_id = os.getenv("TWITTER_ACCOUNT_ID")
-        if not twitter_account_id:
-            logger.error("TWITTER_ACCOUNT_ID not configured. Set the env var to your Composio connected account id.")
-            return {"twitter_url": "Failed: TWITTER_ACCOUNT_ID not configured"}
         
-        # Step 1: Upload media if image is available
+        # Upload media if image is available
         if image_url:
             logger.info("Uploading image to Twitter: %s", image_url)
             try:
@@ -1010,68 +775,55 @@ def post_social_media_node(state: AgentState) -> dict:
                 local_image_path = _download_image_from_url(image_url)
                 
                 if local_image_path:
+                    # Make sure path is absolute
+                    import os
+                    local_image_path = os.path.abspath(local_image_path)
+                    logger.warning("Local image path: %s", local_image_path)
+                    logger.warning("File exists: %s", os.path.exists(local_image_path))
+                    
                     media_upload_response = composio_client.tools.execute(
                         "TWITTER_UPLOAD_MEDIA",
                         {
                             "media": local_image_path,
                             "media_category": "tweet_image"
                         },
-                        connected_account_id=twitter_account_id
+                        connected_account_id=os.getenv("TWITTER_ACCOUNT_ID")
                     )
-
-                    # Log full response for debugging (use repr to avoid issues with non-serializable types)
-                    logger.info("Twitter media upload response: %s", repr(media_upload_response))
+                    
+                    logger.warning("Twitter media upload response: %s", media_upload_response)
                     
                     if media_upload_response.get("successful", False):
-                        # Extract media ID from response - check all possible locations
-                        media_data = media_upload_response.get("data", {})
-
-                        # Normalize nested data structures (some toolkits return {'data': {'data': {...}}})
-                        nested = media_data
-                        if isinstance(media_data, dict) and "data" in media_data:
-                            nested = media_data.get("data") or media_data
-
-                        # Attempt to extract common identifier fields from nested and top-level
-                        media_id = None
-                        media_key = None
-
-                        if isinstance(nested, dict):
-                            media_id = nested.get("media_id_string") or nested.get("media_id") or nested.get("id")
-                            media_key = nested.get("media_key") or nested.get("media_key_string")
-
-                        # Fallback to top-level fields if not found
-                        if not media_id and isinstance(media_data, dict):
-                            media_id = media_data.get("media_id_string") or media_data.get("media_id") or media_data.get("id")
-                            if not media_key:
-                                media_key = media_data.get("media_key")
-
-                        # Last resort: if the data itself is a simple value
-                        if not media_id and isinstance(media_data, (int, str)):
-                            media_id = str(media_data)
-
-                        # Prefer media_id, otherwise use media_key. Attach under the existing param key.
-                        if media_id:
-                            twitter_params["media_media_ids"] = [str(media_id)]
-                            logger.info("Twitter media uploaded successfully, using media id: %s", media_id)
-                        elif media_key:
-                            twitter_params["media_media_ids"] = [str(media_key)]
-                            logger.info("Twitter media uploaded successfully, using media_key: %s", media_key)
+                        logger.warning("Full media upload response: %s", media_upload_response)
+                        # Always extract the media ID from the correct nested field
+                        nested_data = media_upload_response.get("data", {})
+                        if isinstance(nested_data, dict):
+                            media_data = nested_data.get("data", {})
                         else:
-                            logger.warning("No media id or media_key found in upload response. Full response: %s", repr(media_upload_response))
+                            media_data = {}
+                        logger.warning("media_data: %s", media_data)
+                        logger.warning("media_data keys: %s", list(media_data.keys()) if isinstance(media_data, dict) else "not dict")
+                        media_id = media_data.get("id")
+                        logger.warning("Extracted media_id from nested response: %s", media_id)
+                        if media_id and str(media_id) not in ["{}", "None", ""]:
+                            twitter_params["media_media_ids"] = [str(media_id)]
+                            logger.warning("Twitter media uploaded successfully, ID: %s", media_id)
+                            logger.warning("Twitter params now include media: %s", twitter_params)
+                        else:
+                            logger.warning("No media ID returned from Twitter upload. media_id: %s, str(media_id): %s", media_id, str(media_id))
                     else:
                         logger.error("Twitter media upload failed: %s", media_upload_response.get("error"))
                 else:
-                    logger.error("Failed to download image from URL")
+                    logger.error("Failed to download image from URL: %s", image_url)
                     
             except Exception as media_e:
                 logger.exception("Twitter media upload error: %s", media_e)
                 # Continue with text-only post if media upload fails
         
-        # Step 2: Create the post (with or without media)
+        # Create the post (with or without media)
         twitter_response = composio_client.tools.execute(
             "TWITTER_CREATION_OF_A_POST",
             twitter_params,
-            connected_account_id=twitter_account_id
+            connected_account_id=os.getenv("TWITTER_ACCOUNT_ID")
         )
         
         twitter_data = twitter_response.get("data", {})
