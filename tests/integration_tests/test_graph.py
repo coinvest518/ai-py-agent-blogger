@@ -10,4 +10,4 @@ async def test_agent_simple_passthrough() -> None:
     inputs = {"message": "Hello, how are you?"}
     res = await graph.ainvoke(inputs)
     assert res is not None
-    assert "response" in res
+    assert "blog_status" in res

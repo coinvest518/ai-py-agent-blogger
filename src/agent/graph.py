@@ -34,11 +34,10 @@ load_dotenv()
 # Configure LangSmith OpenTelemetry integration for Google models
 configure(project_name=os.getenv("LANGSMITH_PROJECT", "fdwa-multi-agent"))
 
-# Initialize Composio client
+# Initialize Composio client with env entity_id
 composio_client = Composio(
     api_key=os.getenv("COMPOSIO_API_KEY"),
-    # Set to allow manual-style execution like the test file
-    entity_id="default"
+    entity_id=os.getenv("TWITTER_ENTITY_ID")
 )
 
 # Configure logging

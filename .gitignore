@@ -1,3 +1,5 @@
+# Ignore temp_images folder
+temp_images/
 # Virtual Environment
 .venv/
 venv/

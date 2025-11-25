@@ -158,18 +158,19 @@ Labels: business, productivity, entrepreneurship, tools, fdwa, success"""
 
 # Affiliate links
 AFFILIATE_LINKS = {
-    "affiliate_hostinger": "https://hostinger.com?ref=fdwa",
-    "affiliate_lovable": "https://lovable.dev?ref=fdwa",
-    "affiliate_openphone": "https://openphone.com?ref=fdwa",
-    "affiliate_veed": "https://veed.io?ref=fdwa",
-    "affiliate_elevenlabs": "https://elevenlabs.io?ref=fdwa",
-    "affiliate_manychat": "https://manychat.com?ref=fdwa",
-    "affiliate_n8n": "https://n8n.io?ref=fdwa",
-    "affiliate_brightdata": "https://brightdata.com?ref=fdwa",
-    "affiliate_cointiply": "https://cointiply.com?ref=fdwa",
-    "affiliate_ava": "https://ava.me?ref=fdwa",
-    "affiliate_theleap": "https://theleap.co?ref=fdwa",
-    "affiliate_amazon": "https://amazon.com?ref=fdwa"
+    "affiliate_hostinger": "https://hostinger.com/horizons?REFERRALCODE=VMKMILDHI76M",
+    "affiliate_lovable": "https://lovable.dev/?via=daniel-wray",
+    "affiliate_openphone": "https://get.openphone.com/u8t88cu9allj",
+    "affiliate_veed": "https://veed.cello.so/Y4hEgduDP5L",
+    "affiliate_elevenlabs": "https://try.elevenlabs.io/2dh4kqbqw25i",
+    "affiliate_manychat": "https://manychat.partnerlinks.io/gal0gascf0ml",
+    "affiliate_n8n": "https://n8n.partnerlinks.io/pxw8nlb4iwfh",
+    "affiliate_brightdata": "https://get.brightdata.com/xafa5cizt3zw",
+    "affiliate_cointiply": "http://www.cointiply.com/r/agAkz",
+    "affiliate_ava": "https://meetava.sjv.io/anDyvY",
+    "affiliate_theleap": "https://join.theleap.co/FyY11sd1KY",
+    "affiliate_amazon": "https://amzn.to/4lICjtS",
+    "affiliate_bolt": "https://get.business.bolt.eu/lx55rhexokw9"
 }
 
 
