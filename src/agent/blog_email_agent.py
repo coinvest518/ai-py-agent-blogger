@@ -192,6 +192,12 @@ def generate_blog_content(trend_data: str) -> Dict[str, Any]:
     """Generate blog content using predefined templates."""
     logger.info("---GENERATING BLOG CONTENT---")
 
+    # Remove any error or search system text from trend_data
+    for bad in ["SERPAPI_SEARCH:", "TAVILY_SEARCH:", "Account out of searches", "error", "limit"]:
+        if bad.lower() in trend_data.lower():
+            trend_data = ""
+            break
+
     # Use predefined content based on trend data keywords
     topic = "general"  # Default to general topic for diversity
     if trend_data:
@@ -204,7 +210,7 @@ def generate_blog_content(trend_data: str) -> Dict[str, Any]:
             topic = "ai"
         else:
             topic = "general"
-    
+
     # Predefined content based on topic
     content_map = {
         "ai": {
@@ -232,27 +238,34 @@ def generate_blog_content(trend_data: str) -> Dict[str, Any]:
             "main_content": "High-performing individuals use integrated tech stacks for credit repair, business automation, and wealth building. These systems deliver results through time savings, increased efficiency, and passive income generation."
         }
     }
-    
+
     try:
         content = content_map.get(topic, content_map["ai"])
         template = get_template_by_topic(topic)
-        
+
+        # Add image if available (from context)
+        image_html = ""
+        # Try to get image_url from environment (set by agent)
+        image_url = os.environ.get("BLOG_IMAGE_URL")
+        if image_url:
+            image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;" />\n'
+
         # Fill in the template
-        blog_html = template.format(
+        blog_html = image_html + template.format(
             title=content["title"],
             intro_paragraph=content["intro_paragraph"],
             main_content_header=content["main_content_header"],
             main_content=content["main_content"],
             **AFFILIATE_LINKS
         )
-        
+
         logger.info("Blog content generated successfully")
         return {
             "blog_html": blog_html,
             "title": content["title"],
             "topic": topic
         }
-        
+
     except Exception as e:
         logger.exception("Error generating blog content: %s", e)
         return {"error": str(e)}
@@ -300,19 +313,28 @@ def generate_and_send_blog(trend_data: str = None) -> Dict[str, Any]:
     """Main function to generate blog content and send via email."""
     logger.info("Starting blog generation and email process...")
     
-    # Use provided trend data or generate some sample data
-    if not trend_data:
-        trend_data = "AI automation trends show 300% increase in small business adoption. Workflow automation saves 15+ hours per week."
-    
+    # Always require trend_data for unique blog content
+    if not trend_data or not trend_data.strip():
+        # Instead of using a static string, generate a random topic for fallback
+        import random
+        fallback_trends = [
+            "AI automation trends show 300% increase in small business adoption. Workflow automation saves 15+ hours per week.",
+            "Digital product sales are booming in 2025, with entrepreneurs earning passive income from ebooks and guides.",
+            "Credit repair with AI is helping thousands improve their scores faster than ever before.",
+            "Business automation tools are saving SMBs 20+ hours per week and increasing revenue.",
+            "Financial empowerment through tech: more people are using AI to manage money and build wealth."
+        ]
+        trend_data = random.choice(fallback_trends)
+
     # Generate blog content
     blog_result = generate_blog_content(trend_data)
-    
+
     if "error" in blog_result:
         return blog_result
-    
+
     # Send email
     email_result = send_blog_email(blog_result["blog_html"], blog_result["title"])
-    
+
     # Combine results
     return {
         "blog_title": blog_result["title"],

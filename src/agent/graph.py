@@ -179,6 +179,8 @@ def research_trends_node(state: AgentState) -> dict:
     Returns:
         Dictionary with trend_data or error.
     """
+    import json
+    from datetime import datetime
     logger.info("---RESEARCHING TRENDS---")
 
     # Diverse search queries for different business topics
@@ -209,6 +211,8 @@ def research_trends_node(state: AgentState) -> dict:
     logger.info("Researching: %s", query)
 
     trend_data = ""
+    today = datetime.now().strftime("%Y-%m-%d")
+    cache_file = "trend_cache.json"
 
     try:
         # Primary: Try SERPAPI search first
@@ -219,15 +223,26 @@ def research_trends_node(state: AgentState) -> dict:
                 {"query": query},
                 connected_account_id=os.getenv("SERPAPI_ACCOUNT_ID")
             )
-            trend_data = f"SERPAPI_SEARCH: {search_response.get('data', {})!s}"
+            # Remove error text if present
+            data = search_response.get('data', {})
+            if isinstance(data, dict) and any(
+                k in str(data).lower() for k in ["account out of searches", "error", "limit"]):
+                raise Exception("SERPAPI out of searches or error")
+            trend_data = str(data)
             logger.info("SERPAPI search successful: %d characters", len(trend_data))
             return {"trend_data": trend_data}
-            
         except Exception as serpapi_error:
             logger.warning("SERPAPI search failed: %s", serpapi_error)
-            
-            # Fallback: Try Tavily search
+            # Fallback: Try Tavily search, but only once per day
             logger.info("Falling back to Tavily search...")
+            # Check cache
+            if os.path.exists(cache_file):
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    cache = json.load(f)
+                if cache.get("date") == today and cache.get("trend_data"):
+                    logger.info("Using cached Tavily trend data for today.")
+                    return {"trend_data": cache["trend_data"]}
+            # Not cached, do Tavily search
             search_response = composio_client.tools.execute(
                 "TAVILY_SEARCH",
                 {
@@ -246,10 +261,12 @@ def research_trends_node(state: AgentState) -> dict:
                 },
                 connected_account_id=os.getenv("TAVILY_ACCOUNT_ID")
             )
-            trend_data = f"TAVILY_SEARCH: {search_response.get('data', {})!s}"
+            trend_data = str(search_response.get('data', {}))
+            # Save to cache
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump({"date": today, "trend_data": trend_data}, f)
             logger.info("Tavily fallback successful: %d characters", len(trend_data))
             return {"trend_data": trend_data}
-
     except Exception as e:
         logger.exception("Both search methods failed: %s", e)
         return {"error": str(e), "trend_data": "No trend data available"}
@@ -267,7 +284,12 @@ def generate_tweet_node(state: AgentState) -> dict:
     logger.info("---GENERATING FDWA TWEET---")
 
     trend_data = state.get("trend_data", "")
-    
+    # Remove any error or search system text from trend_data
+    for bad in ["SERPAPI_SEARCH:", "TAVILY_SEARCH:", "Account out of searches", "error", "limit"]:
+        if bad.lower() in trend_data.lower():
+            trend_data = ""
+            break
+
     # Initialize the Google AI model
     llm = GoogleGenerativeAI(
         model="gemini-2.5-flash-lite",
