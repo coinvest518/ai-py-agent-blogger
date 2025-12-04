@@ -581,10 +581,10 @@ def comment_on_facebook_node(state: AgentState) -> dict:
 
 
 def generate_blog_email_node(state: AgentState) -> dict:
-    """Generate blog content and send via email.
+    """Generate blog content and send via email with image attachment.
 
     Args:
-        state: Current agent state with trend_data.
+        state: Current agent state with trend_data and image info.
 
     Returns:
         Dictionary with blog_status and blog_title.
@@ -592,8 +592,18 @@ def generate_blog_email_node(state: AgentState) -> dict:
     logger.info("---GENERATING AND SENDING BLOG EMAIL---")
     trend_data = state.get("trend_data", "")
     
+    # Get image from state - try both URL and local path
+    image_source = state.get("image_path") or state.get("image_url")
+    
+    if image_source:
+        logger.info("Blog email will include image: %s", image_source[:50] if image_source else "None")
+        # Set environment variable so blog_email_agent can access it
+        os.environ["BLOG_IMAGE_URL"] = image_source
+        if not image_source.startswith(('http://', 'https://')):
+            os.environ["BLOG_IMAGE_PATH"] = image_source
+    
     try:
-        blog_result = generate_and_send_blog(trend_data)
+        blog_result = generate_and_send_blog(trend_data, image_path=image_source)
         
         if "error" in blog_result:
             logger.error("Blog generation failed: %s", blog_result["error"])
@@ -602,6 +612,7 @@ def generate_blog_email_node(state: AgentState) -> dict:
         logger.info("Blog email process completed successfully!")
         logger.info("Blog title: %s", blog_result["blog_title"])
         logger.info("Email status: %s", blog_result["email_status"])
+        logger.info("Image included: %s", blog_result.get("has_image", False))
         
         return {
             "blog_status": blog_result["email_status"],
