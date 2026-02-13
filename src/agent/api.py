@@ -13,7 +13,7 @@ load_dotenv()
 
 from src.agent.graph import graph
 from src.agent.scheduler import start_scheduler, get_status, run_agent_task
-from src.agent.blog_email_agent import generate_and_send_blog
+from src.agent.blog_email_agent import generate_and_send_blog, update_business_profile_from_shop, _load_business_profile
 
 app = FastAPI(title="FDWA Social Media Agent")
 
@@ -57,6 +57,26 @@ async def generate_blog():
     try:
         result = generate_and_send_blog()
         return {"success": True, "result": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/admin/refresh-profile")
+async def refresh_business_profile(urls: list | None = None):
+    """Refresh business profile by scraping provided shop URLs or default profile URLs.
+
+    POST body (optional): JSON array of URLs to scrape. If omitted, uses
+    `buymeacoffee` and `shop_page` from `business_profile.json`.
+    """
+    try:
+        profile = _load_business_profile()
+        to_scrape = urls or [profile.get("shop_page"), profile.get("buymeacoffee")]
+        to_scrape = [u for u in to_scrape if u]
+        if not to_scrape:
+            return {"success": False, "error": "No URLs provided and no defaults in profile."}
+
+        updated = update_business_profile_from_shop(to_scrape)
+        return {"success": True, "profile": updated}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

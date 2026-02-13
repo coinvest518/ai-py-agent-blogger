@@ -32,14 +32,27 @@ SENT_POSTS_FILE = Path(__file__).parent.parent.parent / "sent_blog_posts.json"
 
 
 def _load_sent_posts() -> Dict[str, Any]:
-    """Load the record of sent blog posts."""
+    """Load the record of sent blog posts.
+
+    New structure includes a `sent_posts` list with objects:
+      { title, excerpt, snippet, topic, date }
+    Backwards-compatible keys (`sent_titles`, `sent_hashes`, `last_topics`) are kept.
+    """
     if SENT_POSTS_FILE.exists():
         try:
             with open(SENT_POSTS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+
+                # Ensure new keys exist for backward compatibility
+                data.setdefault("sent_posts", [])
+                data.setdefault("sent_titles", [p.get("title") for p in data.get("sent_posts", []) if p.get("title")])
+                data.setdefault("sent_hashes", data.get("sent_hashes", []))
+                data.setdefault("last_topics", data.get("last_topics", []))
+                return data
         except (json.JSONDecodeError, IOError):
             pass
-    return {"sent_titles": [], "sent_hashes": [], "last_topics": []}
+
+    return {"sent_posts": [], "sent_titles": [], "sent_hashes": [], "last_topics": []}
 
 
 def _save_sent_posts(data: Dict[str, Any]) -> None:
@@ -80,23 +93,39 @@ def _is_duplicate_post(title: str, content: str, topic: str) -> bool:
     return False
 
 
-def _record_sent_post(title: str, content: str, topic: str) -> None:
-    """Record a sent post to prevent future duplicates."""
+def _record_sent_post(title: str, content: str, topic: str, snippet: Optional[str] = None) -> None:
+    """Record a sent post with richer metadata for future analysis.
+
+    - Keeps backward-compatible lists (`sent_titles`, `sent_hashes`, `last_topics`).
+    - Appends a structured `sent_posts` entry used by the LLM to learn from our history.
+    """
     sent_data = _load_sent_posts()
     content_hash = _get_content_hash(title, content)
-    
-    # Add to tracking lists (keep last 50 items max)
+
+    # Add/rotate compact tracking lists
     sent_data.setdefault("sent_titles", []).append(title)
     sent_data["sent_titles"] = sent_data["sent_titles"][-50:]
-    
+
     sent_data.setdefault("sent_hashes", []).append(content_hash)
     sent_data["sent_hashes"] = sent_data["sent_hashes"][-50:]
-    
+
     sent_data.setdefault("last_topics", []).append(topic)
     sent_data["last_topics"] = sent_data["last_topics"][-10:]
-    
+
+    # Add detailed post record for LLM training/prompting
+    sent_posts = sent_data.setdefault("sent_posts", [])
+    sent_posts.append({
+        "title": title,
+        "excerpt": content.strip()[:300],
+        "snippet": (snippet or content).strip()[:1000],
+        "topic": topic,
+        "date": datetime.now().isoformat()
+    })
+    # Keep a reasonable history size
+    sent_data["sent_posts"] = sent_posts[-100:]
+
     sent_data["last_sent"] = datetime.now().isoformat()
-    
+
     _save_sent_posts(sent_data)
 
 # Blog HTML Templates
@@ -265,13 +294,128 @@ def get_template_by_topic(topic: str) -> str:
         return TEMPLATE_GENERAL
 
 
+def _get_recent_posts_for_prompt(limit: int = 6) -> str:
+    """Return a JSON array (string) of recent sent posts to include in the LLM prompt.
+
+    Each item includes: title, excerpt (short), snippet (longer), topic, date.
+    """
+    sent = _load_sent_posts().get("sent_posts", [])
+    recent = sent[-limit:]
+    try:
+        return json.dumps(recent, ensure_ascii=False)
+    except Exception:
+        return "[]"
+
+
+# -------------------- Business profile support --------------------
+def _load_business_profile() -> Dict[str, Any]:
+    """Load local business_profile.json if present; return dict."""
+    profile_path = Path(__file__).parent.parent.parent / "business_profile.json"
+    if profile_path.exists():
+        try:
+            with open(profile_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            logger.exception("Failed to load business_profile.json")
+    # Fallback: minimal profile built from env
+    return {
+        "primary_site": os.getenv("PRIMARY_SITE", "https://fwda.site"),
+        "about": os.getenv("BUSINESS_ABOUT", "FWDA builds custom AI automation workflows for SMBs."),
+        "products": []
+    }
+
+
+def _save_business_profile(profile: Dict[str, Any]) -> None:
+    """Persist business_profile.json to repo root."""
+    profile_path = Path(__file__).parent.parent.parent / "business_profile.json"
+    try:
+        with open(profile_path, "w", encoding="utf-8") as f:
+            json.dump(profile, f, indent=2)
+    except Exception:
+        logger.exception("Failed to save business_profile.json")
+
+
+def scrape_buymeacoffee_shop(url: str) -> list:
+    """Attempt to scrape a BuyMeACoffee shop page for product titles/prices.
+
+    This is a best-effort helper (wrapped in try/except). If BeautifulSoup/requests
+    are unavailable or parsing fails, returns an empty list.
+    """
+    try:
+        import re
+        import requests
+        from bs4 import BeautifulSoup
+
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        products = []
+
+        # Look for obvious shop item containers
+        # Best-effort: find elements that contain a price or the word 'Free'
+        candidates = soup.find_all(lambda tag: tag.name in ["div", "li", "article"] and tag.get_text())
+        seen = set()
+        for c in candidates:
+            text = c.get_text(separator=" ", strip=True)
+            if len(text) < 20:
+                continue
+            # Find price or 'Free'
+            m = re.search(r"\$\s?\d{1,4}", text)
+            is_free = "free" in text.lower()
+            if m or is_free:
+                # Extract a short title (first 60 chars without price)
+                title = re.sub(r"\$\s?\d{1,4}", "", text).strip()
+                title = title[:120]
+                price = 0 if is_free else float(m.group(0).replace("$", ""))
+                key = (title, price)
+                if key in seen:
+                    continue
+                seen.add(key)
+                products.append({
+                    "title": title,
+                    "price": price,
+                    "currency": "USD",
+                    "availability": "free" if is_free else "paid",
+                    "source": url
+                })
+                if len(products) >= 200:
+                    break
+        return products
+    except Exception:
+        logger.exception("BuyMeACoffee scraper failed for %s", url)
+        return []
+
+
+def update_business_profile_from_shop(urls: list) -> Dict[str, Any]:
+    """Scrape provided shop URLs and merge findings into business_profile.json.
+
+    Returns the updated profile dict.
+    """
+    profile = _load_business_profile()
+    aggregated = profile.get("products", [])[:]
+
+    for u in urls:
+        scraped = scrape_buymeacoffee_shop(u)
+        for p in scraped:
+            # basic dedupe by title
+            if not any(p["title"].lower() in (q.get("title","").lower()) for q in aggregated):
+                aggregated.append(p)
+
+    profile["products"] = aggregated
+    _save_business_profile(profile)
+    return profile
+
+# ------------------ end business profile support --------------------
+
+
 def generate_blog_content(trend_data: str, image_path: Optional[str] = None) -> Dict[str, Any]:
-    """Generate blog content using predefined templates with duplicate prevention."""
+    """Generate blog content using LLM (preferred) or templates with duplicate prevention."""
     logger.info("---GENERATING BLOG CONTENT---")
 
     # Remove any error or search system text from trend_data
     for bad in ["SERPAPI_SEARCH:", "TAVILY_SEARCH:", "Account out of searches", "error", "limit"]:
-        if bad.lower() in trend_data.lower():
+        if bad.lower() in (trend_data or "").lower():
             trend_data = ""
             break
 
@@ -398,8 +542,169 @@ def generate_blog_content(trend_data: str, image_path: Optional[str] = None) -> 
 
     try:
         variations = content_variations.get(topic, content_variations["general"])
-        
-        # Try each variation until we find one that hasn't been sent recently
+
+        # LLM-first generation (Google -> Mistral). Honor BLOG_REQUIRE_LLM to forbid template fallbacks.
+        try:
+            def _get_preferred_llm():
+                # Preferred order: Mistral -> Hugging Face Inference -> Google (last)
+
+                # 1) Mistral (preferred when key present)
+                try:
+                    from langchain_mistralai import ChatMistralAI
+                    mistral_key = os.getenv("MISTRAL_API_KEY")
+                    if mistral_key:
+                        mistral_model = os.getenv("BLOG_LLM_MODEL_MISTRAL", "mistral-large-2512")
+                        mistral_temp = float(os.getenv("BLOG_LLM_TEMPERATURE", "0.25"))
+                        logger.info("Initializing ChatMistralAI for blog generation")
+                        return ChatMistralAI(model=mistral_model, temperature=mistral_temp, mistral_api_key=mistral_key)
+                except Exception as e:
+                    logger.debug("Mistral initialization failed: %s", e)
+
+                # 2) Hugging Face Inference API via HTTP (matches HF router docs)
+                try:
+                    import requests
+                    hf_token = os.getenv("HF_TOKEN")
+                    if hf_token:
+                        hf_model = os.getenv("BLOG_LLM_MODEL_HF", "HuggingFaceTB/SmolLM3-3B:hf-inference")
+                        hf_temp = float(os.getenv("BLOG_LLM_TEMPERATURE", "0.25"))
+
+                        class HFChatWrapper:
+                            def __init__(self, model, token, temperature=0.25):
+                                self.model = model
+                                self.token = token
+                                self.temperature = temperature
+
+                            def invoke(self, prompt_text: str):
+                                url = "https://router.huggingface.co/v1/chat/completions"
+                                headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+                                payload = {
+                                    "model": self.model,
+                                    "messages": [{"role": "user", "content": prompt_text}],
+                                    "temperature": float(self.temperature)
+                                }
+                                try:
+                                    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+                                    resp.raise_for_status()
+                                    data = resp.json()
+                                    content = data["choices"][0]["message"]["content"]
+                                except requests.HTTPError as http_err:
+                                    status = getattr(http_err.response, 'status_code', None)
+                                    if status == 401:
+                                        raise RuntimeError("Hugging Face Inference API: Unauthorized (HTTP 401). Check HF_TOKEN and grant 'Inference' permission or regenerate token.") from http_err
+                                    if status == 429:
+                                        raise RuntimeError("Hugging Face Inference API: Rate limited (HTTP 429). Check quota or retry later.") from http_err
+                                    raise RuntimeError(f"Hugging Face Inference API HTTP error: {http_err}") from http_err
+                                except Exception as e:
+                                    raise RuntimeError(f"Hugging Face Inference API request failed: {e}") from e
+
+                                # mimic LangChain ChatModel response object with `content` attr
+                                class _R:
+                                    def __init__(self, c):
+                                        self.content = c
+
+                                return _R(content)
+
+                        logger.info("Initializing Hugging Face Inference wrapper for blog generation")
+                        return HFChatWrapper(hf_model, hf_token, hf_temp)
+                except Exception as e:
+                    logger.debug("Hugging Face LLM unavailable: %s", e)
+
+                # 3) Google as last resort (kept for compatibility)
+                try:
+                    from langchain_google_genai import GoogleGenerativeAI
+                    ga_key = os.getenv("GOOGLE_AI_API_KEY")
+                    if ga_key:
+                        llm_model = os.getenv("BLOG_LLM_MODEL", "gemini-2.0-flash")
+                        llm_temp = float(os.getenv("BLOG_LLM_TEMPERATURE", "0.25"))
+                        logger.info("Initializing GoogleGenerativeAI for blog generation (last-resort)")
+                        return GoogleGenerativeAI(model=llm_model, temperature=llm_temp, google_api_key=ga_key)
+                except Exception as e:
+                    logger.debug("GoogleGenerativeAI unavailable: %s", e)
+
+                return None
+
+            llm = _get_preferred_llm()
+            require_llm = os.getenv("BLOG_REQUIRE_LLM", "false").lower() in ("1", "true", "yes")
+            if not llm:
+                msg = "No LLM provider available (Mistral, Hugging Face, or Google)"
+                logger.warning(msg)
+                if require_llm:
+                    raise RuntimeError(msg)
+                # otherwise allow existing template fallback path by raising to outer handler
+                raise RuntimeError(msg)
+
+            import json as _json
+            past_posts_json = _get_recent_posts_for_prompt(limit=6)
+
+            business_profile = _load_business_profile()
+
+            prompt = _json.dumps({
+                "topic": topic,
+                "trend_data": (trend_data or ""),
+                "affiliate_links": {k: v for k, v in AFFILIATE_LINKS.items()},
+                "our_recent_posts": _json.loads(past_posts_json),
+                "business_profile": business_profile
+            })
+
+            generation_prompt = f"""
+You are an expert content marketer and long-form copywriter for FDWA (Futurist Digital Wealth Agency).
+
+Input (JSON): {prompt}
+
+Task: 1) Analyze the `our_recent_posts` examples and the `trend_data`. Identify patterns that likely drove engagement (hooks, CTAs, examples, statistics, tone, length). 2) Produce a conversion-focused, data-driven, long-form blog post in HTML format that improves on our past posts using those high-performing patterns.
+
+REQUIREMENTS:
+- Output MUST be valid JSON only, with keys: "title" (string), "html" (string), "excerpt" (string), "rationale" (short list of 3 improvements made based on our past posts).
+- The "html" field must contain well-structured HTML (headings <h1>/<h2>/<h3>, paragraphs, numbered steps, examples/case-studies, bullet lists) and include at least 700 words.
+- Explicitly reference one or two data points from `trend_data` when available; if no concrete numbers exist, provide conservative estimates and label them as estimates.
+- Include 2 short actionable examples or mini case-studies showing how a reader can apply the advice.
+- End with a persuasive CTA that points to https://fdwa.site and an invitation to schedule a consultation.
+- Embed exactly 3 recommended affiliate tools (use links from affiliate_links) inside the HTML.
+- Provide an "excerpt" (1-2 sentence hook) suitable for social sharing.
+- Provide a small JSON array `rationale` (3 items) explaining which past-post patterns were used and why.
+- Tone: authoritative, helpful, conversational. Active voice. No filler or vague platitudes.
+
+Return ONLY the JSON. Do NOT include any explanatory text.
+"""
+
+            response = llm.invoke(generation_prompt)
+            response_text = response.strip()
+
+            # Try to parse JSON from model output
+            try:
+                parsed = _json.loads(response_text)
+                title = parsed.get("title")
+                html_output = parsed.get("html")
+                excerpt = parsed.get("excerpt", "")
+
+                # If title/html present and not duplicate, return immediately
+                if title and html_output and not _is_duplicate_post(title, excerpt or html_output[:200], topic):
+                    image_html = ""
+                    image_url = image_path or os.environ.get("BLOG_IMAGE_URL")
+                    if image_url and image_url.startswith(('http://', 'https://')):
+                        image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;display:block;" />\n'
+
+                    blog_html = image_html + html_output
+                    logger.info("LLM-generated blog created: %s", title)
+                    return {
+                        "blog_html": blog_html,
+                        "title": title,
+                        "topic": topic,
+                        "intro_paragraph": excerpt,
+                        "image_url": image_url
+                    }
+            except Exception as llm_parse_exc:
+                logger.exception("LLM output parsing failed: %s", llm_parse_exc)
+                if require_llm:
+                    raise
+        except Exception as llm_exc:
+            # Respect BLOG_REQUIRE_LLM: re-raise if set, otherwise continue to template fallback
+            require_llm = os.getenv("BLOG_REQUIRE_LLM", "false").lower() in ("1", "true", "yes")
+            logger.exception("LLM blog generation failed: %s", llm_exc)
+            if require_llm:
+                raise
+
+        # Fallback: Try each variation until we find one that hasn't been sent recently
         random.shuffle(variations)  # Randomize order for variety
         
         selected_content = None
@@ -461,7 +766,6 @@ def generate_blog_content(trend_data: str, image_path: Optional[str] = None) -> 
     except Exception as e:
         logger.exception("Error generating blog content: %s", e)
         return {"error": str(e)}
-
 
 def send_blog_email(blog_html: str, title: str, image_url: Optional[str] = None) -> Dict[str, Any]:
     """Send blog content via Gmail with image URL in HTML body.
@@ -565,14 +869,15 @@ def generate_and_send_blog(trend_data: str = None, image_url: Optional[str] = No
         image_url=blog_result.get("image_url")  # Pass for logging
     )
 
-    # Record the sent post to prevent future duplicates
+    # Record the sent post to prevent future duplicates (include snippet for analysis)
     if email_result.get("email_status", "").startswith("Sent"):
         _record_sent_post(
-            blog_result["title"], 
+            blog_result["title"],
             blog_result.get("intro_paragraph", ""),
-            blog_result["topic"]
+            blog_result["topic"],
+            snippet=blog_result.get("blog_html", "")[:1000]
         )
-        logger.info("Recorded sent post to prevent duplicates: %s", blog_result["title"])
+        logger.info("Recorded sent post to prevent duplicates and for learning: %s", blog_result["title"])
 
     # Combine results
     return {

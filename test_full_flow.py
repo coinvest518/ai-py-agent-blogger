@@ -6,7 +6,7 @@ This script invokes the autonomous social media agent graph and prints the outpu
 
 import asyncio
 import logging
-from agent.graph import graph
+from src.agent.graph import graph
 
 # Set up logging to see the output
 logging.basicConfig(level=logging.INFO)

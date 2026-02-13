@@ -1,13 +1,14 @@
 # LangSmith AI Agent - FDWA Multi-Platform Social Media Automation
 
-Autonomous AI agent that researches trends, generates content, creates images, and posts to Twitter and Facebook with full LangSmith tracing.
+Autonomous AI agent that researches trends, generates content, creates images, and posts to Twitter, Facebook, Instagram, and Telegram with full LangSmith tracing.
 
 ## Features
 
 - 🔍 **Research Agent** - Automated trend research using Tavily
-- ✍️ **Content Agent** - AI-powered social media content generation
-- 🎨 **Image Agent** - AI image generation with Google Gemini via Composio
-- 📱 **Social Media Agent** - Multi-platform posting (Twitter + Facebook)
+- ✍️ **Content Agent** - Template-based social media content generation (no external AI)
+- 🎨 **Image Agent** - AI image generation with **Hugging Face Inference API** (100% FREE)
+- 📱 **Social Media Agent** - Multi-platform posting (Twitter, Facebook, Instagram, LinkedIn, Telegram)
+- 💬 **Telegram Crypto Agent** - DeFi/crypto market updates to Telegram groups
 - 📊 **LangSmith Tracing** - Complete observability and monitoring
 
 ## Architecture
@@ -18,21 +19,24 @@ Research → Content Generation → Image Enhancement → Image Generation → S
 
 ### Agent Flow
 1. **Research Agent** - Collects trending topics via Tavily search
-2. **Content Agent** - Generates branded social media text using Google Gemini
+2. **Content Agent** - Generates branded social media text (template-based, fast)
 3. **Image Prompt Sub-Agent** - Cleans and enhances text into visual prompts
-4. **Image Generation** - Creates images via Google Gemini AI
+4. **Image Generation** - Creates images via **Hugging Face Stable Diffusion** (FREE)
 5. **Social Media Agent** - Posts to Twitter and Facebook with images
+6. **Telegram Crypto Agent** - Posts DeFi/crypto updates to Telegram groups
+7. **LinkedIn/Instagram Agents** - Format and post to professional networks
 
 ## Setup
 
 ### Prerequisites
 - Python 3.10+
 - API Keys:
-  - Google AI (Gemini)
+  - **Hugging Face API Token** (FREE - get at https://huggingface.co/settings/tokens)
   - Composio
   - LangSmith
   - Twitter (via Composio)
   - Facebook (via Composio)
+  - Telegram Bot Token (via Composio)
 
 ### Installation
 
@@ -62,10 +66,10 @@ LANGSMITH_API_KEY=your_langsmith_key
 LANGSMITH_PROJECT=fdwa-multi-agent
 LANGSMITH_WORKSPACE_ID=your_workspace_id
 
-# AI Models
-GOOGLE_AI_API_KEY=your_google_ai_key
+# Hugging Face (FREE)
+HF_TOKEN=hf_YourTokenHere
 
-# Composio (for Twitter, Facebook, Tavily)
+# Composio (for social media platforms)
 COMPOSIO_API_KEY=your_composio_key
 
 # Social Media Accounts
@@ -73,8 +77,17 @@ FACEBOOK_ACCOUNT_ID=your_facebook_account_id
 FACEBOOK_PAGE_ID=your_facebook_page_id
 INSTAGRAM_ACCOUNT_ID=your_instagram_account_id
 INSTAGRAM_USER_ID=your_instagram_user_id
-GEMINI_ACCOUNT_ID=your_gemini_account_id
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_GROUP_USERNAME=@your_telegram_group
 ```
+
+### Hugging Face Setup
+
+See [HUGGINGFACE_SETUP.md](HUGGINGFACE_SETUP.md) for detailed instructions on:
+- Getting your FREE Hugging Face API token
+- Available models (Stable Diffusion, FLUX, etc.)
+- Testing image generation
+- Troubleshooting
 
 ## Usage
 
@@ -82,6 +95,12 @@ GEMINI_ACCOUNT_ID=your_gemini_account_id
 
 ```bash
 python src/agent/graph.py
+```
+
+### Test Hugging Face Image Generation
+
+```bash
+python src/agent/hf_image_gen.py
 ```
 
 ### LangGraph Studio

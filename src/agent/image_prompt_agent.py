@@ -7,13 +7,9 @@ import logging
 import os
 import re
 
-from langchain_google_genai import GoogleGenerativeAI
-from langsmith import traceable
-
 logger = logging.getLogger(__name__)
 
 
-@traceable(name="enhance_image_prompt")
 def enhance_prompt_for_image(text: str, product_name: str = None, product_price: str = None) -> str:
     """Convert social media text into a clean visual prompt for image generation with a selling focus.
 
@@ -23,62 +19,35 @@ def enhance_prompt_for_image(text: str, product_name: str = None, product_price:
         product_price: Optional price of the product to include in the prompt.
 
     Returns:
-        Clean, descriptive image prompt optimized for Google Gemini AI image generation.
+        Clean, descriptive image prompt optimized for image generation.
     """
     logger.info("Enhancing image prompt...")
 
-    llm = GoogleGenerativeAI(
-        model="gemini-2.5-flash-lite",
-        temperature=0.7,
-        google_api_key=os.getenv("GOOGLE_AI_API_KEY"),
-    )
-
-    selling_focus = ""
+    # Clean the text - remove hashtags, links, special chars
+    clean_text = re.sub(r'#\w+', '', text)  # Remove hashtags
+    clean_text = re.sub(r'http[s]?://\S+', '', clean_text)  # Remove URLs
+    clean_text = re.sub(r'[@*_\[\]{}()\'"\\]', '', clean_text)  # Remove special chars
+    clean_text = ' '.join(clean_text.split())  # Clean whitespace
+    
+    # Build image prompt with business/professional themes
+    prompt_parts = [
+        "Modern professional business scene:",
+        clean_text[:80],  # First 80 chars of cleaned text
+        "futuristic AI technology",
+        "clean minimalist design",
+        "professional lighting"
+    ]
+    
     if product_name:
-        selling_focus += f" Highlight the product '{product_name}'."
+        prompt_parts.insert(1, f"featuring {product_name}")
     if product_price:
-        selling_focus += f" Include the price '{product_price}'."
-
-    prompt = f"""
-Convert this social media post into a visual art prompt for AI image generation.
-
-SOCIAL MEDIA TEXT:
-{text}
-
-REQUIREMENTS:
-- Remove ALL hashtags
-- Remove ALL special characters (* # @ etc)
-- Remove ALL markdown formatting
-- Extract core visual theme
-- Add professional business imagery keywords
-- Style: modern, clean, professional, futuristic
-- Add calls-to-action like 'Buy Now', 'Download Now', or 'Limited Offer'
-- Maximum 200 characters
-{selling_focus}
-
-OUTPUT:
-Return ONLY the clean image prompt. No explanations.
-"""
-
-    try:
-        response = llm.invoke(prompt)
-        visual_prompt = response.strip()
-
-        # Additional cleanup
-        visual_prompt = re.sub(r"[*#@\[\]{}()\'\"\\]", "", visual_prompt)
-        visual_prompt = re.sub(r"\s+", " ", visual_prompt).strip()
-
-        logger.info("Enhanced prompt: %s", visual_prompt)
-        return visual_prompt
-
-    except Exception as e:
-        logger.exception("Error enhancing prompt: %s", e)
-        # Fallback: basic cleanup
-        fallback = re.sub(r"[*#@\[\]{}()\'\"\\]", "", text)
-        fallback = re.sub(r"\s+", " ", fallback).strip()
-        fallback_prompt = f"Professional business image: {fallback[:150]}"
-        if product_name:
-            fallback_prompt += f" Featuring '{product_name}'."
-        if product_price:
-            fallback_prompt += f" Price: {product_price}."
-        return fallback_prompt
+        prompt_parts.append(f"Buy Now {product_price}")
+    
+    image_prompt = " ".join(prompt_parts)
+    
+    # Limit to 200 characters
+    if len(image_prompt) > 200:
+        image_prompt = image_prompt[:197] + "..."
+    
+    logger.info("Enhanced prompt: %s", image_prompt)
+    return image_prompt

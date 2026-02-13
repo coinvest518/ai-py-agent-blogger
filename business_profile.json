@@ -1,0 +1,60 @@
+{
+  "owner": "Daniel",
+  "primary_site": "https://fwda.site",
+  "buymeacoffee": "https://buymeacoffee.com/streets2entrepreneurs",
+  "shop_page": "https://buymeacoffee.com/streets2entrepreneurs/extras",
+  "linktree": "https://linktr.ee/omniai",
+  "products": [
+    {
+      "title": "How to Make and Sell Digital Products",
+      "price": 0,
+      "currency": "USD",
+      "type": "ebook",
+      "availability": "free"
+    },
+    {
+      "title": "PURCHASE AND SALE AGREEMENT CONTRACT",
+      "price": 4,
+      "currency": "USD",
+      "type": "template",
+      "availability": "paid"
+    },
+    {
+      "title": "\ud83d\udcd8 How to Sue Debt Collectors - Credit Secrets",
+      "price": 125,
+      "currency": "USD",
+      "type": "ebook",
+      "availability": "paid"
+    },
+    {
+      "title": "AI Bootcamp",
+      "price": 350,
+      "currency": "USD",
+      "type": "course",
+      "availability": "paid"
+    },
+    {
+      "title": "Futuristic Digital Wealth Agency Stack Map 150+ Tools",
+      "price": 0,
+      "currency": "USD",
+      "type": "resource",
+      "availability": "free"
+    },
+    {
+      "title": "Daniel 20 supporters Home Membership Posts Gallery Shop Home Membership Posts Gallery Shop Login Follow Share Report Log",
+      "price": 0.0,
+      "currency": "USD",
+      "availability": "paid",
+      "source": "https://buymeacoffee.com/streets2entrepreneurs/extras"
+    },
+    {
+      "title": "Shop 232 sales All Member discount AI Teachers Educators Ai GenAI Educators Course Podcasting Santas pot Credit E book n",
+      "price": 0.0,
+      "currency": "USD",
+      "availability": "paid",
+      "source": "https://buymeacoffee.com/streets2entrepreneurs/extras"
+    }
+  ],
+  "about": "FWDA builds custom AI automation workflows for SMBs (coaches, agencies, consultants, trades, wellness, beauty, fitness, local businesses). We offer consulting, courses, templates, and done-for-you AI funnels.",
+  "contact_cta": "Schedule a free consultation at https://cal.com/bookme-daniel/ai-consultation-smb"
+}

@@ -19,7 +19,6 @@ from typing import TypedDict
 
 from composio import Composio
 from dotenv import load_dotenv
-from langchain_google_genai import GoogleGenerativeAI
 from langsmith import traceable
 from langsmith.integrations.otel import configure
 from langgraph.graph import StateGraph
@@ -27,11 +26,12 @@ from src.agent.linkedin_agent import convert_to_linkedin_post
 from src.agent.instagram_agent import convert_to_instagram_caption
 from src.agent.instagram_comment_agent import generate_instagram_reply
 from src.agent.blog_email_agent import generate_and_send_blog
+from src.agent import telegram_agent
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure LangSmith OpenTelemetry integration for Google models
+# Configure LangSmith OpenTelemetry integration
 configure(project_name=os.getenv("LANGSMITH_PROJECT", "fdwa-multi-agent"))
 
 # Initialize Composio client with env entity_id
@@ -79,6 +79,8 @@ class AgentState(TypedDict):
     comment_status: str
     blog_status: str
     blog_title: str
+    telegram_message: str
+    telegram_status: str
     error: str
 
 
@@ -86,12 +88,23 @@ def _download_image_from_url(image_url: str) -> str:
     """Download image from URL and save locally.
     
     Args:
-        image_url: URL of the image to download.
+        image_url: URL of the image to download (https://) or local file path (file://).
         
     Returns:
         Local file path of downloaded image.
     """
     try:
+        # Handle local file:// URIs (from Hugging Face local generation)
+        if image_url.startswith("file:///"):
+            local_path = image_url.replace("file:///", "").replace("/", chr(92))
+            if os.path.exists(local_path):
+                logger.info("Using local file: %s", local_path)
+                return local_path
+            else:
+                logger.error("Local file not found: %s", local_path)
+                return None
+        
+        # Download from remote URL
         response = requests.get(image_url, timeout=30)
         response.raise_for_status()
         
@@ -122,52 +135,30 @@ def _enhance_prompt_for_image(text: str) -> str:
         text: Social media post text with hashtags and formatting.
 
     Returns:
-        Clean, descriptive image prompt optimized for Google Gemini AI image generation.
+        Clean, descriptive image prompt optimized for Hugging Face Stable Diffusion.
     """
     logger.info("Enhancing image prompt...")
 
-    llm = GoogleGenerativeAI(
-        model="gemini-2.5-flash-lite",
-        temperature=0.7,
-        google_api_key=os.getenv("GOOGLE_AI_API_KEY"),
+    # Template-based prompt enhancement (no AI needed)
+    # Clean up text: remove hashtags, @ mentions, URLs, special chars
+    clean_text = re.sub(r"#\w+", "", text)  # Remove hashtags
+    clean_text = re.sub(r"@\w+", "", clean_text)  # Remove mentions
+    clean_text = re.sub(r"https?://\S+", "", clean_text)  # Remove URLs
+    clean_text = re.sub(r"[*#@\[\]{}()\'\"\\]", "", clean_text)  # Remove special chars
+    clean_text = re.sub(r"\s+", " ", clean_text).strip()  # Normalize whitespace
+    
+    # Truncate to reasonable length (150 chars)
+    clean_text = clean_text[:150]
+    
+    # Create structured prompt for Stable Diffusion
+    visual_prompt = (
+        f"Professional modern business image: {clean_text}. "
+        "Futuristic neon cyberpunk style, clean business graphics, urban modern energy, "
+        "digital holograms, AI automation scenes, minimalist Gen Z design, high quality, 4k"
     )
-
-    prompt = f"""
-Convert this social media post into a visual art prompt for AI image generation.
-
-SOCIAL MEDIA TEXT:
-{text}
-
-REQUIREMENTS:
-- Futuristic neon cyberpunk style
-- Credit report visuals or clean business graphics
-- Urban + modern energy
-- African-American models when applicable
-- Digital holograms and AI automation scenes
-- Minimalist typography with Gen Z design flair
-- Maximum 200 characters
-
-OUTPUT:
-Return ONLY the clean image prompt. No explanations.
-"""
-
-    try:
-        response = llm.invoke(prompt)
-        visual_prompt = response.strip()
-
-        # Additional cleanup
-        visual_prompt = re.sub(r"[*#@\[\]{}()\'\"\\]", "", visual_prompt)
-        visual_prompt = re.sub(r"\s+", " ", visual_prompt).strip()
-
-        logger.info("Enhanced prompt: %s", visual_prompt)
-        return visual_prompt
-
-    except Exception as e:
-        logger.exception("Error enhancing prompt: %s", e)
-        # Fallback: basic cleanup
-        fallback = re.sub(r"[*#@\[\]{}()\'\"\\]", "", text)
-        fallback = re.sub(r"\s+", " ", fallback).strip()
-        return f"Professional business image: {fallback[:150]}"
+    
+    logger.info("Generated visual prompt: %s", visual_prompt[:100])
+    return visual_prompt
 
 
 def research_trends_node(state: AgentState) -> dict:
@@ -273,7 +264,7 @@ def research_trends_node(state: AgentState) -> dict:
 
 
 def generate_tweet_node(state: AgentState) -> dict:
-    """Generate strategic FDWA-branded tweet using Google AI.
+    """Generate strategic FDWA-branded tweet using template-based formatting (no AI needed).
 
     Args:
         state: Current agent state with trend_data.
@@ -290,65 +281,46 @@ def generate_tweet_node(state: AgentState) -> dict:
             trend_data = ""
             break
 
-    # Initialize the Google AI model
-    llm = GoogleGenerativeAI(
-        model="gemini-2.5-flash-lite",
-        temperature=0.8,
-        google_api_key=os.getenv("GOOGLE_AI_API_KEY")
-    )
-
-    # Content generation prompt
-    prompt = f"""
-Create a Twitter post (max 240 characters) based on this trending data:
-
-{trend_data[:1000]}
-
-Topic: Credit repair, AI automation, digital products, or financial empowerment
-
-Format:
-- Hook (1 line problem/question)
-- Quick value/tip
-- CTA with link: https://fdwa.site
-- 2 emojis
-- 3-5 hashtags
-
-Must be under 240 characters total. No markdown. Plain text only.
-"""
-
-    try:
-        response = llm.invoke(prompt)
-        generated_text = response.strip()
-
-        # Remove markdown and problematic characters
-        generated_text = re.sub(r'\*\*', '', generated_text)
-        generated_text = re.sub(r'\*', '', generated_text)
-        generated_text = re.sub(r'#{1,6}\s', '', generated_text)
-        generated_text = generated_text.encode("ascii", "ignore").decode("ascii")
+    # Template-based tweet generation (fast, no API calls)
+    if trend_data:
+        # Extract key topic from trend data
+        summary = trend_data.strip()[:150]
+        # Clean up for tweet
+        summary = summary.split('\n')[0]  # First line only
         
-        # Ensure under 280 characters
-        if len(generated_text) > 280:
-            generated_text = generated_text[:277] + "..."
+        # Create branded tweet
+        tweet = (
+            f"🚀 {summary}\n\n"
+            f"Get AI automation tools at https://fdwa.site ✨\n\n"
+            f"#YBOT #AIAutomation #CreditRepair #FinancialFreedom"
+        )
+    else:
+        # Fallback when no trend data
+        tweet = (
+            "💡 Transform your business with AI automation and smart credit strategies! "
+            "Start building your financial future today. https://fdwa.site #YBOT #AIAgent"
+        )
+    
+    # Ensure under 280 characters
+    if len(tweet) > 280:
+        tweet = tweet[:277] + "..."
 
-        logger.info("Generated Tweet: %s", generated_text)
-        logger.info("Character count: %d", len(generated_text))
+    logger.info("Generated Tweet: %s", tweet)
+    logger.info("Character count: %d", len(tweet))
 
-        return {"tweet_text": generated_text}
-
-    except Exception as e:
-        logger.exception("Error generating tweet: %s", e)
-        return {"error": str(e)}
+    return {"tweet_text": tweet}
 
 
 def generate_image_node(state: AgentState) -> dict:
-    """Generate an image using Google Gemini via Composio based on the tweet text.
+    """Generate an image using Hugging Face Inference API (FREE alternative to Google Gemini).
 
     Args:
         state: Current agent state with tweet_text.
 
     Returns:
-        Dictionary with image_url or error.
+        Dictionary with image_path (local file) and image_url (HTTP) or error.
     """
-    logger.info("---GENERATING IMAGE WITH GEMINI---")
+    logger.info("---GENERATING IMAGE WITH HUGGING FACE---")
     tweet_text = state.get("tweet_text", "")
 
     if not tweet_text:
@@ -360,65 +332,54 @@ def generate_image_node(state: AgentState) -> dict:
     logger.info("Enhanced visual prompt: %s", visual_prompt)
     
     try:
-        # Use Gemini image generation via Composio (toolkit_version is invalid parameter)
-        image_response = composio_client.tools.execute(
-            "GEMINI_GENERATE_IMAGE",
-            {
-                "prompt": visual_prompt,
-                "model": "gemini-2.5-flash-image-preview",
-                "temperature": 0.7,
-                "system_instruction": "Generate a professional, modern business image that aligns with AI automation and small business themes. Style should be clean, futuristic, and engaging for social media."
-            }
+        # Import Hugging Face image generator
+        from src.agent.hf_image_gen import generate_image_hf, save_image_locally, upload_to_imgbb
+        
+        # Generate image with Hugging Face (FREE)
+        result = generate_image_hf(
+            prompt=visual_prompt,
+            model="flux-schnell",  # FLUX.1-schnell - fast and high quality
+            width=512,
+            height=512,
         )
         
-        logger.info("Gemini image response: %s", image_response)
-        logger.info("Gemini response data structure: %s", image_response.get("data", {}))
-        
-        if image_response.get("successful", False):
-            # Extract S3 URL from Gemini MCP content array (using working test logic)
-            image_data = image_response.get("data", {})
-            content_array = image_data.get("content", [])
+        if result.get("success"):
+            # Save image locally
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"hf_generated_{timestamp}.png"
             
-            image_url = None
+            image_path = save_image_locally(result["image_bytes"], filename)
+            logger.info("Generated image saved to: %s", image_path)
             
-            # Look for image in content array (matching test file logic)
-            for content_block in content_array:
-                if isinstance(content_block, dict):
-                    if content_block.get("type") == "image":
-                        if "source" in content_block and "media_type" in content_block["source"]:
-                            # Direct S3 URL in source
-                            source_data = content_block["source"].get("data", "")
-                            if source_data.startswith("https://"):
-                                image_url = source_data
-                                break
-                    elif content_block.get("type") == "text":
-                        # Check if text content contains S3 URL
-                        text_content = content_block.get("text", "")
-                        if text_content.startswith("https://") and "r2.dev" in text_content:
-                            image_url = text_content
-                            break
-                    elif "image_url" in content_block:
-                        # Alternative format
-                        image_url = content_block["image_url"]
-                        break
+            # Upload to imgbb for public HTTP URL (needed for Instagram/Blog/Email)
+            logger.info("Uploading to imgbb for public URL...")
+            upload_result = upload_to_imgbb(result["image_bytes"])
             
-            # Fallback: try direct extraction from data
-            if not image_url:
-                image_url = image_data.get("image_url") or image_data.get("url") or image_data.get("s3_url")
-            
-            if image_url:
-                logger.info("Generated image URL: %s", image_url)
-                return {"image_url": image_url}
+            if upload_result.get("success"):
+                http_url = upload_result["url"]
+                logger.info("Image uploaded to imgbb: %s", http_url)
+                
+                return {
+                    "image_path": image_path,
+                    "image_url": http_url  # HTTP URL works everywhere
+                }
             else:
-                logger.error("No image URL found in Gemini response. Data structure: %s", image_data)
-                return {"error": "No image URL returned from Gemini"}
+                logger.warning("Upload to imgbb failed: %s", upload_result.get("error"))
+                logger.info("Falling back to local file for Twitter/Facebook")
+                
+                # Return local file path - still works for Twitter/Facebook
+                return {
+                    "image_path": image_path,
+                    "image_url": f"file:///{image_path.replace(chr(92), '/')}"  # Local fallback
+                }
         else:
-            error_msg = image_response.get("error", "Unknown Gemini error")
-            logger.error("Gemini image generation failed: %s", error_msg)
-            return {"error": f"Gemini generation failed: {error_msg}"}
+            error_msg = result.get("error", "Unknown HF error")
+            logger.error("Hugging Face image generation failed: %s", error_msg)
+            return {"error": f"HF generation failed: {error_msg}"}
             
     except Exception as e:
-        logger.exception("Error generating image with Gemini: %s", e)
+        logger.exception("Error generating image with Hugging Face: %s", e)
         return {"error": f"Image generation error: {e!s}"}
 
 
@@ -622,6 +583,137 @@ def generate_blog_email_node(state: AgentState) -> dict:
     except Exception as e:
         logger.exception("Blog email node failed: %s", e)
         return {"blog_status": f"Failed: {str(e)}", "blog_title": ""}
+
+
+def convert_to_telegram_crypto_post(trend_data: str, tweet_text: str) -> str:
+    """Parse trend data and convert to Telegram crypto market update.
+    
+    This sub-agent extracts crypto/token data from the research and structures
+    it into a Telegram-ready format with trends, top tokens, and market data.
+    No additional SERP/Tavily calls - reuses existing research.
+    No AI needed - uses template-based parsing.
+    
+    Args:
+        trend_data: Raw research data from SERPAPI/Tavily
+        tweet_text: Generated tweet for context
+        
+    Returns:
+        Formatted Telegram message with crypto data
+    """
+    logger.info("---CONVERTING TO TELEGRAM CRYPTO POST---")
+    
+    # Template-based crypto post (no AI needed)
+    # Extract potential crypto tokens from trend data
+    crypto_keywords = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "LINK", "UNI", 
+                       "AAVE", "CRV", "bitcoin", "ethereum", "defi", "crypto", "token"]
+    
+    found_tokens = []
+    trend_lower = trend_data.lower()
+    
+    for keyword in crypto_keywords[:10]:  # Check first 10
+        if keyword.lower() in trend_lower:
+            found_tokens.append(keyword.upper())
+    
+    # Remove duplicates and limit to 5
+    found_tokens = list(set(found_tokens))[:5]
+    
+    # Build structured Telegram post
+    if found_tokens:
+        tokens_list = " | ".join(found_tokens)
+        telegram_post = f"""🚀 DeFi Market Update
+
+📊 Trending: {tokens_list}
+
+📈 {tweet_text.split('#')[0].strip()}
+
+💡 Stay ahead with real-time DeFi insights and AI-powered automation.
+
+#DeFi #Crypto #YieldBot #FinancialFreedom"""
+    else:
+        # Fallback when no crypto tokens found
+        telegram_post = f"""🚀 DeFi Market Update
+
+{tweet_text}
+
+📊 Stay informed about the latest trends in DeFi and crypto.
+
+💡 AI-powered insights for smarter financial decisions.
+
+#DeFi #Crypto #YieldBot #FinancialFreedom"""
+    
+    # Ensure it's not too long for Telegram (aim for 500-800 chars)
+    if len(telegram_post) > 1000:
+        telegram_post = telegram_post[:997] + "..."
+    
+    logger.info("Telegram post generated: %d chars", len(telegram_post))
+    return telegram_post
+
+
+def post_telegram_node(state: AgentState) -> dict:
+    """Post crypto market update to Telegram group.
+    
+    Args:
+        state: Current agent state with trend_data and tweet_text.
+        
+    Returns:
+        Dictionary with telegram_status and telegram_message.
+    """
+    logger.info("---POSTING TO TELEGRAM---")
+    
+    trend_data = state.get("trend_data", "")
+    tweet_text = state.get("tweet_text", "")
+    image_url = state.get("image_url", "")
+    
+    if not tweet_text:
+        logger.warning("No tweet text available, skipping Telegram post")
+        return {
+            "telegram_status": "Skipped: No content",
+            "telegram_message": ""
+        }
+    
+    try:
+        # Convert to Telegram crypto format (sub-agent processes data)
+        telegram_message = convert_to_telegram_crypto_post(trend_data, tweet_text)
+        logger.info("Telegram message formatted: %s", telegram_message[:100])
+        
+        # Send to Telegram group
+        if image_url:
+            # Try sending with photo
+            result = telegram_agent.send_photo(
+                chat_id=telegram_agent.TELEGRAM_GROUP_USERNAME or telegram_agent.TELEGRAM_GROUP_CHAT_ID,
+                photo=image_url,
+                caption=telegram_message
+            )
+            if not result.get('success'):
+                # Fallback to text-only if image fails
+                logger.warning("Image send failed, sending text only")
+                result = telegram_agent.send_to_group(telegram_message)
+        else:
+            # Send text only
+            result = telegram_agent.send_to_group(telegram_message)
+        
+        if result.get('success'):
+            msg_data = result.get('data', {}).get('result', {})
+            message_id = msg_data.get('message_id', 'N/A')
+            logger.info("✅ Telegram post successful: message_id=%s", message_id)
+            return {
+                "telegram_status": f"Posted: message_id={message_id}",
+                "telegram_message": telegram_message
+            }
+        else:
+            error_msg = result.get('error', 'Unknown error')
+            logger.error("❌ Telegram post failed: %s", error_msg)
+            return {
+                "telegram_status": f"Failed: {error_msg}",
+                "telegram_message": telegram_message
+            }
+            
+    except Exception as e:
+        logger.exception("Telegram post error: %s", e)
+        return {
+            "telegram_status": f"Error: {str(e)}",
+            "telegram_message": ""
+        }
 
 
 def post_instagram_node(state: AgentState) -> dict:
@@ -886,15 +978,30 @@ def post_social_media_node(state: AgentState) -> dict:
             "published": True,
         }
 
-        # Add photo by downloading from URL first
-        if image_url and image_url.strip() and image_url.startswith("https://"):
-            local_image_path = _download_image_from_url(image_url)
-            if local_image_path:
-                facebook_params["photo"] = local_image_path
-                logger.info("Facebook photo attached using local path: %s", local_image_path)
-                facebook_tool = "FACEBOOK_CREATE_PHOTO_POST"
+        # Add photo by downloading from URL or using local path
+        if image_url and image_url.strip():
+            if image_url.startswith("file:///"):
+                # Local file from Hugging Face
+                local_image_path = image_url.replace("file:///", "").replace("/", chr(92))
+                if os.path.exists(local_image_path):
+                    facebook_params["photo"] = local_image_path
+                    logger.info("Facebook photo attached using HF local path: %s", local_image_path)
+                    facebook_tool = "FACEBOOK_CREATE_PHOTO_POST"
+                else:
+                    logger.error("Local image file not found: %s", local_image_path)
+                    facebook_tool = "FACEBOOK_CREATE_POST"
+            elif image_url.startswith("https://"):
+                # Remote URL (legacy Gemini)
+                local_image_path = _download_image_from_url(image_url)
+                if local_image_path:
+                    facebook_params["photo"] = local_image_path
+                    logger.info("Facebook photo attached using downloaded path: %s", local_image_path)
+                    facebook_tool = "FACEBOOK_CREATE_PHOTO_POST"
+                else:
+                    logger.error("Failed to download image from URL: %s", image_url)
+                    facebook_tool = "FACEBOOK_CREATE_POST"
             else:
-                logger.error("Failed to download image from URL: %s", image_url)
+                logger.info("Unknown image URL format, posting text-only to Facebook")
                 facebook_tool = "FACEBOOK_CREATE_POST"
         else:
             logger.info("No valid image URL available, posting text-only to Facebook")
@@ -947,6 +1054,7 @@ workflow.add_node("generate_image", generate_image_node)
 workflow.add_node("post_social_media", post_social_media_node)
 workflow.add_node("post_linkedin", post_linkedin_node)
 workflow.add_node("post_instagram", post_instagram_node)
+workflow.add_node("post_telegram", post_telegram_node)
 workflow.add_node("monitor_instagram_comments", monitor_instagram_comments_node)
 workflow.add_node("reply_to_twitter", reply_to_twitter_node)
 workflow.add_node("comment_on_facebook", comment_on_facebook_node)
@@ -959,7 +1067,8 @@ workflow.set_entry_point("research_trends")
 workflow.add_edge("research_trends", "generate_content")
 workflow.add_edge("generate_content", "generate_image")
 workflow.add_edge("generate_image", "post_social_media")
-workflow.add_edge("post_social_media", "post_instagram")
+workflow.add_edge("post_social_media", "post_telegram")
+workflow.add_edge("post_telegram", "post_instagram")
 # workflow.add_edge("post_linkedin", "post_instagram")  # LinkedIn bypassed
 workflow.add_edge("post_instagram", "monitor_instagram_comments")
 workflow.add_edge("monitor_instagram_comments", "reply_to_twitter")
@@ -990,6 +1099,7 @@ if __name__ == "__main__":
         logger.info("LinkedIn: %s", final_state.get("linkedin_status", "N/A"))
         logger.info("Instagram: %s", final_state.get("instagram_status", "N/A"))
         logger.info("Instagram Comments: %s", final_state.get("instagram_comment_status", "N/A"))
+        logger.info("Telegram: %s", final_state.get("telegram_status", "N/A"))
         logger.info("Twitter Reply: %s", final_state.get("twitter_reply_status", "N/A"))
         logger.info("Facebook Comment: %s", final_state.get("comment_status", "N/A"))
         logger.info("Blog Email: %s", final_state.get("blog_status", "N/A"))

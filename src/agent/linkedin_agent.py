@@ -4,14 +4,11 @@ Converts tweet text into professional LinkedIn post format.
 """
 
 import logging
-from langchain_google_genai import GoogleGenerativeAI
-from langsmith import traceable
 import os
 
 logger = logging.getLogger(__name__)
 
 
-@traceable(name="convert_to_linkedin_post")
 def convert_to_linkedin_post(tweet_text: str) -> str:
     """Convert tweet text to LinkedIn post format.
     
@@ -23,51 +20,27 @@ def convert_to_linkedin_post(tweet_text: str) -> str:
     """
     logger.info("Converting tweet to LinkedIn post format")
     
-    llm = GoogleGenerativeAI(
-        model="gemini-2.0-flash-exp",
-        temperature=0.7,
-        google_api_key=os.getenv("GOOGLE_AI_API_KEY")
-    )
+    # Template-based conversion (no Google AI needed)
+    linkedin_post = f"""🚀 AI Automation Insight
+
+{tweet_text}
+
+At FWDA AI Automation Agency, we build custom AI automation workflows for SMBs - coaches, agencies, consultants, trades, wellness, beauty, fitness, and local businesses.
+
+📊 Benefits:
+• Save 20+ hours per week
+• Increase lead generation by 3x
+• Reduce operational costs
+• Scale without adding headcount
+
+💡 Our solutions: AI Agents, Workflow Automation, System Integration
+
+Ready to transform your business with AI?
+
+👉 Visit: https://fwda.site
+📅 Book consultation: https://cal.com/bookme-daniel/ai-consultation-smb
+
+#AIAutomation #SmallBusiness #BusinessGrowth #Productivity #AIAgents #WorkflowAutomation #DigitalTransformation #ServiceBusiness"""
     
-    prompt = f"""You are the Marketing Intelligence AI for FWDA AI Automation Agency.
-
-Short Post: {tweet_text}
-
-Create a LONG-FORM LINKEDIN POST (300-350 words) that expands on this message.
-
-BRAND: Futurist Digital Wealth agency builds custom AI automation workflows for SMBs (coaches, agencies, consultants, trades, wellness, beauty, fitness, local businesses).
-
-REQUIREMENTS:
-- Tone: Thought-leadership, future-focused, plain English
-- Structure:
-  * Hook with trend/statistic
-  * Problem SMBs face
-  * How FWDA solves it (AI Agents, Workflow Automation, System Integration)
-  * Tangible benefits (time, leads, costs, capacity)
-  * Direct CTA
-- Include 3 emojis total
-- Include 5-8 hashtags: #AIAutomation #SmallBusiness #BusinessGrowth #Productivity #AIAgents #WorkflowAutomation #DigitalTransformation #ServiceBusiness
-- Include 2 links:
-  * https://fwda.site
-  * https://cal.com/bookme-daniel/ai-consultation-smb
-- No generic clichés
-- Benefits must be measurable
-- Active voice
-- Clarity over complexity
-
-Return ONLY the LinkedIn post text. No explanations."""
-
-    try:
-        response = llm.invoke(prompt)
-        linkedin_post = response.strip()
-        
-        # Remove triple quotes and dashes if present
-        linkedin_post = linkedin_post.replace('"""', '').replace("'''", "").replace('---', '').strip()
-        
-        logger.info("LinkedIn post created: %d characters", len(linkedin_post))
-        return linkedin_post
-        
-    except Exception as e:
-        logger.exception("Failed to convert to LinkedIn post: %s", e)
-        # Fallback: return original tweet
-        return tweet_text
+    logger.info("LinkedIn post created: %d characters", len(linkedin_post))
+    return linkedin_post
