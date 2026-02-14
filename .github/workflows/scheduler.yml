@@ -20,6 +20,7 @@ jobs:
     name: Execute FDWA Agent
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: .env
     
     steps:
       - name: Checkout code
@@ -217,6 +218,7 @@ jobs:
   run-blog:
     name: Generate Weekly Blog
     runs-on: ubuntu-latest
+    environment: .env
     if: github.event.schedule == '0 9 * * 1' || github.event_name == 'workflow_dispatch'
     needs: run-agent
     

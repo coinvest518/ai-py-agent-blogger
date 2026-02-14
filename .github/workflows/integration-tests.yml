@@ -16,6 +16,7 @@ concurrency:
 jobs:
   integration-tests:
     name: Integration Tests
+    environment: .env
     strategy:
       matrix:
         os: [ubuntu-latest]
