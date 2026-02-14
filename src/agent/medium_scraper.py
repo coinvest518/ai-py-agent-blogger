@@ -204,21 +204,21 @@ if __name__ == "__main__":
     """Run Medium scraper when executed directly"""
     logging.basicConfig(level=logging.INFO)
     
-    print("🔍 Scraping FDWA Medium blog (@coinvestinc)...")
+    logger.info("🔍 Scraping FDWA Medium blog (@coinvestinc)...")
     posts = scrape_medium_profile(username="coinvestinc", max_posts=10)
     
     if posts:
-        print(f"✅ Scraped {len(posts)} posts")
+        logger.info("✅ Scraped %d posts", len(posts))
         
         # Save to JSON
         save_medium_samples(posts)
-        print("💾 Saved to medium_writing_samples.json")
+        logger.info("💾 Saved to medium_writing_samples.json")
         
         # Analyze style
         analysis = analyze_writing_style(posts)
-        print("\n📊 Writing Style Analysis:")
-        print(f"   Average word count: {analysis.get('avg_word_count', 0)}")
-        print(f"   Most common topics: {analysis.get('most_common_topics', [])}")
+        logger.info("📊 Writing Style Analysis:")
+        logger.info("Average word count: %s", analysis.get('avg_word_count', 0))
+        logger.info("Most common topics: %s", analysis.get('most_common_topics', []))
     else:
-        print("❌ Failed to scrape Medium posts")
-        print("💡 Note: Medium uses JavaScript rendering. Consider using Selenium or Playwright for better scraping.")
+        logger.error("❌ Failed to scrape Medium posts")
+        logger.info("💡 Note: Medium uses JavaScript rendering. Consider using Selenium or Playwright for better scraping.")

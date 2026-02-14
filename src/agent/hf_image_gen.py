@@ -241,8 +241,8 @@ def upload_to_imgur(image_bytes: bytes, timeout: int = 30) -> Dict[str, Any]:
 # Quick test function
 def test_huggingface_image_gen():
     """Test Hugging Face image generation and upload."""
-    print("Testing Hugging Face Image Generation + Upload...")
-    print("=" * 60)
+    logger.info("Testing Hugging Face Image Generation + Upload...")
+    logger.info("%s", "=" * 60)
     
     test_prompt = "Modern professional business office with AI technology, futuristic clean design, professional lighting"
     
@@ -254,30 +254,29 @@ def test_huggingface_image_gen():
     )
     
     if result["success"]:
-        print(f"✅ Image generated successfully!")
-        print(f"   Model: {result['model']}")
-        print(f"   Size: {len(result['image_bytes'])} bytes")
+        logger.info("✅ Image generated successfully!")
+        logger.info("Model: %s", result['model'])
+        logger.info("Size: %d bytes", len(result['image_bytes']))
         
         # Save locally
         filepath = save_image_locally(result["image_bytes"], "test_hf_gen.png")
-        print(f"   Saved to: {filepath}")
+        logger.info("Saved to: %s", filepath)
         
         # Try uploading to imgur (no API key needed)
-        print("\nUploading to imgur (anonymous)...")
+        logger.info("Uploading to imgur (anonymous)...")
         upload_result = upload_to_imgur(result["image_bytes"])
         
         if upload_result["success"]:
-            print(f"✅ Uploaded to imgur: {upload_result['url']}")
-            print(f"   This URL works for Instagram/Blog/Email!")
+            logger.info("Uploaded to imgur: %s", upload_result['url'])
+            logger.info("This URL works for Instagram/Blog/Email!")
             return upload_result['url']
         else:
-            print(f"⚠️ Upload failed: {upload_result['error']}")
-            print(f"   Local file still available: {filepath}")
+            logger.warning("Upload failed: %s", upload_result['error'])
+            logger.info("Local file still available: %s", filepath)
             return filepath
     else:
-        print(f"❌ Generation failed: {result['error']}")
+        logger.error("Generation failed: %s", result['error'])
         return None
-
 
 if __name__ == "__main__":
     from dotenv import load_dotenv

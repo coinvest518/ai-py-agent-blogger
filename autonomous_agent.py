@@ -1,4 +1,4 @@
-"""FDWA Autonomous Twitter Agent - Continuous Scheduler
+"""FDWA Autonomous Twitter Agent - Continuous Scheduler.
 
 This script runs the FDWA agent continuously at specified intervals.
 Set it and forget it - the agent will research trends and post tweets automatically.
@@ -22,7 +22,7 @@ logging.basicConfig(
 )
 
 def run_fdwa_agent():
-    """Execute the FDWA agent once"""
+    """Execute the FDWA agent once."""
     try:
         logging.info("🤖 Starting FDWA Agent execution...")
         
@@ -44,7 +44,7 @@ def run_fdwa_agent():
         logging.error(f"❌ Critical error: {e}")
 
 def start_autonomous_agent():
-    """Start the continuous autonomous agent"""
+    """Start the continuous autonomous agent."""
     # Schedule options - uncomment the one you want:
     
     # Every 2 hours (recommended for active engagement)

@@ -330,18 +330,18 @@ if __name__ == "__main__":
     """Setup tracking sheets when run directly"""
     logging.basicConfig(level=logging.INFO)
     
-    print("📊 Setting up Google Sheets link performance tracker...")
+    logger.info("📊 Setting up Google Sheets link performance tracker...")
     tracker = LinkPerformanceTracker()
     
     if tracker.setup_tracking_sheets():
-        print("✅ All tracking sheets initialized!")
-        print("\nTracking sheets created:")
-        print("  - Link Performance: Tracks affiliate link and booking link clicks")
-        print("  - Product Performance: Tracks FDWA product mentions and sales")
-        print("  - Blog Performance: Tracks overall blog metrics")
+        logger.info("✅ All tracking sheets initialized!")
+        logger.info("Tracking sheets created:")
+        logger.info("  - Link Performance: Tracks affiliate link and booking link clicks")
+        logger.info("  - Product Performance: Tracks FDWA product mentions and sales")
+        logger.info("  - Blog Performance: Tracks overall blog metrics")
         
         # Test tracking
-        print("\n🧪 Testing tracking functions...")
+        logger.info("🧪 Testing tracking functions...")
         tracker.track_link_click("Test Blog Post", "affiliate", "ElevenLabs", "https://try.elevenlabs.io/fdwa")
         tracker.track_product_mention("AI Vibe Coding Bootcamp", "Test Blog Post", "AI/Automation", "$199")
         tracker.track_blog_performance({
@@ -352,6 +352,6 @@ if __name__ == "__main__":
             "products_mentioned": ["AI Vibe Coding Bootcamp"],
             "consultation_type": "ai"
         })
-        print("✅ Test tracking completed!")
+        logger.info("✅ Test tracking completed!")
     else:
-        print("❌ Failed to setup tracking sheets")
+        logger.error("❌ Failed to setup tracking sheets")

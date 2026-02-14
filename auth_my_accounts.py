@@ -11,6 +11,10 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+import logging
+logger = logging.getLogger(__name__)
+
+
 def authenticate_my_accounts() -> None:
     """Authenticate your personal accounts."""
     api_key = os.getenv("COMPOSIO_API_KEY")
@@ -24,12 +28,12 @@ def authenticate_my_accounts() -> None:
     user_id = input("Enter your email address: ").strip()
     
     # Choose which tools to connect
-    print("\nAvailable tools to connect:")
-    print("1. Gmail")
-    print("2. GitHub") 
-    print("3. Slack")
-    print("4. Google Calendar")
-    print("5. All of the above")
+    logger.info("Available tools to connect:")
+    logger.info("1. Gmail")
+    logger.info("2. GitHub")
+    logger.info("3. Slack")
+    logger.info("4. Google Calendar")
+    logger.info("5. All of the above")
     
     choice = input("\nEnter your choice (1-5): ").strip()
     
@@ -43,33 +47,33 @@ def authenticate_my_accounts() -> None:
     
     toolkits = toolkit_map.get(choice, ["gmail"])
     
-    print(f"\nConnecting toolkits: {', '.join(toolkits)}")
-    print("=" * 50)
+    logger.info("Connecting toolkits: %s", ", ".join(toolkits))
+    logger.info("%s", "=" * 50)
     
     for toolkit in toolkits:
         try:
-            print(f"\nConnecting {toolkit.upper()}...")
+            logger.info("Connecting %s...", toolkit.upper())
             
             # Create connection
             connection_request = composio.toolkits.authorize(
                 user_id=user_id, toolkit=toolkit
             )
             
-            print("\nOPEN THIS URL IN YOUR BROWSER:")
-            print(f"{connection_request.redirect_url}")
-            print("\nAfter authorizing, come back here...")
+            logger.info("OPEN THIS URL IN YOUR BROWSER:")
+            logger.info("%s", connection_request.redirect_url)
+            logger.info("After authorizing, come back here...")
             
             input("Press Enter after completing authorization...")
             
             # Wait for connection
             connection_request.wait_for_connection()
-            print(f"SUCCESS: {toolkit.upper()} connected!")
+            logger.info("SUCCESS: %s connected!", toolkit.upper())
             
         except Exception as e:
-            print(f"ERROR connecting {toolkit}: {e}")
+            logger.exception("ERROR connecting %s: %s", toolkit, e)
     
-    print(f"\nDone! Your accounts are connected for user: {user_id}")
-    print("You can now use these tools in your agent.")
+    logger.info("Done! Your accounts are connected for user: %s", user_id)
+    logger.info("You can now use these tools in your agent.")
 
 if __name__ == "__main__":
     authenticate_my_accounts()
