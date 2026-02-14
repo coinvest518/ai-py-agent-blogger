@@ -11,9 +11,11 @@ import logging
 import os
 import random
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
+import time
 
 import requests
 from composio import Composio
@@ -156,140 +158,6 @@ def _record_sent_post(title: str, content: str, topic: str, snippet: str | None 
 
     _save_sent_posts(sent_data)
 
-# Blog HTML Templates
-TEMPLATE_AI_BUSINESS = """<h1>{title}</h1>
-
-<p>{intro_paragraph}</p>
-
-<h2>Why Strategic Consulting Transforms Business Operations</h2>
-<p>Smart entrepreneurs are leveraging expert consulting to:</p>
-<ul>
-  <li>Eliminate inefficient processes</li>
-  <li>Scale operations without unnecessary costs</li>
-  <li>Improve customer experience through better strategies</li>
-  <li>Generate more revenue with optimized approaches</li>
-</ul>
-
-<h2>Essential Tools for Business Growth</h2>
-<p>Here are the game-changing tools successful businesses are using:</p>
-<ul>
-  <li><strong>Website & Hosting:</strong> <a href="{affiliate_hostinger}" target="_blank">Hostinger</a> - Professional hosting that scales with your business</li>
-  <li><strong>Business Development:</strong> <a href="{affiliate_lovable}" target="_blank">Lovable</a> - Build solutions without coding</li>
-  <li><strong>Business Communication:</strong> <a href="{affiliate_openphone}" target="_blank">OpenPhone</a> - Professional phone system</li>
-  <li><strong>Content Creation:</strong> <a href="{affiliate_veed}" target="_blank">Veed</a> - AI video editing made simple</li>
-  <li><strong>Voice Solutions:</strong> <a href="{affiliate_elevenlabs}" target="_blank">ElevenLabs</a> - Professional AI voice generation</li>
-</ul>
-
-<h2>{main_content_header}</h2>
-<p>{main_content}</p>
-
-<h2>Start Your Business Transformation Today</h2>
-<p>The businesses that adopt strategic consulting now will dominate their markets tomorrow. Don't wait - your competitors are already getting ahead.</p>
-
-<p><strong>Ready to scale your business?</strong> Visit <a href="https://fdwa.site" target="_blank">FDWA</a> for expert AI consulting and implementation.</p>
-
-<p><em>Transform your business operations, increase efficiency, and unlock new revenue streams with proven strategies.</em></p>
-
-Labels: business, consulting, growth, entrepreneurship, scaling"""
-
-TEMPLATE_MARKETING = """<h1>{title}</h1>
-
-<p>{intro_paragraph}</p>
-
-<h2>The Strategic Marketing Revolution</h2>
-<p>Modern businesses are winning with smart strategic approaches:</p>
-<ul>
-  <li>Automated customer acquisition systems</li>
-  <li>Data-driven content creation workflows</li>
-  <li>Analytics-based decision making</li>
-  <li>Scalable marketing automation</li>
-</ul>
-
-<h2>Must-Have Tools for Business Growth</h2>
-<p>Build your business stack with these proven tools:</p>
-<ul>
-  <li><strong>Chatbot Automation:</strong> <a href="{affiliate_manychat}" target="_blank">ManyChat</a> - Engage customers 24/7</li>
-  <li><strong>Workflow Automation:</strong> <a href="{affiliate_n8n}" target="_blank">n8n</a> - Connect all your business tools</li>
-  <li><strong>Web Hosting:</strong> <a href="{affiliate_hostinger}" target="_blank">Hostinger</a> - Fast, reliable hosting</li>
-  <li><strong>Video Marketing:</strong> <a href="{affiliate_veed}" target="_blank">Veed</a> - Create engaging video content</li>
-  <li><strong>Data Collection:</strong> <a href="{affiliate_brightdata}" target="_blank">BrightData</a> - Market research and insights</li>
-</ul>
-
-<h2>{main_content_header}</h2>
-<p>{main_content}</p>
-
-<h2>Scale Your Business Impact</h2>
-<p>Stop competing on price and start competing on value. Smart strategies let you deliver personalized experiences at scale.</p>
-
-<p>Get professional business strategy and implementation at <a href="https://fdwa.site" target="_blank">FDWA</a>.</p>
-
-Labels: marketing, strategy, growth, business, consulting"""
-
-TEMPLATE_FINANCIAL = """<h1>{title}</h1>
-
-<p>{intro_paragraph}</p>
-
-<h2>Building Financial Success in Business</h2>
-<p>Smart entrepreneurs are diversifying with:</p>
-<ul>
-  <li>Strategic financial planning</li>
-  <li>Automated investment strategies</li>
-  <li>Revenue stream optimization</li>
-  <li>Technology-driven business models</li>
-</ul>
-
-<h2>Financial Tools for Modern Entrepreneurs</h2>
-<p>Maximize your earning potential with these platforms:</p>
-<ul>
-  <li><strong>Financial Management:</strong> <a href="{affiliate_ava}" target="_blank">Ava</a> - Smart money management</li>
-  <li><strong>Digital Products:</strong> <a href="{affiliate_theleap}" target="_blank">The Leap</a> - Create and sell digital products</li>
-  <li><strong>E-commerce:</strong> <a href="{affiliate_amazon}" target="_blank">Amazon</a> - Everything for your business</li>
-  <li><strong>Business Infrastructure:</strong> <a href="{affiliate_hostinger}" target="_blank">Hostinger</a> - Professional web presence</li>
-</ul>
-
-<h2>{main_content_header}</h2>
-<p>{main_content}</p>
-
-<h2>Your Financial Future Starts Now</h2>
-<p>The wealth gap is widening between those who embrace strategy and those who don't. Which side will you be on?</p>
-
-<p>Learn advanced financial strategies at <a href="https://fdwa.site" target="_blank">FDWA</a>.</p>
-
-Labels: finance, strategy, wealth, business, consulting"""
-
-TEMPLATE_GENERAL = """<h1>{title}</h1>
-
-<p>{intro_paragraph}</p>
-
-<h2>The Productivity Revolution</h2>
-<p>High-performing entrepreneurs focus on:</p>
-<ul>
-  <li>Automating routine business tasks</li>
-  <li>Building scalable systems and processes</li>
-  <li>Leveraging technology for competitive advantage</li>
-  <li>Creating multiple revenue streams</li>
-</ul>
-
-<h2>Essential Business Tools</h2>
-<p>Build your business infrastructure with these tools:</p>
-<ul>
-  <li><strong>Web Presence:</strong> <a href="{affiliate_hostinger}" target="_blank">Hostinger</a> - Professional hosting and domains</li>
-  <li><strong>App Development:</strong> <a href="{affiliate_lovable}" target="_blank">Lovable</a> - No-code app creation</li>
-  <li><strong>Communication:</strong> <a href="{affiliate_openphone}" target="_blank">OpenPhone</a> - Business phone system</li>
-  <li><strong>Content Creation:</strong> <a href="{affiliate_veed}" target="_blank">Veed</a> - Professional video editing</li>
-  <li><strong>Business Supplies:</strong> <a href="{affiliate_amazon}" target="_blank">Amazon</a> - Everything you need</li>
-</ul>
-
-<h2>{main_content_header}</h2>
-<p>{main_content}</p>
-
-<h2>Take Action Today</h2>
-<p>Success in business comes from taking consistent action with the right tools and strategies. Start building your empire today.</p>
-
-<p>Get expert business consulting and strategy at <a href="https://fdwa.site" target="_blank">FDWA</a>.</p>
-
-Labels: business, productivity, entrepreneurship, tools, fdwa, success"""
-
 # Affiliate links
 AFFILIATE_LINKS = {
     "affiliate_hostinger": "https://hostinger.com/horizons?REFERRALCODE=VMKMILDHI76M",
@@ -306,20 +174,6 @@ AFFILIATE_LINKS = {
     "affiliate_amazon": "https://amzn.to/4lICjtS",
     "affiliate_bolt": "https://get.business.bolt.eu/lx55rhexokw9"
 }
-
-
-def get_template_by_topic(topic: str) -> str:
-    """Select appropriate template based on topic keywords."""
-    topic_lower = topic.lower()
-    
-    if any(word in topic_lower for word in ['ai', 'automation', 'artificial', 'machine learning', 'tech', 'productivity']):
-        return TEMPLATE_AI_BUSINESS
-    elif any(word in topic_lower for word in ['marketing', 'social', 'growth', 'digital', 'sales', 'advertising']):
-        return TEMPLATE_MARKETING
-    elif any(word in topic_lower for word in ['finance', 'crypto', 'money', 'wealth', 'investment', 'financial']):
-        return TEMPLATE_FINANCIAL
-    else:
-        return TEMPLATE_GENERAL
 
 
 def _get_recent_posts_for_prompt(limit: int = 6) -> str:
@@ -459,7 +313,7 @@ def update_business_profile_from_shop(urls: list) -> Dict[str, Any]:
 # ------------------ end business profile support --------------------
 
 
-def generate_blog_content(trend_data: str, image_path: str | None = None) -> Dict[str, Any]:
+def generate_blog_content(trend_data: str, image_path: str | None = None, context: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Generate blog content using LLM (preferred) or templates with duplicate prevention."""
     logger.info("---GENERATING BLOG CONTENT---")
 
@@ -482,117 +336,8 @@ def generate_blog_content(trend_data: str, image_path: str | None = None) -> Dic
         else:
             topic = "general"
 
-    # EXPANDED content variations per topic - multiple options to prevent repetition
-    content_variations = {
-        "ai": [
-            {
-                "title": "AI Automation for Credit Repair and Business Success",
-                "intro_paragraph": "Smart entrepreneurs are using AI to fix credit issues and automate their businesses. From dispute letter generators to report analyzers, AI tools are revolutionizing how people build wealth and streamline operations.",
-                "main_content_header": "Why AI Beats Traditional Methods",
-                "main_content": "People using AI for credit repair see results in weeks, not months. Automated dispute systems work 24/7, generating letters that get denials overturned. Business automation saves 20+ hours per week while increasing revenue through passive income streams."
-            },
-            {
-                "title": "How AI is Transforming Small Business Operations in 2025",
-                "intro_paragraph": "The AI revolution isn't just for big tech - small businesses are now leveraging powerful automation tools to compete with industry giants. From customer service chatbots to automated marketing, AI is leveling the playing field.",
-                "main_content_header": "Real Results from AI Implementation",
-                "main_content": "Small businesses using AI report 40% reduction in operational costs and 60% faster customer response times. Automated workflows handle repetitive tasks while entrepreneurs focus on growth and strategy."
-            },
-            {
-                "title": "Building Your AI-Powered Business Empire",
-                "intro_paragraph": "The entrepreneurs who embrace AI today will dominate their markets tomorrow. From content creation to customer analytics, AI tools are creating new opportunities for wealth building at unprecedented speed.",
-                "main_content_header": "The AI Advantage for Modern Entrepreneurs",
-                "main_content": "AI-powered businesses scale faster and operate more efficiently. Automated systems handle lead generation, content creation, and customer follow-ups while you focus on high-value activities."
-            },
-            {
-                "title": "Automate Your Way to Financial Freedom with AI",
-                "intro_paragraph": "Passive income streams powered by AI are helping ordinary people build extraordinary wealth. From automated affiliate marketing to AI-driven content businesses, the opportunities are endless.",
-                "main_content_header": "Creating Automated Income Streams",
-                "main_content": "AI enables you to create systems that work 24/7 generating revenue. Whether it's automated email sequences, AI-powered chatbots, or content creation workflows, technology multiplies your earning potential."
-            }
-        ],
-        "marketing": [
-            {
-                "title": "Digital Product Marketing: Sell Ebooks and Guides Online",
-                "intro_paragraph": "Modern entrepreneurs are building passive income by creating and selling digital products. From credit repair guides to business automation templates, digital products provide freedom and financial security.",
-                "main_content_header": "Digital Product Success Stories",
-                "main_content": "Creators selling digital products report 300% ROI within the first year. From step-by-step guides to automation templates, these products sell themselves once set up. AI helps create content faster and market it effectively."
-            },
-            {
-                "title": "Social Media Marketing Secrets for Business Growth",
-                "intro_paragraph": "Successful brands are using strategic social media marketing to reach millions without spending millions. Learn the tactics that turn followers into customers and likes into revenue.",
-                "main_content_header": "Maximizing Your Social Media ROI",
-                "main_content": "Businesses that master social media marketing see 5x higher engagement rates. Consistent posting, authentic storytelling, and strategic use of AI tools create sustainable growth without burning out."
-            },
-            {
-                "title": "Content Marketing Strategies That Drive Real Results",
-                "intro_paragraph": "Content is still king in 2025, but the rules have changed. Learn how successful businesses are using content marketing to attract, engage, and convert their ideal customers.",
-                "main_content_header": "Building a Content Engine for Your Business",
-                "main_content": "Strategic content marketing generates 3x more leads than traditional advertising at 62% lower cost. The key is creating valuable content that solves real problems and positions you as an authority."
-            },
-            {
-                "title": "Email Marketing Automation for Consistent Sales",
-                "intro_paragraph": "Email remains the highest ROI marketing channel, and automation makes it even more powerful. Build sequences that nurture leads and close sales while you sleep.",
-                "main_content_header": "Automated Email Sequences That Convert",
-                "main_content": "Well-designed email automation generates an average of $42 for every $1 spent. Set up once, and watch your automated sequences turn subscribers into loyal customers day after day."
-            }
-        ],
-        "finance": [
-            {
-                "title": "Credit Repair Hacks and Financial Empowerment",
-                "intro_paragraph": "Financial freedom starts with fixing your credit and building wealth strategically. From dispute letters to investment automation, smart people are using proven methods to improve their financial future.",
-                "main_content_header": "Credit Repair That Works",
-                "main_content": "Successful credit repair involves knowing the laws and using the right tools. AI dispute writers create perfect letters that get results. Combined with passive income strategies, this creates true financial empowerment."
-            },
-            {
-                "title": "Building Multiple Income Streams for Financial Security",
-                "intro_paragraph": "The wealthy don't rely on a single income source - they build multiple streams of revenue. Learn how to diversify your income and create lasting financial security.",
-                "main_content_header": "Diversification Strategies That Work",
-                "main_content": "Successful entrepreneurs typically have 5-7 income streams. From digital products to affiliate marketing to service businesses, diversification protects you from economic uncertainty while maximizing earning potential."
-            },
-            {
-                "title": "Mastering Your Finances: A Guide to Wealth Building",
-                "intro_paragraph": "Wealth building isn't about getting rich quick - it's about making smart decisions consistently. Learn the proven strategies that turn modest incomes into substantial wealth over time.",
-                "main_content_header": "The Fundamentals of Wealth Creation",
-                "main_content": "Wealth builders focus on increasing income, reducing expenses, and investing the difference wisely. Combined with strategic credit management, these principles create a solid foundation for financial freedom."
-            },
-            {
-                "title": "From Debt to Prosperity: Your Financial Transformation",
-                "intro_paragraph": "No matter where you're starting, financial transformation is possible. Thousands have gone from crushing debt to comfortable prosperity using proven methods and the right tools.",
-                "main_content_header": "Steps to Financial Transformation",
-                "main_content": "Start by understanding your credit, creating a budget, and identifying opportunities to increase income. With strategic planning and consistent action, you can completely transform your financial situation."
-            }
-        ],
-        "general": [
-            {
-                "title": "Building Wealth with AI and Digital Products",
-                "intro_paragraph": "The future belongs to those who embrace technology for financial success. From credit repair automation to passive income creation, AI tools are democratizing wealth building for everyone.",
-                "main_content_header": "Your Path to Financial Freedom",
-                "main_content": "High-performing individuals use integrated tech stacks for credit repair, business automation, and wealth building. These systems deliver results through time savings, increased efficiency, and passive income generation."
-            },
-            {
-                "title": "Entrepreneurship in the Digital Age: Your Success Blueprint",
-                "intro_paragraph": "The barriers to starting a successful business have never been lower. With the right tools and strategies, anyone can build a thriving digital business from anywhere in the world.",
-                "main_content_header": "Keys to Digital Business Success",
-                "main_content": "Successful digital entrepreneurs focus on solving real problems, building systems, and leveraging automation. Start small, iterate based on feedback, and scale what works."
-            },
-            {
-                "title": "Scaling Your Business with Strategic Systems",
-                "intro_paragraph": "Growth without systems leads to chaos. Learn how successful entrepreneurs build scalable systems that allow their businesses to grow without burning out.",
-                "main_content_header": "Building Systems for Scale",
-                "main_content": "Scalable businesses run on documented processes and automated workflows. Create systems for every repeatable task, and you'll free yourself to focus on strategy and growth."
-            },
-            {
-                "title": "The Modern Entrepreneur's Toolkit for Success",
-                "intro_paragraph": "Success in today's business world requires the right tools and strategies. Discover the essential toolkit that successful entrepreneurs are using to build and scale their businesses.",
-                "main_content_header": "Essential Tools for Modern Business",
-                "main_content": "From hosting to communication to automation, the right tools can 10x your productivity. Invest in quality tools that save time and enable growth, and watch your business transform."
-            }
-        ]
-    }
 
     try:
-        variations = content_variations.get(topic, content_variations["general"])
-
         # LLM-first generation (Google -> Mistral). Honor BLOG_REQUIRE_LLM to forbid template fallbacks.
         try:
             def _get_preferred_llm():
@@ -612,67 +357,18 @@ def generate_blog_content(trend_data: str, image_path: str | None = None) -> Dic
                 except Exception as e:
                     logger.debug("Mistral initialization failed: %s", e)
 
-                # 2) Hugging Face Inference API via official InferenceClient with Provider routing
+                # 2) Hugging Face Inference API - DISABLED to save tokens/quota
+                # (User request: Ensure we aren't using HF tokens/API calls)
+                # To re-enable, uncomment the block below.
+                """
                 try:
                     from huggingface_hub import InferenceClient
                     hf_token = os.getenv("HF_TOKEN")
                     if hf_token:
-                        # Use provider routing for reliable model access
-                        # Providers: sambanova, groq, together, cerebras, novita, etc.
-                        hf_provider = os.getenv("HF_INFERENCE_PROVIDER", "sambanova")
-                        hf_model = os.getenv("BLOG_LLM_MODEL_HF", "meta-llama/Meta-Llama-3.1-8B-Instruct")
-                        hf_temp = float(os.getenv("BLOG_LLM_TEMPERATURE", "0.7"))
-
-                        class HFChatWrapper:
-                            """Wrapper to use InferenceClient with .invoke() interface for compatibility."""
-                            def __init__(self, model, token, provider="sambanova", temperature=0.7):
-                                self.model = model
-                                self.provider = provider
-                                # Use provider routing through Hugging Face
-                                self.client = InferenceClient(
-                                    provider=provider,
-                                    api_key=token  # HF token for billing through HF account
-                                )
-                                self.temperature = temperature
-
-                            def invoke(self, prompt_text: str):
-                                try:
-                                    completion = self.client.chat_completion(
-                                        model=self.model,
-                                        messages=[
-                                            {"role": "system", "content": "You are a technical writer. Always respond with valid JSON only."},
-                                            {"role": "user", "content": prompt_text}
-                                        ],
-                                        temperature=self.temperature,
-                                        max_tokens=8192,  # Allow for detailed blog content
-                                        response_format={"type": "json_object"}  # Force JSON mode
-                                    )
-                                    
-                                    content = completion.choices[0].message.content
-                                    
-                                    # Check if content is empty or whitespace
-                                    if not content or not content.strip():
-                                        raise RuntimeError("Hugging Face returned empty content")
-                                    
-                                    # Return object with .content attribute for compatibility
-                                    class _R:
-                                        def __init__(self, c):
-                                            self.content = c
-                                    
-                                    return _R(content)
-                                    
-                                except Exception as e:
-                                    error_msg = str(e)
-                                    if "401" in error_msg or "Unauthorized" in error_msg:
-                                        raise RuntimeError("Hugging Face Inference API: Unauthorized (HTTP 401). Check HF_TOKEN and grant 'Inference' permission or regenerate token.") from e
-                                    if "429" in error_msg or "rate" in error_msg.lower():
-                                        raise RuntimeError("Hugging Face Inference API: Rate limited (HTTP 429). Check quota or retry later.") from e
-                                    raise RuntimeError(f"Hugging Face Inference API request failed: {e}") from e
-
-                        logger.info("Initializing Hugging Face InferenceClient with provider '%s' (model: %s)", hf_provider, hf_model)
-                        return HFChatWrapper(hf_model, hf_token, hf_provider, hf_temp)
+                        # ... implementation omitted ...
                 except Exception as e:
                     logger.debug("Hugging Face LLM unavailable: %s", e)
+                """
 
                 # 3) Google as last resort (kept for compatibility)
                 try:
@@ -698,6 +394,35 @@ def generate_blog_content(trend_data: str, image_path: str | None = None) -> Dic
                 # Trigger template fallback by raising
                 raise RuntimeError(msg)
 
+            # --- Pre-generation: propose 3 candidate titles and reject duplicates early ---
+            title_candidates = []
+            try:
+                title_prompt = (
+                    "Given the INPUT DATA JSON and FDWA style guide, propose 3 engaging, non-generic blog titles that contain data or a clear benefit. "
+                    "Return ONLY valid JSON: {\"titles\": [title1, title2, title3]}."
+                    f"\n\nINPUT: {json.dumps({'topic': topic,'trend_data': trend_data})}"
+                )
+                try:
+                    t_resp = llm.invoke(title_prompt)
+                    t_text = t_resp.content if hasattr(t_resp, 'content') else str(t_resp)
+                    json_match = re.search(r"\{.*\}", t_text, re.DOTALL)
+                    if json_match:
+                        t_text = json_match.group(0)
+                    parsed_titles = json.loads(t_text)
+                    title_candidates = parsed_titles.get('titles', []) if isinstance(parsed_titles, dict) else []
+                except Exception:
+                    # best-effort title generation failed — continue to full generation
+                    title_candidates = []
+
+                # Filter out duplicates using sent posts
+                filtered = []
+                for t in title_candidates:
+                    if not _is_duplicate_post(t, t, topic):
+                        filtered.append(t)
+                title_candidates = filtered
+            except Exception:
+                title_candidates = []
+
             past_posts_json = _get_recent_posts_for_prompt(limit=6)
 
             business_profile = _load_business_profile()
@@ -715,20 +440,33 @@ def generate_blog_content(trend_data: str, image_path: str | None = None) -> Dic
             except Exception as e:
                 logger.warning("Could not load style guide: %s", e)
 
-            prompt = json.dumps({
+            # Include richer context (if provided by graph) and make affiliate + resources requirements explicit
+            ctx_payload = {
                 "topic": topic,
                 "trend_data": (trend_data or ""),
                 "affiliate_links": {k: v for k, v in AFFILIATE_LINKS.items()},
                 "our_recent_posts": json.loads(past_posts_json),
                 "business_profile": business_profile,
                 "knowledge_base_summary": knowledge_base[:3000] if knowledge_base else "No knowledge base loaded",
-                "products_catalog_summary": products_catalog[:2000] if products_catalog else "No products catalog loaded"
-            })
+                "products_catalog_summary": products_catalog[:2000] if products_catalog else "No products catalog loaded",
+            }
+
+            # If pre-generated non-duplicate title candidates exist, pass them to the LLM as preferred titles
+            if title_candidates:
+                ctx_payload["suggested_titles"] = title_candidates
+
+            if context and isinstance(context, dict):
+                # merge caller-provided context (tweet text, insight, platform drafts)
+                ctx_payload["caller_context"] = context
+
+            prompt = json.dumps(ctx_payload)
 
             generation_prompt = f"""
 You are an expert content strategist and educational copywriter for FDWA (Futurist Digital Wealth Agency).
 
 Your mission: Create FULL, DETAILED, EDUCATIONAL blog articles that teach, not just list. Break down topics, explain WHY tools matter, show HOW to apply information, include real data and examples.
+
+MANDATORY: Embed at least 3 affiliate links from `affiliate_links`, include a clear `Resources & Links` section, and mention 2–3 FDWA products. Return ONLY valid JSON matching the output schema.
 
 === INPUT DATA (JSON) ===
 {prompt}
@@ -867,48 +605,149 @@ Pick ONE based on primary topic:
 Return ONLY valid JSON. NO text before or after the JSON object.
 """
 
-            response = llm.invoke(generation_prompt)
+            # Retry LLM invocation (configurable via env)
+            # Reduced default retries to prevent "stuck" behavior
+            max_retries = int(os.getenv("BLOG_LLM_MAX_RETRIES", "1"))
+            backoff = float(os.getenv("BLOG_LLM_RETRY_BACKOFF", "1.0"))
             
-            # Handle structured output (Pydantic BlogPost) or text response
-            if isinstance(response, BlogPost):
-                # Structured output from Mistral with_structured_output()
-                logger.info("Received structured BlogPost from LLM")
-                title = response.title
-                html_output = response.html
-                excerpt = response.excerpt
-            else:
-                # Text response from HuggingFace or fallback - parse JSON
-                response_text = response.content if hasattr(response, 'content') else str(response)
-                response_text = response_text.strip()
-                
-                # Check if response is empty
-                if not response_text:
-                    logger.warning("LLM returned empty response, falling back to template")
-                    raise ValueError("Empty LLM response")
-                
-                # Extract JSON from response (handle wrapped JSON)
-                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-                if json_match:
-                    response_text = json_match.group(0)
-                
-                try:
-                    parsed = json.loads(response_text)
-                    title = parsed.get("title")
-                    html_output = parsed.get("html")
-                    excerpt = parsed.get("excerpt", "")
-                except json.JSONDecodeError as e:
-                    logger.error("Failed to parse LLM JSON: %s - Response: %s", e, response_text[:500])
-                    raise ValueError(f"Invalid JSON from LLM: {e}")
+            # --- Content-quality validation function ---
+            def _quality_check(html_text: str) -> tuple[bool, str]:
+                plain = re.sub(r"<[^>]+>", "", html_text or "")
+                wc = len(plain.split())
+                if wc < 900:
+                    return False, "too_short"
+
+                found_aff = 0
+                for link in AFFILIATE_LINKS.values():
+                    if link in (html_text or ""):
+                        found_aff += 1
+                if found_aff < 3:
+                    return False, "missing_affiliates"
+
+                if not re.search(r"resources|resources and links|resources & links", html_text or "", re.I):
+                    return False, "missing_resources_section"
+
+                return True, "ok"
+
+            # Global uniqueness loop
+            max_unique_attempts = 2  # Reduced from 3 to 2
+            unique_attempts_done = 0
+            avoid_titles = []
             
-            # Validate required fields
-            if not title or not html_output:
-                logger.warning("LLM response missing title or html")
-                raise ValueError("Missing required fields in LLM response")
-            
-            # Check for duplicates
-            if _is_duplicate_post(title, excerpt or html_output[:200], topic):
-                logger.warning("LLM generated duplicate content, falling back to template")
-                raise ValueError("Duplicate content detected")
+            while unique_attempts_done < max_unique_attempts:
+                unique_attempts_done += 1
+                
+                current_prompt = generation_prompt
+                if avoid_titles:
+                     current_prompt += f"\n\nIMPORTANT: Do NOT use the following titles as they are duplicates: {json.dumps(avoid_titles)}. Create a fresh, unique title."
+
+                # Inner loop: API reliability retries
+                response = None
+                last_exc = None
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        response = llm.invoke(current_prompt)
+                        break
+                    except Exception as e:
+                        last_exc = e
+                        logger.warning("LLM attempt %d/%d failed: %s", attempt, max_retries, str(e)[:200])
+                        if attempt == max_retries:
+                            logger.error("LLM generation failed after %d attempts", max_retries)
+                            raise
+                        sleep_for = backoff * (2 ** (attempt - 1))
+                        time.sleep(sleep_for)
+
+                # Handle structured output (Pydantic BlogPost) or text response
+                if isinstance(response, BlogPost):
+                    # Structured output from Mistral with_structured_output()
+                    logger.info("Received structured BlogPost from LLM")
+                    title = response.title
+                    html_output = response.html
+                    excerpt = response.excerpt
+                else:
+                    # Text response from HuggingFace or fallback - parse JSON
+                    response_text = response.content if hasattr(response, 'content') else str(response)
+                    response_text = response_text.strip()
+                    
+                    # Check if response is empty
+                    if not response_text:
+                        logger.warning("LLM returned empty response")
+                        if unique_attempts_done == max_unique_attempts:
+                             raise ValueError("Empty LLM response")
+                        continue
+                    
+                    # Extract JSON from response (handle wrapped JSON)
+                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                    if json_match:
+                        response_text = json_match.group(0)
+                    
+                    try:
+                        parsed = json.loads(response_text)
+                        title = parsed.get("title")
+                        html_output = parsed.get("html")
+                        excerpt = parsed.get("excerpt", "")
+                    except json.JSONDecodeError as e:
+                        logger.error("Failed to parse LLM JSON: %s", e)
+                        if unique_attempts_done == max_unique_attempts:
+                            raise ValueError(f"Invalid JSON from LLM: {e}")
+                        continue
+
+                # Content-quality validation + optional content-level retries
+                content_retries = int(os.getenv("BLOG_LLM_CONTENT_RETRIES", "1"))
+                content_attempt = 0
+                quality_ok, quality_reason = _quality_check(html_output)
+                while not quality_ok and content_attempt < content_retries:
+                    content_attempt += 1
+                    logger.warning("LLM content-quality check failed (%s). Content retry %d/%d", quality_reason, content_attempt, content_retries)
+                    regen_note = (
+                        "\n\nIMPORTANT: previous output missed: %s. Regenerate the blog and ensure it contains at least 1000 words, includes 3-5 affiliate links, a 'Resources' section, and mentions FDWA products. Return ONLY valid JSON." % quality_reason
+                    )
+                    try:
+                        response = llm.invoke(current_prompt + regen_note)
+                    except Exception as e:
+                        logger.warning("Content retry invoke failed: %s", e)
+                        break
+
+                    # parse regenerated response
+                    if isinstance(response, BlogPost):
+                        title = response.title
+                        html_output = response.html
+                        excerpt = response.excerpt
+                    else:
+                        response_text = response.content if hasattr(response, 'content') else str(response)
+                        response_text = response_text.strip()
+                        json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+                        if json_match:
+                            response_text = json_match.group(0)
+                        parsed = json.loads(response_text)
+                        title = parsed.get("title")
+                        html_output = parsed.get("html")
+                        excerpt = parsed.get("excerpt", "")
+
+                    quality_ok, quality_reason = _quality_check(html_output)
+                    if quality_ok:
+                        logger.info("Content retry succeeded on attempt %d", content_attempt)
+                        break
+                    time.sleep(0.5 * content_attempt)
+
+                
+                # Validate required fields
+                if not title or not html_output:
+                    logger.warning("LLM response missing title or html")
+                    if unique_attempts_done == max_unique_attempts:
+                        raise ValueError("Missing required fields in LLM response")
+                    continue
+                
+                # Check for duplicates
+                if _is_duplicate_post(title, excerpt or html_output[:200], topic):
+                    logger.warning("LLM generated duplicate content: %s. Retrying...", title)
+                    avoid_titles.append(title)
+                    if unique_attempts_done == max_unique_attempts:
+                        raise ValueError("Duplicate content detected after multiple attempts")
+                    continue
+                
+                # If unique and valid, break the loop
+                break
             
             # Add image to blog HTML
             image_html = ""
@@ -927,40 +766,8 @@ Return ONLY valid JSON. NO text before or after the JSON object.
             }
                 
         except Exception as llm_exc:
-            # Template fallback when LLM fails
-            logger.warning("LLM blog generation failed, using template fallback: %s", str(llm_exc)[:200])
-            
-            # Use template-based generation
-            import random
-            variation = random.choice(variations)
-            
-            template = get_template_by_topic(topic)
-            
-            # Format template with content
-            blog_html_content = template.format(
-                title=variation["title"],
-                intro_paragraph=variation["intro_paragraph"],
-                main_content_header=variation["main_content_header"],
-                main_content=variation["main_content"],
-                **AFFILIATE_LINKS
-            )
-            
-            # Add image if available
-            image_html = ""
-            image_url = image_path or os.environ.get("BLOG_IMAGE_URL")
-            if image_url and image_url.startswith(('http://', 'https://')):
-                image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;display:block;" />\n'
-            
-            blog_html = image_html + blog_html_content
-            
-            logger.info("Template-based blog created: %s", variation["title"])
-            return {
-                "blog_html": blog_html,
-                "title": variation["title"],
-                "topic": topic,
-                "intro_paragraph": variation["intro_paragraph"],
-                "image_url": image_url
-            }
+            logger.warning("LLM blog generation failed: %s", str(llm_exc)[:200])
+            raise llm_exc
 
     except Exception as e:
         logger.exception("Error generating blog content: %s", e)
@@ -1023,7 +830,7 @@ def send_blog_email(blog_html: str, title: str, image_url: str | None = None) ->
         return {"email_status": f"Failed: {str(e)}"}
 
 
-def generate_and_send_blog(trend_data: str = None, image_url: str | None = None) -> Dict[str, Any]:
+def generate_and_send_blog(trend_data: str = None, image_url: str | None = None, context: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Generate blog content and send via email.
     
     Args:
@@ -1056,7 +863,7 @@ def generate_and_send_blog(trend_data: str = None, image_url: str | None = None)
         trend_data = random.choice(fallback_trends)
 
     # Generate blog content with image URL embedded in HTML
-    blog_result = generate_blog_content(trend_data, image_path=image_source)
+    blog_result = generate_blog_content(trend_data, image_path=image_source, context=context)
 
     if "error" in blog_result:
         return blog_result

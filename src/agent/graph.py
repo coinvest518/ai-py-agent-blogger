@@ -898,8 +898,20 @@ def generate_blog_email_node(state: AgentState) -> dict:
         logger.warning("No image URL available for blog email")
     
     try:
-        blog_result = generate_and_send_blog(trend_data, image_url=image_url)
-        
+        # Pass richer context from the main agent to the blog sub-agent so the LLM
+        # can reuse insights, tweet text and any platform-specific content.
+        ctx = {
+            "tweet_text": state.get("tweet_text"),
+            "insight": state.get("insight"),
+            "platforms": {
+                "twitter": state.get("tweet_text"),
+                "facebook": state.get("facebook_text"),
+                "linkedin": state.get("linkedin_text")
+            }
+        }
+
+        blog_result = generate_and_send_blog(trend_data, image_url=image_url, context=ctx)
+
         if "error" in blog_result:
             logger.error("Blog generation failed: %s", blog_result["error"])
             return {"blog_status": f"Failed: {blog_result['error']}", "blog_title": ""}
