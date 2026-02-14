@@ -5,8 +5,9 @@ This agent works with the Composio v3 API format that was verified to work.
 
 import logging
 import os
+from typing import Any, Dict, List
+
 import requests
-from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -75,11 +76,11 @@ def _execute_telegram_tool(tool_slug: str, arguments: Dict[str, Any]) -> Dict[st
 def send_message(
     chat_id: str,
     text: str,
-    parse_mode: Optional[str] = None,
+    parse_mode: str | None = None,
     disable_notification: bool = False,
     disable_web_page_preview: bool = False,
-    reply_to_message_id: Optional[int] = None,
-    reply_markup: Optional[str] = None,
+    reply_to_message_id: int | None = None,
+    reply_markup: str | None = None,
     use_direct: bool = False
 ) -> Dict[str, Any]:
     """Send a text message to a Telegram chat.
@@ -110,7 +111,10 @@ def send_message(
     # Extract and save crypto tokens mentioned in message
     if result.get("success"):
         try:
-            from src.agent.sheets_agent import extract_crypto_tokens_from_text, save_token_to_sheets
+            from src.agent.sheets_agent import (
+                extract_crypto_tokens_from_text,
+                save_token_to_sheets,
+            )
             tokens = extract_crypto_tokens_from_text(text)
             for token in tokens:
                 save_token_to_sheets(
@@ -130,7 +134,7 @@ def send_message(
 
 
 def get_updates(
-    offset: Optional[int] = None,
+    offset: int | None = None,
     limit: int = 100,
     timeout: int = 0
 ) -> Dict[str, Any]:
@@ -166,8 +170,8 @@ def get_bot_info() -> Dict[str, Any]:
 def send_photo(
     chat_id: str,
     photo: str,
-    caption: Optional[str] = None,
-    parse_mode: Optional[str] = None,
+    caption: str | None = None,
+    parse_mode: str | None = None,
     disable_notification: bool = False
 ) -> Dict[str, Any]:
     """Send a photo to a Telegram chat.
@@ -198,7 +202,10 @@ def send_photo(
     # Extract and save crypto tokens from caption
     if result.get("success") and caption:
         try:
-            from src.agent.sheets_agent import extract_crypto_tokens_from_text, save_token_to_sheets
+            from src.agent.sheets_agent import (
+                extract_crypto_tokens_from_text,
+                save_token_to_sheets,
+            )
             tokens = extract_crypto_tokens_from_text(caption)
             for token in tokens:
                 save_token_to_sheets(
@@ -216,8 +223,8 @@ def send_photo(
 def send_document(
     chat_id: str,
     document: str,
-    caption: Optional[str] = None,
-    parse_mode: Optional[str] = None,
+    caption: str | None = None,
+    parse_mode: str | None = None,
     disable_notification: bool = False
 ) -> Dict[str, Any]:
     """Send a document to a Telegram chat.
@@ -322,7 +329,7 @@ def edit_message(
     chat_id: str,
     message_id: int,
     text: str,
-    parse_mode: Optional[str] = None
+    parse_mode: str | None = None
 ) -> Dict[str, Any]:
     """Edit a text message.
     

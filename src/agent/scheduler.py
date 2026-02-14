@@ -1,6 +1,5 @@
 """Background scheduler for autonomous agent execution."""
 
-import asyncio
 import json
 import logging
 from datetime import datetime
@@ -38,7 +37,7 @@ def load_status() -> dict:
     global last_run_status
     try:
         if STATUS_FILE.exists():
-            with open(STATUS_FILE, "r") as f:
+            with open(STATUS_FILE) as f:
                 last_run_status = json.load(f)
     except Exception as e:
         logger.error(f"Failed to load status: {e}")

@@ -4,7 +4,6 @@ Converts tweet text into professional LinkedIn post format.
 """
 
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 

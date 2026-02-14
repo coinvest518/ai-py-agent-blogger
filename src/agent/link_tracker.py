@@ -1,25 +1,26 @@
-"""
-Google Sheets Link Performance Tracker
+"""Google Sheets Link Performance Tracker.
+
 Creates and manages sheets for tracking:
 - Link clicks (affiliate + booking)
 - Product mentions and conversions
-- Blog performance metrics
+- Blog performance metrics.
 """
 
-import os
 import logging
+import os
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List
+
 from composio import Composio
 
 logger = logging.getLogger(__name__)
 
 
 class LinkPerformanceTracker:
-    """Tracks link clicks and product performance in Google Sheets"""
+    """Tracks link clicks and product performance in Google Sheets."""
     
     def __init__(self):
-        """Initialize Composio client with correct toolkit version"""
+        """Initialize Composio client with correct toolkit version."""
         self.composio_client = Composio(
             api_key=os.getenv("COMPOSIO_API_KEY"),
             entity_id=os.getenv("COMPOSIO_ENTITY_ID", "pg-test-e862c589-3f43-4cd7-9023-cc6ec5123c23"),
@@ -33,9 +34,9 @@ class LinkPerformanceTracker:
         self.blog_sheet = "Blog Performance"
     
     def setup_tracking_sheets(self) -> bool:
-        """
-        Initialize all tracking sheets with headers.
-        Creates: Link Performance, Product Performance, Blog Performance tabs
+        """Initialize all tracking sheets with headers.
+        
+        Creates: Link Performance, Product Performance, Blog Performance tabs.
         
         Returns:
             True if setup successful
@@ -74,7 +75,7 @@ class LinkPerformanceTracker:
             return False
     
     def _setup_sheet_headers(self, sheet_name: str, headers: List[List[str]]) -> None:
-        """Setup headers for a specific sheet"""
+        """Set up headers for a specific sheet."""
         try:
             response = self.composio_client.execute_action(
                 action="GOOGLESHEETS_BATCH_UPDATE",
@@ -91,8 +92,7 @@ class LinkPerformanceTracker:
     
     def track_link_click(self, blog_title: str, link_type: str, link_name: str, 
                         link_url: str, clicks: int = 1) -> bool:
-        """
-        Track a link click event.
+        """Track a link click event.
         
         Args:
             blog_title: Title of the blog post
@@ -118,7 +118,7 @@ class LinkPerformanceTracker:
                 ""  # Notes
             ]]
             
-            response = self.composio_client.execute_action(
+            self.composio_client.execute_action(
                 action="GOOGLESHEETS_BATCH_UPDATE",
                 params={
                     "spreadsheet_id": self.spreadsheet_id,
@@ -137,8 +137,7 @@ class LinkPerformanceTracker:
     
     def track_product_mention(self, product_name: str, blog_title: str, 
                             category: str = "", price: str = "") -> bool:
-        """
-        Track when a product is mentioned in a blog post.
+        """Track when a product is mentioned in a blog post.
         
         Args:
             product_name: Name of FDWA product
@@ -175,7 +174,7 @@ class LinkPerformanceTracker:
                     ""  # Notes
                 ]]
                 
-                response = self.composio_client.execute_action(
+                self.composio_client.execute_action(
                     action="GOOGLESHEETS_BATCH_UPDATE",
                     params={
                         "spreadsheet_id": self.spreadsheet_id,
@@ -193,8 +192,7 @@ class LinkPerformanceTracker:
             return False
     
     def track_blog_performance(self, blog_data: Dict[str, Any]) -> bool:
-        """
-        Track overall blog performance metrics.
+        """Track overall blog performance metrics.
         
         Args:
             blog_data: Dictionary with keys:
@@ -224,7 +222,7 @@ class LinkPerformanceTracker:
                 ""  # Notes
             ]]
             
-            response = self.composio_client.execute_action(
+            self.composio_client.execute_action(
                 action="GOOGLESHEETS_BATCH_UPDATE",
                 params={
                     "spreadsheet_id": self.spreadsheet_id,
@@ -241,9 +239,8 @@ class LinkPerformanceTracker:
             logger.error(f"Failed to track blog performance: {e}")
             return False
     
-    def _get_product_row(self, product_name: str) -> Optional[List]:
-        """
-        Search for existing product row.
+    def _get_product_row(self, product_name: str) -> List | None:
+        """Search for existing product row.
         
         Args:
             product_name: Name of product to search
@@ -279,8 +276,8 @@ class LinkPerformanceTracker:
             return None
     
     def get_performance_insights(self, days: int = 30) -> Dict[str, Any]:
-        """
-        Get performance insights for the last N days.
+        """Get performance insights for the last N days.
+        
         Used to feed back into blog generation for optimization.
         
         Args:
@@ -291,7 +288,7 @@ class LinkPerformanceTracker:
         """
         try:
             # Get blog performance data
-            blog_response = self.composio_client.execute_action(
+            self.composio_client.execute_action(
                 action="GOOGLESHEETS_BATCH_GET",
                 params={
                     "spreadsheet_id": self.spreadsheet_id,
@@ -300,7 +297,7 @@ class LinkPerformanceTracker:
             )
             
             # Get link performance data
-            link_response = self.composio_client.execute_action(
+            self.composio_client.execute_action(
                 action="GOOGLESHEETS_BATCH_GET",
                 params={
                     "spreadsheet_id": self.spreadsheet_id,

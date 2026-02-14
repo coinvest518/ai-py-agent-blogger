@@ -4,7 +4,6 @@ Converts social media text into clean, visual prompts for AI image generation.
 """
 
 import logging
-import os
 import re
 
 logger = logging.getLogger(__name__)

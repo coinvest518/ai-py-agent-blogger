@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def _load_post_history() -> Dict:
     """Load social media post history."""
     if SOCIAL_POSTS_FILE.exists():
         try:
-            with open(SOCIAL_POSTS_FILE, 'r', encoding='utf-8') as f:
+            with open(SOCIAL_POSTS_FILE, encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
             logger.warning(f"Failed to load post history: {e}")
@@ -103,8 +103,8 @@ def is_duplicate_post(content: str, platform: str, lookback_days: int = 30) -> b
         return False
 
 
-def record_post(content: str, platform: str, post_id: Optional[str] = None, 
-                image_url: Optional[str] = None, metadata: Optional[Dict] = None) -> None:
+def record_post(content: str, platform: str, post_id: str | None = None, 
+                image_url: str | None = None, metadata: Dict | None = None) -> None:
     """Record a posted content to prevent future duplicates.
     
     Args:
@@ -163,7 +163,7 @@ def record_post(content: str, platform: str, post_id: Optional[str] = None,
         logger.error(f"Failed to record post: {e}")
 
 
-def get_recent_posts(platform: Optional[str] = None, limit: int = 10) -> List[Dict]:
+def get_recent_posts(platform: str | None = None, limit: int = 10) -> List[Dict]:
     """Get recent posts, optionally filtered by platform.
     
     Args:

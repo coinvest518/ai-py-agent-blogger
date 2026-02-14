@@ -10,7 +10,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List
 
 from composio import Composio
 from dotenv import load_dotenv
@@ -36,11 +36,12 @@ class GoogleSheetsAgent:
     """Sub-agent for managing Google Sheets storage."""
     
     def __init__(self):
+        """Initialize Google Sheets agent with credentials."""
         self.account_id = os.getenv("GOOGLESHEETS_ACCOUNT_ID")
         self.posts_sheet_id = POSTS_SHEET_ID
         self.tokens_sheet_id = TOKENS_SHEET_ID
         # cache discovered tool slugs to avoid repeated API calls
-        self._discovered_create_slug: Optional[str] = None
+        self._discovered_create_slug: str | None = None
         
     def _execute_tool(self, tool_name: str, params: Dict) -> Dict:
         """Execute a Composio Google Sheets tool (simple wrapper)."""
@@ -55,7 +56,7 @@ class GoogleSheetsAgent:
             logger.error(f"Google Sheets tool error ({tool_name}): {e}")
             return {"successful": False, "error": str(e)}
 
-    def _discover_sheets_create_tool(self) -> Optional[str]:
+    def _discover_sheets_create_tool(self) -> str | None:
         """Discover the available 'create' tool slug for Google Sheets in Composio.
 
         Returns the preferred slug (e.g. GOOGLESHEETS_CREATE_GOOGLE_SHEET1) if
@@ -88,7 +89,7 @@ class GoogleSheetsAgent:
             logger.debug(f"Could not list Composio tools for discovery: {e}")
 
         return None
-    def _create_sheet_with_fallback(self, title: str, locale: str = "en_US") -> Optional[str]:
+    def _create_sheet_with_fallback(self, title: str, locale: str = "en_US") -> str | None:
         """Create a Google Sheet using the first available tool slug.
 
         Tries multiple known tool slugs (backwards-compatible) and returns the
@@ -134,7 +135,7 @@ class GoogleSheetsAgent:
         logger.error("All configured Google Sheets create-tool slugs failed or are unavailable.")
         return None
 
-    def create_posts_spreadsheet(self) -> Optional[str]:
+    def create_posts_spreadsheet(self) -> str | None:
         """Create a new spreadsheet for tracking social media posts (fallback-aware)."""
         try:
             logger.info("Creating Social Media Posts tracking spreadsheet (fallback-aware)...")
@@ -188,7 +189,7 @@ class GoogleSheetsAgent:
         except Exception as e:
             logger.error(f"Failed to set up headers: {e}")
     
-    def create_tokens_spreadsheet(self) -> Optional[str]:
+    def create_tokens_spreadsheet(self) -> str | None:
         """Create a new spreadsheet for tracking crypto tokens (fallback-aware)."""
         try:
             logger.info("Creating Crypto Tokens tracking spreadsheet (fallback-aware)...")
@@ -243,7 +244,7 @@ class GoogleSheetsAgent:
             logger.error(f"Failed to set up headers: {e}")
     
     def save_post(self, platform: str, content: str, post_id: str = "", 
-                  image_url: str = "", metadata: Optional[Dict] = None) -> bool:
+                  image_url: str = "", metadata: Dict | None = None) -> bool:
         """Save a social media post to Google Sheets.
         
         Args:
@@ -363,7 +364,7 @@ class GoogleSheetsAgent:
             logger.exception(f"Error saving token to Sheets: {e}")
             return False
     
-    def search_posts(self, platform: Optional[str] = None, 
+    def search_posts(self, platform: str | None = None, 
                     days_back: int = 30, limit: int = 100) -> List[Dict]:
         """Search recent posts from Google Sheets.
         
@@ -428,8 +429,8 @@ class GoogleSheetsAgent:
             logger.exception(f"Error searching posts: {e}")
             return []
     
-    def search_tokens(self, symbol: Optional[str] = None, 
-                     source: Optional[str] = None, limit: int = 100) -> List[Dict]:
+    def search_tokens(self, symbol: str | None = None, 
+                     source: str | None = None, limit: int = 100) -> List[Dict]:
         """Search crypto tokens from Google Sheets.
         
         Args:
@@ -578,7 +579,7 @@ sheets_agent = GoogleSheetsAgent()
 
 # Convenience functions for other agents to use
 def save_post_to_sheets(platform: str, content: str, post_id: str = "",
-                       image_url: str = "", metadata: Optional[Dict] = None) -> bool:
+                       image_url: str = "", metadata: Dict | None = None) -> bool:
     """Save social media post to Google Sheets."""
     return sheets_agent.save_post(platform, content, post_id, image_url, metadata)
 
@@ -588,12 +589,12 @@ def save_token_to_sheets(symbol: str, **kwargs) -> bool:
     return sheets_agent.save_crypto_token(symbol, **kwargs)
 
 
-def search_posts_in_sheets(platform: Optional[str] = None, days_back: int = 30) -> List[Dict]:
+def search_posts_in_sheets(platform: str | None = None, days_back: int = 30) -> List[Dict]:
     """Search posts from Google Sheets."""
     return sheets_agent.search_posts(platform, days_back)
 
 
-def search_tokens_in_sheets(symbol: Optional[str] = None, source: Optional[str] = None) -> List[Dict]:
+def search_tokens_in_sheets(symbol: str | None = None, source: str | None = None) -> List[Dict]:
     """Search crypto tokens from Google Sheets."""
     return sheets_agent.search_tokens(symbol, source)
 
@@ -666,7 +667,7 @@ def _update_env_file(key: str, value: str):
     
     try:
         # Read current .env
-        with open(env_path, 'r', encoding='utf-8') as f:
+        with open(env_path, encoding='utf-8') as f:
             lines = f.readlines()
         
         # Find and update or append

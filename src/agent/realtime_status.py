@@ -3,9 +3,9 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
-from typing import Dict, List, Optional
 from collections import deque
+from datetime import datetime
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -13,9 +13,10 @@ class RealtimeStatusBroadcaster:
     """Broadcasts real-time agent status updates to connected clients."""
     
     def __init__(self, max_history: int = 100):
+        """Initialize broadcaster with max history size."""
         self.clients: List[asyncio.Queue] = []
         self.history: deque = deque(maxlen=max_history)
-        self.current_step: Optional[str] = None
+        self.current_step: str | None = None
         self.total_steps: int = 0
         self.completed_steps: int = 0
         
@@ -32,7 +33,7 @@ class RealtimeStatusBroadcaster:
             self.clients.remove(queue)
             logger.info(f"Client disconnected. Total clients: {len(self.clients)}")
             
-    async def broadcast(self, event_type: str, message: str, data: Optional[Dict] = None):
+    async def broadcast(self, event_type: str, message: str, data: Dict | None = None):
         """Broadcast a status update to all connected clients."""
         event = {
             "type": event_type,
@@ -82,11 +83,11 @@ class RealtimeStatusBroadcaster:
             "description": description
         })
         
-    async def update(self, message: str, data: Optional[Dict] = None):
+    async def update(self, message: str, data: Dict | None = None):
         """Send a general update message."""
         await self.broadcast("update", message, data)
         
-    async def complete_step(self, step_name: str, result: Optional[Dict] = None):
+    async def complete_step(self, step_name: str, result: Dict | None = None):
         """Signal the completion of a step."""
         self.completed_steps += 1
         await self.broadcast("step_complete", f"Completed: {step_name}", {
@@ -94,11 +95,11 @@ class RealtimeStatusBroadcaster:
             "result": result
         })
         
-    async def error(self, message: str, error_data: Optional[Dict] = None):
+    async def error(self, message: str, error_data: Dict | None = None):
         """Signal an error occurred."""
         await self.broadcast("error", message, error_data)
         
-    async def complete_run(self, success: bool, results: Optional[Dict] = None):
+    async def complete_run(self, success: bool, results: Dict | None = None):
         """Signal the completion of the entire run."""
         status = "successfully" if success else "with errors"
         await self.broadcast("run_complete", f"Agent run completed {status}", {

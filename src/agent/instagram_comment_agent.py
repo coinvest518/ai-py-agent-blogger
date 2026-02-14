@@ -4,7 +4,6 @@ Monitors Instagram posts for comments and generates helpful replies.
 """
 
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 

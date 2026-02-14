@@ -13,7 +13,7 @@ import random
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict
 
 import requests
 from composio import Composio
@@ -53,7 +53,7 @@ def _load_sent_posts() -> Dict[str, Any]:
     """
     if SENT_POSTS_FILE.exists():
         try:
-            with open(SENT_POSTS_FILE, "r", encoding="utf-8") as f:
+            with open(SENT_POSTS_FILE, encoding="utf-8") as f:
                 data = json.load(f)
 
                 # Ensure new keys exist for backward compatibility
@@ -62,7 +62,7 @@ def _load_sent_posts() -> Dict[str, Any]:
                 data.setdefault("sent_hashes", data.get("sent_hashes", []))
                 data.setdefault("last_topics", data.get("last_topics", []))
                 return data
-        except (json.JSONDecodeError, IOError):
+        except (OSError, json.JSONDecodeError):
             pass
 
     return {"sent_posts": [], "sent_titles": [], "sent_hashes": [], "last_topics": []}
@@ -73,7 +73,7 @@ def _save_sent_posts(data: Dict[str, Any]) -> None:
     try:
         with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-    except IOError as e:
+    except OSError as e:
         logger.error("Failed to save sent posts: %s", e)
 
 
@@ -106,7 +106,7 @@ def _is_duplicate_post(title: str, content: str, topic: str) -> bool:
     return False
 
 
-def _record_sent_post(title: str, content: str, topic: str, snippet: Optional[str] = None) -> None:
+def _record_sent_post(title: str, content: str, topic: str, snippet: str | None = None) -> None:
     """Record a sent post with richer metadata for future analysis.
 
     - Keeps backward-compatible lists (`sent_titles`, `sent_hashes`, `last_topics`).
@@ -326,7 +326,7 @@ def _load_business_profile() -> Dict[str, Any]:
     profile_path = Path(__file__).parent.parent.parent / "business_profile.json"
     if profile_path.exists():
         try:
-            with open(profile_path, "r", encoding="utf-8") as f:
+            with open(profile_path, encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             logger.exception("Failed to load business_profile.json")
@@ -343,7 +343,7 @@ def _load_knowledge_base() -> str:
     kb_path = Path(__file__).parent.parent.parent / "FDWA_KNOWLEDGE_BASE.md"
     if kb_path.exists():
         try:
-            with open(kb_path, "r", encoding="utf-8") as f:
+            with open(kb_path, encoding="utf-8") as f:
                 return f.read()
         except Exception as e:
             logger.warning(f"Could not load knowledge base: {e}")
@@ -355,7 +355,7 @@ def _load_products_catalog() -> str:
     catalog_path = Path(__file__).parent.parent.parent / "FDWA_PRODUCTS_CATALOG.md"
     if catalog_path.exists():
         try:
-            with open(catalog_path, "r", encoding="utf-8") as f:
+            with open(catalog_path, encoding="utf-8") as f:
                 return f.read()
         except Exception as e:
             logger.warning(f"Could not load products catalog: {e}")
@@ -444,7 +444,7 @@ def update_business_profile_from_shop(urls: list) -> Dict[str, Any]:
 # ------------------ end business profile support --------------------
 
 
-def generate_blog_content(trend_data: str, image_path: Optional[str] = None) -> Dict[str, Any]:
+def generate_blog_content(trend_data: str, image_path: str | None = None) -> Dict[str, Any]:
     """Generate blog content using LLM (preferred) or templates with duplicate prevention."""
     logger.info("---GENERATING BLOG CONTENT---")
 
@@ -607,7 +607,7 @@ def generate_blog_content(trend_data: str, image_path: Optional[str] = None) -> 
                         hf_temp = float(os.getenv("BLOG_LLM_TEMPERATURE", "0.7"))
 
                         class HFChatWrapper:
-                            """Wrapper to use InferenceClient with .invoke() interface for compatibility"""
+                            """Wrapper to use InferenceClient with .invoke() interface for compatibility."""
                             def __init__(self, model, token, provider="sambanova", temperature=0.7):
                                 self.model = model
                                 self.provider = provider
@@ -690,7 +690,7 @@ def generate_blog_content(trend_data: str, image_path: Optional[str] = None) -> 
             try:
                 style_guide_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "BLOG_WRITING_STYLE_GUIDE.md")
                 if os.path.exists(style_guide_path):
-                    with open(style_guide_path, 'r', encoding='utf-8') as f:
+                    with open(style_guide_path, encoding='utf-8') as f:
                         style_guide = f.read()
                     logger.info("Loaded blog writing style guide (%d chars)", len(style_guide))
             except Exception as e:
@@ -1021,7 +1021,7 @@ Return ONLY valid JSON. NO text before or after the JSON object.
         logger.exception("Error generating blog content: %s", e)
         return {"error": str(e)}
 
-def send_blog_email(blog_html: str, title: str, image_url: Optional[str] = None) -> Dict[str, Any]:
+def send_blog_email(blog_html: str, title: str, image_url: str | None = None) -> Dict[str, Any]:
     """Send blog content via Gmail with image URL in HTML body.
     
     Args:
@@ -1078,8 +1078,8 @@ def send_blog_email(blog_html: str, title: str, image_url: Optional[str] = None)
         return {"email_status": f"Failed: {str(e)}"}
 
 
-def generate_and_send_blog(trend_data: str = None, image_url: Optional[str] = None) -> Dict[str, Any]:
-    """Main function to generate blog content and send via email.
+def generate_and_send_blog(trend_data: str = None, image_url: str | None = None) -> Dict[str, Any]:
+    """Generate blog content and send via email.
     
     Args:
         trend_data: Trend data to use for content generation.

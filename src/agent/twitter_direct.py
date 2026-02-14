@@ -1,9 +1,10 @@
 """Direct Twitter API integration (no Composio) using OAuth 2.0 Bearer Token."""
 
+import logging
 import os
+
 import requests
 from requests_oauthlib import OAuth1
-import logging
 
 logger = logging.getLogger(__name__)
 

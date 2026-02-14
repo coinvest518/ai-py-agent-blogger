@@ -2,21 +2,29 @@
 
 import asyncio
 import logging
-import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
 from langserve import add_routes
 
 # Load environment variables FIRST before importing graph
 load_dotenv()
 
-from src.agent.graph import graph
-from src.agent.scheduler import start_scheduler, get_status, run_agent_task
-from src.agent.blog_email_agent import generate_and_send_blog, update_business_profile_from_shop, _load_business_profile
-from src.agent.realtime_status import broadcaster
+from src.agent.blog_email_agent import (  # noqa: E402
+    _load_business_profile,
+    generate_and_send_blog,
+    update_business_profile_from_shop,
+)
+from src.agent.graph import graph  # noqa: E402
+from src.agent.realtime_status import broadcaster  # noqa: E402
+from src.agent.scheduler import (  # noqa: E402
+    get_status,
+    run_agent_task,
+    start_scheduler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +44,7 @@ scheduler = None
 async def home():
     """Serve the UI homepage."""
     template_path = Path(__file__).parent.parent.parent / "templates" / "index.html"
-    with open(template_path, "r", encoding="utf-8") as f:
+    with open(template_path, encoding="utf-8") as f:
         return f.read()
 
 
@@ -53,7 +61,7 @@ async def stream_status():
         queue = broadcaster.add_client()
         try:
             # Send connection confirmation
-            yield f"data: {{'type': 'connected', 'message': 'Connected to agent stream'}}\n\n"
+            yield "data: {'type': 'connected', 'message': 'Connected to agent stream'}\n\n"
             
             # Send history
             for event in broadcaster.get_history():

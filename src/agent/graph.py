@@ -8,6 +8,7 @@ This graph defines a three-step autonomous process:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -16,22 +17,22 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing_extensions import TypedDict
 
 import requests
 from composio import Composio
 from dotenv import load_dotenv
+from langgraph.graph import StateGraph
 from langsmith import traceable
 from langsmith.integrations.otel import configure
-from langgraph.graph import StateGraph
-from src.agent.linkedin_agent import convert_to_linkedin_post
+from typing_extensions import TypedDict
+
+from src.agent import telegram_agent
+from src.agent.blog_email_agent import generate_and_send_blog
+from src.agent.duplicate_detector import is_duplicate_post, record_post
 from src.agent.instagram_agent import convert_to_instagram_caption
 from src.agent.instagram_comment_agent import generate_instagram_reply
-from src.agent.blog_email_agent import generate_and_send_blog
-from src.agent import telegram_agent
+from src.agent.linkedin_agent import convert_to_linkedin_post
 from src.agent.realtime_status import broadcaster
-from src.agent.duplicate_detector import is_duplicate_post, record_post
-import asyncio
 
 # Load environment variables from .env file
 load_dotenv()
@@ -509,7 +510,7 @@ def research_trends_node(state: AgentState) -> dict:
             logger.info("Falling back to Tavily search...")
             # Check cache
             if os.path.exists(cache_file):
-                with open(cache_file, "r", encoding="utf-8") as f:
+                with open(cache_file, encoding="utf-8") as f:
                     cache = json.load(f)
                 if cache.get("date") == today and cache.get("trend_data"):
                     logger.info("Using cached Tavily trend data for today.")
@@ -659,7 +660,11 @@ def generate_image_node(state: AgentState) -> dict:
     
     try:
         # Import Hugging Face image generator
-        from src.agent.hf_image_gen import generate_image_hf, save_image_locally, upload_to_imgbb
+        from src.agent.hf_image_gen import (
+            generate_image_hf,
+            save_image_locally,
+            upload_to_imgbb,
+        )
         
         # Generate image with Hugging Face (FREE)
         result = generate_image_hf(
@@ -1153,7 +1158,7 @@ def post_linkedin_node(state: AgentState) -> dict:
     # Use platform-specific LinkedIn content generated earlier
     linkedin_text = state.get("linkedin_text", "")
     tweet_text = state.get("tweet_text", "")
-    image_url = state.get("image_url")
+    state.get("image_url")
 
     # Fallback to conversion if no linkedin_text (backward compatibility)
     if not linkedin_text:
@@ -1420,7 +1425,7 @@ def post_social_media_node(state: AgentState) -> dict:
         if "EXPIRED state" in error_msg or "410" in error_msg:
             logger.error("⚠️  Facebook account expired! Reconnect at: https://app.composio.dev/")
             _broadcast_sync("error", "Facebook account expired - needs reconnection at https://app.composio.dev/")
-            results["facebook_status"] = f"Failed: Account expired - reconnect at https://app.composio.dev/"
+            results["facebook_status"] = "Failed: Account expired - reconnect at https://app.composio.dev/"
         else:
             logger.exception("Facebook posting failed: %s", e)
             _broadcast_sync("error", f"Facebook error: {error_msg}")

@@ -1,14 +1,14 @@
-"""
-Medium Blog Scraper - Extract FDWA writing samples from Medium
-Scrapes https://medium.com/@coinvestinc to learn writing style, tone, and successful topics
+"""Medium Blog Scraper - Extract FDWA writing samples from Medium.
+
+Scrapes https://medium.com/@coinvestinc to learn writing style, tone, and successful topics.
 """
 
-import os
 import json
 import logging
-from pathlib import Path
-from typing import List, Dict, Any, Optional
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -16,8 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def scrape_medium_profile(username: str = "coinvestinc", max_posts: int = 10) -> List[Dict[str, Any]]:
-    """
-    Scrape Medium profile to extract blog posts and writing style.
+    """Scrape Medium profile to extract blog posts and writing style.
     
     Args:
         username: Medium username (default: coinvestinc)
@@ -74,9 +73,8 @@ def scrape_medium_profile(username: str = "coinvestinc", max_posts: int = 10) ->
         return []
 
 
-def scrape_medium_article(url: str) -> Optional[Dict[str, Any]]:
-    """
-    Scrape a single Medium article.
+def scrape_medium_article(url: str) -> Dict[str, Any] | None:
+    """Scrape a single Medium article.
     
     Args:
         url: Full URL to Medium article
@@ -136,8 +134,7 @@ def scrape_medium_article(url: str) -> Optional[Dict[str, Any]]:
 
 
 def save_medium_samples(posts_data: List[Dict[str, Any]], output_file: str = "medium_writing_samples.json") -> None:
-    """
-    Save scraped Medium posts to JSON file.
+    """Save scraped Medium posts to JSON file.
     
     Args:
         posts_data: List of post dictionaries
@@ -161,8 +158,7 @@ def save_medium_samples(posts_data: List[Dict[str, Any]], output_file: str = "me
 
 
 def analyze_writing_style(posts_data: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Analyze writing style from scraped posts.
+    """Analyze writing style from scraped posts.
     
     Args:
         posts_data: List of post dictionaries

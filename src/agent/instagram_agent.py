@@ -4,7 +4,6 @@ Converts tweet text into Instagram-optimized caption with hashtags.
 """
 
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 
