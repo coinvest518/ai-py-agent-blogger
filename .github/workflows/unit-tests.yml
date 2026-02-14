@@ -40,7 +40,7 @@ jobs:
       - name: Lint with mypy
         run: |
           uv pip install mypy
-          uv run mypy --strict src/
+          uv run mypy --strict --explicit-package-bases src/
       - name: Check README spelling
         uses: codespell-project/actions-codespell@v2
         with:
