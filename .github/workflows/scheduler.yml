@@ -1,0 +1,264 @@
+# GitHub Actions Scheduler for FDWA AI Agent
+# Runs the autonomous social media agent every 2 hours daily
+# No server needed - just push code and GitHub runs it automatically!
+
+name: Run FDWA AI Agent
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'  # Every 2 hours daily (0:00, 2:00, 4:00, etc.)
+    
+  workflow_dispatch:  # Manual trigger for testing
+
+# Prevent concurrent runs
+concurrency:
+  group: fdwa-agent-scheduler
+  cancel-in-progress: false
+
+jobs:
+  run-agent:
+    name: Execute FDWA Agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-glx
+          
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+          
+      - name: Verify environment
+        run: |
+          echo "Python version: $(python --version)"
+          echo "Installed packages:"
+          pip list | grep -E "(langchain|langgraph|composio|huggingface)" || true
+          
+      - name: Run FDWA Agent
+        id: run_agent
+        env:
+          # ===========================================
+          # LLM API Keys (Mistral + HuggingFace required, Google AI optional)
+          # ===========================================
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}  # Optional - uncomment when you have a key
+          
+          # ===========================================
+          # LangSmith Tracing
+          # ===========================================
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_TRACING: "true"
+          LANGSMITH_PROJECT: "fdwa-multi-agent"
+          LANGSMITH_WORKSPACE_ID: ${{ secrets.LANGSMITH_WORKSPACE_ID }}
+          
+          # ===========================================
+          # Composio API
+          # ===========================================
+          COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+          
+          # Composio Toolkit Versions
+          COMPOSIO_TOOLKIT_VERSION_SERPAPI: "20251111_00"
+          COMPOSIO_TOOLKIT_VERSION_TAVILY: "20251023_00"
+          COMPOSIO_TOOLKIT_VERSION_GEMINI: "20251023_00"
+          COMPOSIO_TOOLKIT_VERSION_TWITTER: "20251024_00"
+          COMPOSIO_TOOLKIT_VERSION_FACEBOOK: "20251104_00"
+          COMPOSIO_TOOLKIT_VERSION_LINKEDIN: "20251023_00"
+          COMPOSIO_TOOLKIT_VERSION_INSTAGRAM: "20251023_00"
+          COMPOSIO_TOOLKIT_VERSION_GMAIL: "20251111_00"
+          COMPOSIO_TOOLKIT_VERSION_TELEGRAM: "20260211_00"
+          
+          # ===========================================
+          # Facebook
+          # ===========================================
+          FACEBOOK_ACCOUNT_ID: ${{ secrets.FACEBOOK_ACCOUNT_ID }}
+          FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
+          
+          # ===========================================
+          # LinkedIn
+          # ===========================================
+          LINKEDIN_USER_ID: ${{ secrets.LINKEDIN_USER_ID }}
+          LINKEDIN_AUTHOR_URN: ${{ secrets.LINKEDIN_AUTHOR_URN }}
+          LINKEDIN_ACCESS_TOKEN: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
+          
+          # ===========================================
+          # Instagram
+          # ===========================================
+          INSTAGRAM_ACCOUNT_ID: ${{ secrets.INSTAGRAM_ACCOUNT_ID }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+          
+          # ===========================================
+          # Telegram
+          # ===========================================
+          TELEGRAM_ACCOUNT_ID: ${{ secrets.TELEGRAM_ACCOUNT_ID }}
+          TELEGRAM_AUTH_CONFIG_ID: ${{ secrets.TELEGRAM_AUTH_CONFIG_ID }}
+          TELEGRAM_ENTITY_ID: ${{ secrets.TELEGRAM_ENTITY_ID }}
+          TELEGRAM_BOT_ENABLED: "true"
+          TELEGRAM_BOT_USERNAME: "@ybotai_bot"
+          TELEGRAM_BOT_NAME: "Yield Bot AI"
+          TELEGRAM_GROUP_USERNAME: "@yieldbotai"
+          TELEGRAM_GROUP_NAME: "Yield Bot Defi"
+          TELEGRAM_GROUP_CHAT_ID: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          
+          # ===========================================
+          # Image Upload
+          # ===========================================
+          IMGBB_API_KEY: ${{ secrets.IMGBB_API_KEY }}
+          
+          # ===========================================
+          # Search APIs
+          # ===========================================
+          SERPAPI_ACCOUNT_ID: ${{ secrets.SERPAPI_ACCOUNT_ID }}
+          TAVILY_ACCOUNT_ID: ${{ secrets.TAVILY_ACCOUNT_ID }}
+          
+          # ===========================================
+          # Google Sheets
+          # ===========================================
+          GOOGLESHEETS_ACCOUNT_ID: ${{ secrets.GOOGLESHEETS_ACCOUNT_ID }}
+          GOOGLESHEETS_USER_ID: ${{ secrets.GOOGLESHEETS_USER_ID }}
+          GOOGLESHEETS_ACCESS_TOKEN: ${{ secrets.GOOGLESHEETS_ACCESS_TOKEN }}
+          GOOGLESHEETS_REFRESH_TOKEN: ${{ secrets.GOOGLESHEETS_REFRESH_TOKEN }}
+          GOOGLESHEETS_POSTS_SPREADSHEET_ID: ${{ secrets.GOOGLESHEETS_POSTS_SPREADSHEET_ID }}
+          GOOGLESHEETS_TOKENS_SPREADSHEET_ID: ${{ secrets.GOOGLESHEETS_TOKENS_SPREADSHEET_ID }}
+          
+          # ===========================================
+          # Twitter
+          # ===========================================
+          TWITTER_ACCOUNT_ID: ${{ secrets.TWITTER_ACCOUNT_ID }}
+          TWITTER_ENTITY_ID: ${{ secrets.TWITTER_ENTITY_ID }}
+          
+          # ===========================================
+          # Blog/Email
+          # ===========================================
+          BLOGGER_EMAIL: ${{ secrets.BLOGGER_EMAIL }}
+          BLOG_AGENT_ENABLED: "true"
+          
+          # ===========================================
+          # Gmail
+          # ===========================================
+          GMAIL_CONNECTED_ACCOUNT_ID: ${{ secrets.GMAIL_CONNECTED_ACCOUNT_ID }}
+          GMAIL_USER_ID: ${{ secrets.GMAIL_USER_ID }}
+          GMAIL_ACCESS_TOKEN: ${{ secrets.GMAIL_ACCESS_TOKEN }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          GMAIL_TOKEN_URI: "https://oauth2.googleapis.com/token"
+          
+        run: |
+          echo "🚀 Starting FDWA Agent run at $(date)"
+          echo "Platform mode: ${{ github.event.inputs.platform || 'all' }}"
+          
+          # Run single agent execution (not continuous loop)
+          python -c "
+          from src.agent.graph import graph
+          import json
+          import logging
+          
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger(__name__)
+          
+          logger.info('🤖 Executing FDWA Agent...')
+          
+          try:
+              result = graph.invoke({})
+              
+              # Log results
+              tweet = result.get('tweet_text', 'N/A')[:100]
+              twitter_url = result.get('twitter_url', 'N/A')
+              fb_status = result.get('facebook_status', 'N/A')
+              telegram_status = result.get('telegram_status', 'N/A')
+              linkedin_status = result.get('linkedin_status', 'N/A')
+              instagram_status = result.get('instagram_status', 'N/A')
+              error = result.get('error')
+              
+              if error:
+                  logger.error(f'❌ Agent error: {error}')
+                  exit(1)
+              else:
+                  logger.info(f'✅ Tweet: {tweet}...')
+                  logger.info(f'🐦 Twitter: {twitter_url}')
+                  logger.info(f'📘 Facebook: {fb_status}')
+                  logger.info(f'📱 Telegram: {telegram_status}')
+                  logger.info(f'💼 LinkedIn: {linkedin_status}')
+                  logger.info(f'📸 Instagram: {instagram_status}')
+                  
+          except Exception as e:
+              logger.exception(f'💥 Critical error: {e}')
+              exit(1)
+          "
+          
+          echo "✅ Agent run completed at $(date)"
+          
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-logs-${{ github.run_number }}
+          path: |
+            fdwa_agent.log
+            agent_status.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Optional: Run blog generation separately (weekly)
+  run-blog:
+    name: Generate Weekly Blog
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 9 * * 1' || github.event_name == 'workflow_dispatch'
+    needs: run-agent
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+          
+      - name: Generate and send blog
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}  # Optional
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_TRACING: "true"
+          COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+          GMAIL_CONNECTED_ACCOUNT_ID: ${{ secrets.GMAIL_CONNECTED_ACCOUNT_ID }}
+          GMAIL_USER_ID: ${{ secrets.GMAIL_USER_ID }}
+          GMAIL_ACCESS_TOKEN: ${{ secrets.GMAIL_ACCESS_TOKEN }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          BLOGGER_EMAIL: ${{ secrets.BLOGGER_EMAIL }}
+        run: |
+          python -c "
+          from src.agent.blog_email_agent import generate_and_send_blog
+          import logging
+          
+          logging.basicConfig(level=logging.INFO)
+          
+          try:
+              result = generate_and_send_blog()
+              print(f'Blog generated: {result}')
+          except Exception as e:
+              print(f'Blog generation failed: {e}')
+          "

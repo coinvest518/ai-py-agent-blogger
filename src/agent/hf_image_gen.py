@@ -4,15 +4,16 @@ Generate images using Hugging Face Inference API - FREE alternative to Google Ge
 Uses huggingface_hub InferenceClient for text-to-image generation.
 """
 
+import base64
+import io
 import logging
 import os
-import io
-import base64
-import requests
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, Any
-from huggingface_hub import InferenceClient
 
-logger = logging.getLogger(__name__)
+import requests
+from huggingface_hub import InferenceClient
 
 logger = logging.getLogger(__name__)
 
@@ -106,10 +107,6 @@ def save_image_locally(image_bytes: bytes, filename: str = None) -> str:
     Returns:
         Local file path
     """
-    import os
-    from pathlib import Path
-    from datetime import datetime
-    
     # Create temp_images directory if it doesn't exist
     temp_dir = Path("temp_images")
     temp_dir.mkdir(exist_ok=True)
@@ -127,61 +124,6 @@ def save_image_locally(image_bytes: bytes, filename: str = None) -> str:
     
     logger.info(f"Image saved to: {filepath}")
     return str(filepath.absolute())
-
-
-def upload_to_imgbb(image_bytes: bytes, api_key: str = None) -> Dict[str, Any]:
-    """Upload image to imgbb for free public hosting (Instagram/Blog compatible).
-    
-    Args:
-        image_bytes: Raw image data
-        api_key: imgbb API key (get free at https://api.imgbb.com/)
-        
-    Returns:
-        Dict with success status and public URL
-    """
-    import base64
-    
-    if not api_key:
-        api_key = os.getenv("IMGBB_API_KEY")
-    
-    if not api_key:
-        return {
-            "success": False,
-            "error": "IMGBB_API_KEY not set. Get free key at https://api.imgbb.com/"
-        }
-    
-    # imgbb requires base64 encoded image
-    base64_image = base64.b64encode(image_bytes).decode('utf-8')
-    
-    url = "https://api.imgbb.com/1/upload"
-    payload = {
-        "key": api_key,
-        "image": base64_image,
-    }
-    
-    try:
-        response = requests.post(url, data=payload, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("success"):
-                image_url = data["data"]["url"]
-                logger.info(f"✅ Image uploaded to imgbb: {image_url}")
-                return {
-                    "success": True,
-                    "url": image_url,
-                    "delete_url": data["data"].get("delete_url"),
-                    "thumb_url": data["data"].get("thumb", {}).get("url"),
-                }
-            else:
-                error_msg = data.get("error", {}).get("message", "Upload failed")
-                return {"success": False, "error": error_msg}
-        else:
-            return {"success": False, "error": f"HTTP {response.status_code}"}
-            
-    except Exception as e:
-        logger.exception(f"imgbb upload error: {e}")
-        return {"success": False, "error": str(e)}
 
 
 def upload_to_imgbb(image_bytes: bytes, timeout: int = 30) -> Dict[str, Any]:

@@ -9,6 +9,7 @@ from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from src.agent.graph import graph
+from src.agent.realtime_status import broadcaster
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +49,12 @@ async def run_agent_task() -> dict:
     """Run the agent and return results."""
     logger.info("Scheduled agent run starting...")
     
+    # Notify start
+    await broadcaster.start_run(total_steps=11)
+    
     try:
         # Run agent
+        await broadcaster.update("Initializing agent graph...")
         result = graph.invoke({})
         
         # Update status
@@ -71,14 +76,17 @@ async def run_agent_task() -> dict:
         }
         
         logger.info("Agent run completed successfully")
+        await broadcaster.complete_run(success=True, results=status["results"])
         
     except Exception as e:
         logger.exception("Agent run failed")
+        await broadcaster.error(f"Agent run failed: {str(e)}", {"error": str(e)})
         status = {
             "last_run": datetime.now().isoformat(),
             "status": f"Failed: {str(e)}",
             "results": {}
         }
+        await broadcaster.complete_run(success=False, results={"error": str(e)})
     
     # Save and return
     global last_run_status

@@ -35,8 +35,14 @@ jobs:
           uv pip install -U pytest-asyncio
       - name: Run integration tests
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # LangSmith Tracing
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           LANGSMITH_TRACING: true
+          LANGSMITH_PROJECT: fdwa-multi-agent
+          # LLM APIs (Mistral + HuggingFace - no Anthropic/Google needed)
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Composio
+          COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
         run: |
           uv run pytest tests/integration_tests

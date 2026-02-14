@@ -3,288 +3,307 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FDWA Social Media Agent</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        .container {
-            background: white;
-            border-radius: 20px;
-            padding: 40px;
-            max-width: 1000px;
-            width: 100%;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        }
-        h1 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 28px;
-        }
-        .subtitle {
-            color: #666;
-            margin-bottom: 30px;
-            font-size: 14px;
-        }
-        .status-card {
-            background: #f8f9fa;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        .status-row {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 10px;
-            font-size: 14px;
-        }
-        .status-label { color: #666; }
-        .status-value { 
-            font-weight: 600;
-            color: #333;
-        }
-        .status-success { color: #10b981; }
-        .status-error { color: #ef4444; }
-        .btn {
-            width: 100%;
-            padding: 16px;
-            font-size: 16px;
-            font-weight: 600;
-            border: none;
-            border-radius: 12px;
-            cursor: pointer;
-            transition: all 0.3s;
-            margin-bottom: 10px;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
-        }
-        .btn-primary:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-        .results {
-            margin-top: 20px;
-            padding: 20px;
-            background: #f0fdf4;
-            border-radius: 12px;
-            border-left: 4px solid #10b981;
-            display: none;
-        }
-        .results.show { display: block; }
-        .results h3 {
-            color: #065f46;
-            margin-bottom: 15px;
-            font-size: 18px;
-        }
-        .result-item {
-            padding: 12px 0;
-            font-size: 14px;
-            color: #064e3b;
-            border-bottom: 1px solid #d1fae5;
-        }
-        .result-item:last-child { border-bottom: none; }
-        .result-label {
-            font-weight: 600;
-            display: block;
-            margin-bottom: 5px;
-        }
-        .result-value {
-            color: #047857;
-            word-wrap: break-word;
-        }
-        .post-image {
-            width: 100%;
-            border-radius: 8px;
-            margin: 10px 0;
-        }
-        .post-text {
-            background: white;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 10px 0;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-            line-height: 1.6;
-            max-height: none;
-            overflow: visible;
-        }
-        .loading {
-            display: none;
-            text-align: center;
-            padding: 20px;
-        }
-        .loading.show { display: block; }
-        .spinner {
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #667eea;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 10px;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
+    <title>FDWA AI Agent Dashboard | Autonomous Social Media</title>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <div class="container">
-        <h1>🚀 FDWA Social Media Agent</h1>
-        <p class="subtitle">Autonomous posting to Twitter, Facebook, LinkedIn & Instagram</p>
-        
-        <div class="status-card">
-            <div class="status-row">
-                <span class="status-label">Status:</span>
-                <span class="status-value" id="status">Loading...</span>
-            </div>
-            <div class="status-row">
-                <span class="status-label">Last Run:</span>
-                <span class="status-value" id="lastRun">Never</span>
-            </div>
-            <div class="status-row">
-                <span class="status-label">Next Run:</span>
-                <span class="status-value" id="nextRun">In 6 hours</span>
-            </div>
-        </div>
+    <!-- Animated Background -->
+    <div class="bg-animated"></div>
 
-        <button class="btn btn-primary" id="runBtn" onclick="runAgent()">
-            🚀 Run Agent Now
-        </button>
-
-        <div class="loading" id="loading">
-            <div class="spinner"></div>
-            <p>Agent is running... This may take 30-60 seconds</p>
-        </div>
-
-        <div class="results" id="results">
-            <h3>✅ Last Run Results</h3>
-            
-            <div class="result-item">
-                <span class="result-label">🖼️ Generated Image:</span>
-                <img id="image" class="post-image" style="display:none;" />
-            </div>
-            
-            <div class="result-item">
-                <span class="result-label">🐦 Twitter Post:</span>
-                <div class="post-text" id="tweet">-</div>
-            </div>
-            
-            <div class="result-item">
-                <span class="result-label">📘 Facebook Post:</span>
-                <div class="post-text" id="facebookPost">-</div>
-            </div>
-            
-            <div class="result-item">
-                <span class="result-label">💼 LinkedIn Post:</span>
-                <div class="post-text" id="linkedin">-</div>
-            </div>
-            
-            <div class="result-item">
-                <span class="result-label">📸 Instagram Caption:</span>
-                <div class="post-text" id="instagram">-</div>
-            </div>
-            
-            <div class="result-item">
-                <span class="result-label">📊 Platform Status:</span>
-                <div class="result-value">
-                    🐦 Twitter: <span id="twitter">-</span><br>
-                    📘 Facebook: <span id="facebook">-</span><br>
-                    💼 LinkedIn: <span id="linkedinStatus">-</span><br>
-                    📸 Instagram: <span id="instagramStatus">-</span><br>
-                    💬 Comment: <span id="comment">-</span>
+    <div class="dashboard">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <div class="logo-icon">🤖</div>
+                <div class="logo-text">
+                    <h1>FDWA Agent</h1>
+                    <p>AI Automation Hub</p>
                 </div>
             </div>
-        </div>
+
+            <nav>
+                <div class="nav-section">
+                    <div class="nav-title">Main</div>
+                    <div class="nav-item active" onclick="showSection('dashboard')">
+                        <span class="nav-icon">📊</span>
+                        <span>Dashboard</span>
+                        <span class="status-indicator status-active"></span>
+                    </div>
+                    <div class="nav-item" onclick="showSection('agents')">
+                        <span class="nav-icon">🤖</span>
+                        <span>AI Agents</span>
+                    </div>
+                    <div class="nav-item" onclick="showSection('terminal')">
+                        <span class="nav-icon">💻</span>
+                        <span>Terminal</span>
+                    </div>
+                    <div class="nav-item" onclick="showSection('connections')">
+                        <span class="nav-icon">🔌</span>
+                        <span>Connections</span>
+                    </div>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-title">Social Platforms</div>
+                    <div class="nav-item">
+                        <span class="nav-icon">🐦</span>
+                        <span>Twitter</span>
+                        <span class="status-indicator status-active"></span>
+                    </div>
+                    <div class="nav-item">
+                        <span class="nav-icon">📘</span>
+                        <span>Facebook</span>
+                        <span class="status-indicator status-active"></span>
+                    </div>
+                    <div class="nav-item">
+                        <span class="nav-icon">💼</span>
+                        <span>LinkedIn</span>
+                        <span class="status-indicator status-active"></span>
+                    </div>
+                    <div class="nav-item">
+                        <span class="nav-icon">📸</span>
+                        <span>Instagram</span>
+                        <span class="status-indicator status-active"></span>
+                    </div>
+                    <div class="nav-item">
+                        <span class="nav-icon">💬</span>
+                        <span>Telegram</span>
+                        <span class="status-indicator status-active"></span>
+                    </div>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-title">Tools</div>
+                    <div class="nav-item">
+                        <span class="nav-icon">📧</span>
+                        <span>Blog/Email</span>
+                    </div>
+                    <div class="nav-item">
+                        <span class="nav-icon">🎨</span>
+                        <span>Image Gen</span>
+                    </div>
+                    <div class="nav-item">
+                        <span class="nav-icon">⚙️</span>
+                        <span>Settings</span>
+                    </div>
+                </div>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="header">
+                <div>
+                    <h1 class="header-title">> FDWA_AI_AGENT_SYSTEM_</h1>
+                    <p style="color: var(--text-muted); font-size: 14px; margin-top: 4px;">
+                        Autonomous Social Media Automation • <span id="systemTime">00:00:00</span>
+                    </p>
+                </div>
+                <div class="header-controls">
+                    <button class="btn btn-secondary" onclick="loadStatus()">
+                        <span>🔄</span>
+                        <span>Refresh</span>
+                    </button>
+                    <button class="btn btn-primary" id="runBtn" onclick="runAgent()">
+                        <span>▶️</span>
+                        <span>Run Agent</span>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Dashboard Section -->
+            <section id="section-dashboard">
+                <!-- Stats Grid -->
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <span class="card-icon">⚡</span>
+                                <span>System Status</span>
+                            </div>
+                            <span class="card-badge badge-success" id="systemStatus">ONLINE</span>
+                        </div>
+                        <div class="card-content">
+                            <div class="stat-row">
+                                <span class="stat-label">Last Run</span>
+                                <span class="stat-value" id="lastRun">Never</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Next Scheduled</span>
+                                <span class="stat-value" id="nextRun">In 6 hours</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Total Posts</span>
+                                <span class="stat-value" id="totalPosts">0</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Success Rate</span>
+                                <span class="stat-value" id="successRate">100%</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <span class="card-icon">🎯</span>
+                                <span>Active Agents</span>
+                            </div>
+                            <span class="card-badge badge-success">6 RUNNING</span>
+                        </div>
+                        <div class="card-content">
+                            <div class="stat-row">
+                                <span class="stat-label">🐦 Twitter Agent</span>
+                                <span class="stat-value" style="color: var(--success);">●</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">📘 Facebook Agent</span>
+                                <span class="stat-value" style="color: var(--success);">●</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">💼 LinkedIn Agent</span>
+                                <span class="stat-value" style="color: var(--success);">●</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">📸 Instagram Agent</span>
+                                <span class="stat-value" style="color: var(--success);">●</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">💬 Telegram Agent</span>
+                                <span class="stat-value" style="color: var(--success);">●</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">📧 Blog/Email Agent</span>
+                                <span class="stat-value" style="color: var(--success);">●</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <span class="card-icon">🔌</span>
+                                <span>Integrations</span>
+                            </div>
+                            <span class="card-badge badge-success">CONNECTED</span>
+                        </div>
+                        <div class="card-content">
+                            <div class="stat-row">
+                                <span class="stat-label">LangChain</span>
+                                <span class="stat-value" style="color: var(--success);">✓</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Composio API</span>
+                                <span class="stat-value" style="color: var(--success);">✓</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Hugging Face</span>
+                                <span class="stat-value" style="color: var(--success);">✓</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">LangSmith</span>
+                                <span class="stat-value" style="color: var(--success);">✓</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">SERPAPI</span>
+                                <span class="stat-value" style="color: var(--success);">✓</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI Agents Grid -->
+                <h2 style="font-size: 20px; margin-bottom: 20px; color: var(--text-primary);">
+                    <span style="color: var(--terminal-green);">></span> AI Agent Collection
+                </h2>
+                <div class="agent-grid" id="agentGrid">
+                    <!-- Agents will be populated by JavaScript -->
+                </div>
+
+                <!-- Latest Run Results -->
+                <div class="card" id="resultsCard" style="display: none; margin-top: 24px;">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span class="card-icon">📊</span>
+                            <span>Latest Run Results</span>
+                        </div>
+                        <span class="card-badge badge-success">COMPLETED</span>
+                    </div>
+                    <div class="card-content">
+                        <div style="margin-bottom: 20px;">
+                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">GENERATED IMAGE</div>
+                            <img id="generatedImage" style="width: 100%; border-radius: 12px; display: none;" />
+                        </div>
+                        <div style="margin-bottom: 16px;">
+                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">🐦 TWITTER POST</div>
+                            <div id="twitterPost" style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; color: var(--text-primary); line-height: 1.6;"></div>
+                        </div>
+                        <div style="margin-bottom: 16px;">
+                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">� FACEBOOK POST</div>
+                            <div id="facebookPost" style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; color: var(--text-primary); line-height: 1.6;"></div>
+                        </div>
+                        <div style="margin-bottom: 16px;">
+                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">💼 LINKEDIN POST</div>
+                            <div id="linkedinPost" style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; color: var(--text-primary); line-height: 1.6;"></div>
+                        </div>
+                        <div style="margin-bottom: 16px;">
+                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">💬 TELEGRAM POST</div>
+                            <div id="telegramPost" style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; color: var(--text-primary); line-height: 1.6;"></div>
+                        </div>
+                        <div>
+                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">📸 INSTAGRAM CAPTION</div>
+                            <div id="instagramPost" style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; color: var(--text-primary); line-height: 1.6;"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Terminal Section -->
+            <section id="section-terminal" style="display: none;">
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span class="card-icon">💻</span>
+                            <span>System Terminal</span>
+                        </div>
+                        <button class="btn btn-secondary" onclick="clearTerminal()" style="padding: 8px 16px; font-size: 12px;">
+                            Clear
+                        </button>
+                    </div>
+                    <div class="terminal">
+                        <div class="terminal-header">
+                            <span class="terminal-dot dot-red"></span>
+                            <span class="terminal-dot dot-yellow"></span>
+                            <span class="terminal-dot dot-green"></span>
+                            <span style="color: var(--terminal-green); margin-left: 12px; font-size: 12px;">FDWA_AGENT_TERMINAL v2.0</span>
+                        </div>
+                        <div id="terminalOutput">
+                            <div class="terminal-line">
+                                <span class="terminal-prompt">$</span>
+                                <span class="terminal-text">System initialized...</span>
+                            </div>
+                            <div class="terminal-line">
+                                <span class="terminal-prompt">$</span>
+                                <span class="terminal-text terminal-success">All agents loaded successfully</span>
+                            </div>
+                            <div class="terminal-line">
+                                <span class="terminal-prompt">$</span>
+                                <span class="terminal-text">Waiting for commands...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Loading Spinner -->
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p style="color: var(--text-secondary);">Agent is running... This may take 30-60 seconds</p>
+            </div>
+        </main>
     </div>
 
-    <script>
-        async function loadStatus() {
-            try {
-                const res = await fetch('/status');
-                const data = await res.json();
-                
-                document.getElementById('status').textContent = data.status;
-                document.getElementById('status').className = 'status-value ' + 
-                    (data.status === 'Success' ? 'status-success' : 'status-error');
-                
-                if (data.last_run) {
-                    const date = new Date(data.last_run);
-                    document.getElementById('lastRun').textContent = date.toLocaleString();
-                }
-                
-                if (data.results && Object.keys(data.results).length > 0) {
-                    document.getElementById('results').classList.add('show');
-                    
-                    // Show image
-                    if (data.results.image) {
-                        const img = document.getElementById('image');
-                        img.src = data.results.image;
-                        img.style.display = 'block';
-                    }
-                    
-                    // Show posts (Facebook uses same text as Twitter)
-                    document.getElementById('tweet').textContent = data.results.tweet || '-';
-                    document.getElementById('facebookPost').textContent = data.results.tweet || '-';
-                    document.getElementById('linkedin').textContent = data.results.linkedin || '-';
-                    document.getElementById('instagram').textContent = data.results.instagram || '-';
-                    
-                    // Show statuses
-                    document.getElementById('twitter').textContent = data.results.twitter || '-';
-                    document.getElementById('facebook').textContent = data.results.facebook || '-';
-                    document.getElementById('linkedinStatus').textContent = data.results.linkedin_status || '-';
-                    document.getElementById('instagramStatus').textContent = data.results.instagram_status || '-';
-                    document.getElementById('comment').textContent = data.results.comment || '-';
-                }
-            } catch (e) {
-                console.error('Failed to load status:', e);
-            }
-        }
-
-        async function runAgent() {
-            const btn = document.getElementById('runBtn');
-            const loading = document.getElementById('loading');
-            
-            btn.disabled = true;
-            loading.classList.add('show');
-            
-            try {
-                const res = await fetch('/run', { method: 'POST' });
-                const data = await res.json();
-                
-                // Reload status
-                await loadStatus();
-                
-                alert('Agent completed! Check results below.');
-            } catch (e) {
-                alert('Error running agent: ' + e.message);
-            } finally {
-                btn.disabled = false;
-                loading.classList.remove('show');
-            }
-        }
-
-        // Load status on page load
-        loadStatus();
-        
-        // Refresh status every 30 seconds
-        setInterval(loadStatus, 30000);
-    </script>
+    <script src="/static/dashboard.js"></script>
 </body>
 </html>

@@ -8,15 +8,17 @@ This graph defines a three-step autonomous process:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
 import re
 import time
-import requests
+from datetime import datetime
 from pathlib import Path
-from typing import TypedDict
+from typing_extensions import TypedDict
 
+import requests
 from composio import Composio
 from dotenv import load_dotenv
 from langsmith import traceable
@@ -27,6 +29,9 @@ from src.agent.instagram_agent import convert_to_instagram_caption
 from src.agent.instagram_comment_agent import generate_instagram_reply
 from src.agent.blog_email_agent import generate_and_send_blog
 from src.agent import telegram_agent
+from src.agent.realtime_status import broadcaster
+from src.agent.duplicate_detector import is_duplicate_post, record_post
+import asyncio
 
 # Load environment variables from .env file
 load_dotenv()
@@ -43,14 +48,31 @@ composio_client = Composio(
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Helper function to call async broadcaster from sync code
+def _broadcast_sync(method_name: str, *args, **kwargs):
+    """Call async broadcaster method from sync context."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Create a new task in the running loop
+            asyncio.create_task(getattr(broadcaster, method_name)(*args, **kwargs))
+        else:
+            # Run in a new event loop  
+            asyncio.run(getattr(broadcaster, method_name)(*args, **kwargs))
+    except Exception as e:
+        logger.debug(f"Broadcast error (non-critical): {e}")
+
 class AgentState(TypedDict):
     """Represents the state of our autonomous agent.
 
     Attributes:
         trend_data: Raw trend data from SERPAPI or Tavily search.
         insight: Extracted insight aligned with FDWA brand.
-        tweet_text: The generated tweet text.
-        linkedin_text: The LinkedIn post text.
+        tweet_text: The generated tweet text (Twitter-specific, 280 chars).
+        facebook_text: Facebook-specific post (longer, conversational).
+        linkedin_text: The LinkedIn post text (professional).
+        instagram_caption: Instagram-specific caption (visual, emojis).
+        telegram_message: Telegram-specific message (direct, action).
         image_url: The URL of the generated image.
         image_path: The local path of the generated image.
         twitter_url: The URL of the created Twitter post.
@@ -63,8 +85,10 @@ class AgentState(TypedDict):
     trend_data: str
     insight: str
     tweet_text: str
+    facebook_text: str
     linkedin_text: str
     instagram_caption: str
+    telegram_message: str
     image_url: str
     image_path: str
     twitter_url: str
@@ -79,7 +103,6 @@ class AgentState(TypedDict):
     comment_status: str
     blog_status: str
     blog_title: str
-    telegram_message: str
     telegram_status: str
     error: str
 
@@ -161,6 +184,258 @@ def _enhance_prompt_for_image(text: str) -> str:
     return visual_prompt
 
 
+def _extract_search_insights(search_data: dict) -> str:
+    """Extract clean, readable text from SERPAPI/Tavily search results.
+    
+    Converts raw API response dict into human-readable insights for content generation.
+    Handles nested response structures from Composio.
+    
+    Args:
+        search_data: Raw search API response dict (may be nested)
+        
+    Returns:
+        Clean text summary of search results
+    """
+    insights = []
+    
+    # SERPAPI format: Check for nested structure first
+    # Option 1: data.results.organic_results (Composio nested)
+    # Option 2: data.organic_results (direct)
+    organic_results = None
+    
+    if "results" in search_data and isinstance(search_data["results"], dict):
+        # Nested format: search_data.results.organic_results
+        nested_results = search_data.get("results", {})
+        organic_results = nested_results.get("organic_results", [])
+    elif "organic_results" in search_data:
+        # Direct format: search_data.organic_results
+        organic_results = search_data.get("organic_results", [])
+    
+    if organic_results and isinstance(organic_results, list):
+        for result in organic_results[:5]:  # Top 5 results
+            if isinstance(result, dict):
+                title = result.get("title", "")
+                snippet = result.get("snippet", "")
+                if title:
+                    insights.append(f"{title}")
+                if snippet and snippet != title:
+                    insights.append(f"{snippet}")
+    
+    # Tavily format: Check for nested structure first
+    # Option 1: data.response_data.results (Composio nested)
+    # Option 2: data.results (direct)
+    tavily_results = None
+    tavily_answer = None
+    
+    if "response_data" in search_data and isinstance(search_data["response_data"], dict):
+        # Nested format: search_data.response_data.results
+        response_data = search_data.get("response_data", {})
+        tavily_results = response_data.get("results", [])
+        tavily_answer = response_data.get("answer", "")
+    elif "results" in search_data and isinstance(search_data["results"], list):
+        # Direct format: search_data.results
+        tavily_results = search_data.get("results", [])
+        tavily_answer = search_data.get("answer", "")
+    
+    if tavily_results and isinstance(tavily_results, list):
+        for result in tavily_results[:5]:  # Top 5 results
+            if isinstance(result, dict):
+                title = result.get("title", "")
+                content = result.get("content", "")
+                if title:
+                    insights.append(f"{title}")
+                if content and content != title:
+                    # Take first 200 chars of content
+                    insights.append(f"{content[:200]}")
+    
+    # Handle answer field (Tavily)
+    if tavily_answer:
+        insights.insert(0, tavily_answer)
+    
+    # Join with newlines and limit total length
+    text = "\n".join(insights)
+    return text[:800] if text else "No results found"
+
+
+# ==================== PLATFORM-SPECIFIC CONTENT ADAPTERS ====================
+
+def _adapt_for_twitter(base_insights: str) -> str:
+    """Adapt content for Twitter: Short, hashtag-heavy, engaging (280 chars max).
+    
+    Args:
+        base_insights: Research insights from trend data
+        
+    Returns:
+        Twitter-optimized content (280 chars)
+    """
+    # Extract key topic from first line
+    first_line = base_insights.split('\n')[0][:100]
+    
+    # Create engaging Twitter format
+    tweet = (
+        f"🚀 {first_line}\n\n"
+        f"Get AI automation tools at https://fdwa.site ✨\n\n"
+        f"#YBOT #AIAutomation #CreditRepair #FinancialFreedom"
+    )
+    
+    # Ensure under 280 characters
+    if len(tweet) > 280:
+        tweet = tweet[:277] + "..."
+    
+    return tweet
+
+
+def _adapt_for_facebook(base_insights: str) -> str:
+    """Adapt content for Facebook: Longer, conversational, community-focused.
+    
+    Args:
+        base_insights: Research insights from trend data
+        
+    Returns:
+        Facebook-optimized content (500+ chars)
+    """
+    # Extract key points
+    first_line = base_insights.split('\n')[0][:150]
+    
+    # Create conversational Facebook format
+    post = (
+        f"💡 {first_line}\n\n"
+        f"The future of business is here, and it's powered by AI automation. "
+        f"Whether you're building credit, scaling your business, or creating passive income streams, "
+        f"the right tools make all the difference.\n\n"
+        f"🎯 What we're focused on:\n"
+        f"• AI automation for business workflows\n"
+        f"• Credit repair strategies that actually work\n"
+        f"• Digital products and passive income\n"
+        f"• Financial empowerment through technology\n\n"
+        f"Ready to transform your business? Visit https://fdwa.site to learn more.\n\n"
+        f"#AIAutomation #BusinessGrowth #FinancialFreedom #CreditRepair #FDWA"
+    )
+    
+    return post
+
+
+def _adapt_for_linkedin(base_insights: str) -> str:
+    """Adapt content for LinkedIn: Professional, business-focused, value-driven.
+    
+    Args:
+        base_insights: Research insights from trend data
+        
+    Returns:
+        LinkedIn-optimized content (professional tone)
+    """
+    # Extract key topic
+    first_line = base_insights.split('\n')[0][:120]
+    
+    # Create professional LinkedIn format
+    post = (
+        f"📊 {first_line}\n\n"
+        f"In today's rapidly evolving business landscape, organizations that embrace AI automation "
+        f"and data-driven strategies are achieving 3-5x better operational efficiency.\n\n"
+        f"Key areas driving business transformation:\n\n"
+        f"🤖 AI Automation - Streamlining workflows and reducing operational costs\n"
+        f"📈 Financial Optimization - Strategic credit management and wealth building\n"
+        f"💼 Digital Product Development - Creating scalable revenue streams\n"
+        f"🎯 Process Automation - Eliminating manual tasks and human error\n\n"
+        f"At FDWA, we help businesses implement these strategies through custom AI solutions "
+        f"and proven financial frameworks.\n\n"
+        f"Interested in learning more? Connect with us at https://fdwa.site\n\n"
+        f"#BusinessTransformation #AI #Automation #FinancialStrategy #DigitalInnovation"
+    )
+    
+    return post
+
+
+def _adapt_for_telegram(base_insights: str) -> str:
+    """Adapt content for Telegram: Crypto/DeFi focused with market data.
+    
+    This creates crypto-specific content for Telegram group members
+    interested in DeFi, tokens, and cryptocurrency trends.
+    
+    Args:
+        base_insights: Research insights from trend data
+        
+    Returns:
+        Telegram crypto-optimized content
+    """
+    # Extract crypto tokens from insights
+    crypto_keywords = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "LINK", "UNI", 
+                       "AAVE", "CRV", "bitcoin", "ethereum", "defi", "crypto", "token",
+                       "blockchain", "web3", "nft", "dao"]
+    
+    found_tokens = []
+    insights_lower = base_insights.lower()
+    
+    for keyword in crypto_keywords:
+        if keyword.lower() in insights_lower:
+            found_tokens.append(keyword.upper() if len(keyword) <= 5 else keyword.title())
+    
+    # Remove duplicates and limit
+    found_tokens = list(dict.fromkeys(found_tokens))[:5]
+    
+    # Get first line for context
+    first_line = base_insights.split('\n')[0][:100]
+    
+    # Build crypto-focused Telegram message
+    if found_tokens:
+        tokens_list = " | ".join(found_tokens)
+        message = (
+            f"🚀 DeFi Market Update\n\n"
+            f"📊 Trending: {tokens_list}\n\n"
+            f"📈 {first_line}\n\n"
+            f"💡 Stay ahead with real-time DeFi insights and AI-powered automation.\n"
+            f"Get YBOT tools at https://fdwa.site\n\n"
+            f"#DeFi #Crypto #YieldBot #FinancialFreedom"
+        )
+    else:
+        # Generic crypto focus when no specific tokens found
+        message = (
+            f"🚀 DeFi & Crypto Market Update\n\n"
+            f"📈 {first_line}\n\n"
+            f"💰 Key opportunities:\n"
+            f"→ DeFi yield farming strategies\n"
+            f"→ Smart contract automation\n"
+            f"→ Token portfolio optimization\n"
+            f"→ Market trend analysis\n\n"
+            f"🤖 Automate your crypto strategy: https://fdwa.site\n\n"
+            f"#DeFi #Crypto #Web3 #YieldBot #Automation"
+        )
+    
+    return message
+
+
+def _adapt_for_instagram(base_insights: str) -> str:
+    """Adapt content for Instagram: Visual-first, emoji-heavy, lifestyle-focused.
+    
+    Args:
+        base_insights: Research insights from trend data
+        
+    Returns:
+        Instagram-optimized caption (visual, engaging)
+    """
+    # Extract key topic
+    first_line = base_insights.split('\n')[0][:80]
+    
+    # Create visual Instagram format
+    caption = (
+        f"✨ {first_line}\n\n"
+        f"🤖 AI automation isn't just for tech companies anymore\n"
+        f"💎 It's for entrepreneurs who want freedom\n"
+        f"🚀 It's for businesses ready to scale\n"
+        f"💰 It's for anyone building their financial future\n\n"
+        f"We help you:\n"
+        f"→ Build AI systems that work 24/7\n"
+        f"→ Fix your credit strategically\n"
+        f"→ Create digital products that sell\n"
+        f"→ Automate everything\n\n"
+        f"🔗 Learn more: fdwa.site\n\n"
+        f"#AIAutomation #FinancialFreedom #Entrepreneur #PassiveIncome #CreditRepair "
+        f"#DigitalProducts #BusinessGrowth #YBOT #FutureOfWork #Automation"
+    )
+    
+    return caption
+
+
 def research_trends_node(state: AgentState) -> dict:
     """Research trending topics using SERPAPI with Tavily fallback.
 
@@ -170,9 +445,9 @@ def research_trends_node(state: AgentState) -> dict:
     Returns:
         Dictionary with trend_data or error.
     """
-    import json
-    from datetime import datetime
     logger.info("---RESEARCHING TRENDS---")
+    _broadcast_sync("start_step", "research", "Researching trending topics and market insights")
+    _broadcast_sync("update", "Analyzing current trends in credit repair, AI automation, and digital products...")
 
     # Diverse search queries for different business topics
     search_queries = [
@@ -219,8 +494,14 @@ def research_trends_node(state: AgentState) -> dict:
             if isinstance(data, dict) and any(
                 k in str(data).lower() for k in ["account out of searches", "error", "limit"]):
                 raise Exception("SERPAPI out of searches or error")
-            trend_data = str(data)
+            
+            # Extract clean text from search results instead of raw dict
+            trend_data = _extract_search_insights(data)
+            if not trend_data or len(trend_data) < 20:
+                raise Exception("No useful data extracted from SERPAPI")
+                
             logger.info("SERPAPI search successful: %d characters", len(trend_data))
+            _broadcast_sync("complete_step", "research", {"source": "SERPAPI", "data_length": len(trend_data)})
             return {"trend_data": trend_data}
         except Exception as serpapi_error:
             logger.warning("SERPAPI search failed: %s", serpapi_error)
@@ -232,6 +513,7 @@ def research_trends_node(state: AgentState) -> dict:
                     cache = json.load(f)
                 if cache.get("date") == today and cache.get("trend_data"):
                     logger.info("Using cached Tavily trend data for today.")
+                    _broadcast_sync("complete_step", "research", {"source": "Tavily (cached)"})
                     return {"trend_data": cache["trend_data"]}
             # Not cached, do Tavily search
             search_response = composio_client.tools.execute(
@@ -252,27 +534,44 @@ def research_trends_node(state: AgentState) -> dict:
                 },
                 connected_account_id=os.getenv("TAVILY_ACCOUNT_ID")
             )
-            trend_data = str(search_response.get('data', {}))
+            
+            # Extract clean text from Tavily results
+            search_data = search_response.get('data', {})
+            trend_data = _extract_search_insights(search_data)
+            if not trend_data or len(trend_data) < 20:
+                raise Exception("No useful data extracted from Tavily")
+            
             # Save to cache
             with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump({"date": today, "trend_data": trend_data}, f)
             logger.info("Tavily fallback successful: %d characters", len(trend_data))
+            _broadcast_sync("complete_step", "research", {"source": "Tavily", "data_length": len(trend_data)})
             return {"trend_data": trend_data}
     except Exception as e:
         logger.exception("Both search methods failed: %s", e)
+        _broadcast_sync("error", f"Research failed: {str(e)}")
         return {"error": str(e), "trend_data": "No trend data available"}
 
 
 def generate_tweet_node(state: AgentState) -> dict:
-    """Generate strategic FDWA-branded tweet using template-based formatting (no AI needed).
+    """Generate platform-specific content for ALL social media platforms.
+    
+    Uses base research insights to create tailored content for:
+    - Twitter: Short, hashtag-heavy (280 chars)
+    - Facebook: Longer, conversational
+    - LinkedIn: Professional, business-focused
+    - Instagram: Visual, emoji-heavy
+    - Telegram: Direct, action-oriented
 
     Args:
         state: Current agent state with trend_data.
 
     Returns:
-        Dictionary with tweet_text or error.
+        Dictionary with platform-specific content for all channels.
     """
-    logger.info("---GENERATING FDWA TWEET---")
+    logger.info("---GENERATING PLATFORM-SPECIFIC CONTENT---")
+    _broadcast_sync("start_step", "generate_content", "Creating platform-specific content")
+    _broadcast_sync("update", "Adapting content for Twitter, Facebook, LinkedIn, Instagram, Telegram...")
 
     trend_data = state.get("trend_data", "")
     # Remove any error or search system text from trend_data
@@ -281,34 +580,58 @@ def generate_tweet_node(state: AgentState) -> dict:
             trend_data = ""
             break
 
-    # Template-based tweet generation (fast, no API calls)
-    if trend_data:
-        # Extract key topic from trend data
-        summary = trend_data.strip()[:150]
-        # Clean up for tweet
-        summary = summary.split('\n')[0]  # First line only
-        
-        # Create branded tweet
-        tweet = (
-            f"🚀 {summary}\n\n"
-            f"Get AI automation tools at https://fdwa.site ✨\n\n"
-            f"#YBOT #AIAutomation #CreditRepair #FinancialFreedom"
-        )
+    # Use trend data as base insights, or fallback
+    if trend_data and len(trend_data) > 20:
+        base_insights = trend_data
     else:
         # Fallback when no trend data
-        tweet = (
-            "💡 Transform your business with AI automation and smart credit strategies! "
-            "Start building your financial future today. https://fdwa.site #YBOT #AIAgent"
+        base_insights = (
+            "AI automation is transforming business operations in 2026. "
+            "Smart entrepreneurs are using AI agents to scale their businesses, "
+            "automate customer service, and build passive income streams. "
+            "Financial empowerment through technology is now accessible to everyone."
         )
     
-    # Ensure under 280 characters
-    if len(tweet) > 280:
-        tweet = tweet[:277] + "..."
+    logger.info("Generating content from base insights (%d chars)", len(base_insights))
+    
+    # Generate platform-specific content using adapters
+    twitter_content = _adapt_for_twitter(base_insights)
+    facebook_content = _adapt_for_facebook(base_insights)
+    linkedin_content = _adapt_for_linkedin(base_insights)
+    instagram_content = _adapt_for_instagram(base_insights)
+    telegram_content = _adapt_for_telegram(base_insights)
+    
+    # Check Twitter for duplicates (main check)
+    if is_duplicate_post(twitter_content, "twitter"):
+        logger.warning("⚠️  Duplicate content detected! Adding timestamp variation...")
+        _broadcast_sync("update", "Duplicate detected, creating unique variation...")
+        
+        # Add timestamp to make it unique
+        from datetime import datetime
+        unique_suffix = f"\n\n⏰ {datetime.now().strftime('%I:%M %p')}"
+        twitter_content = twitter_content[:280 - len(unique_suffix)] + unique_suffix
 
-    logger.info("Generated Tweet: %s", tweet)
-    logger.info("Character count: %d", len(tweet))
+    logger.info("✅ Generated Twitter content: %d chars", len(twitter_content))
+    logger.info("✅ Generated Facebook content: %d chars", len(facebook_content))
+    logger.info("✅ Generated LinkedIn content: %d chars", len(linkedin_content))
+    logger.info("✅ Generated Instagram content: %d chars", len(instagram_content))
+    logger.info("✅ Generated Telegram content: %d chars", len(telegram_content))
+    
+    _broadcast_sync("complete_step", "generate_content", {
+        "twitter_length": len(twitter_content),
+        "facebook_length": len(facebook_content),
+        "linkedin_length": len(linkedin_content),
+        "instagram_length": len(instagram_content),
+        "telegram_length": len(telegram_content)
+    })
 
-    return {"tweet_text": tweet}
+    return {
+        "tweet_text": twitter_content,
+        "facebook_text": facebook_content,
+        "linkedin_text": linkedin_content,
+        "instagram_caption": instagram_content,
+        "telegram_message": telegram_content
+    }
 
 
 def generate_image_node(state: AgentState) -> dict:
@@ -321,6 +644,9 @@ def generate_image_node(state: AgentState) -> dict:
         Dictionary with image_path (local file) and image_url (HTTP) or error.
     """
     logger.info("---GENERATING IMAGE WITH HUGGING FACE---")
+    _broadcast_sync("start_step", "generate_image", "Generating AI image with Hugging Face")
+    _broadcast_sync("update", "Creating futuristic neon cyberpunk style image...")
+    
     tweet_text = state.get("tweet_text", "")
 
     if not tweet_text:
@@ -359,6 +685,7 @@ def generate_image_node(state: AgentState) -> dict:
             if upload_result.get("success"):
                 http_url = upload_result["url"]
                 logger.info("Image uploaded to imgbb: %s", http_url)
+                _broadcast_sync("complete_step", "generate_image", {"url": http_url, "path": image_path})
                 
                 return {
                     "image_path": image_path,
@@ -376,10 +703,12 @@ def generate_image_node(state: AgentState) -> dict:
         else:
             error_msg = result.get("error", "Unknown HF error")
             logger.error("Hugging Face image generation failed: %s", error_msg)
+            _broadcast_sync("error", f"Image generation failed: {error_msg}")
             return {"error": f"HF generation failed: {error_msg}"}
             
     except Exception as e:
         logger.exception("Error generating image with Hugging Face: %s", e)
+        _broadcast_sync("error", f"Image generation error: {str(e)}")
         return {"error": f"Image generation error: {e!s}"}
 
 
@@ -650,31 +979,34 @@ def convert_to_telegram_crypto_post(trend_data: str, tweet_text: str) -> str:
 
 
 def post_telegram_node(state: AgentState) -> dict:
-    """Post crypto market update to Telegram group.
+    """Post to Telegram group using platform-specific content.
     
     Args:
-        state: Current agent state with trend_data and tweet_text.
+        state: Current agent state with telegram_message and image_url.
         
     Returns:
         Dictionary with telegram_status and telegram_message.
     """
     logger.info("---POSTING TO TELEGRAM---")
     
+    # Use platform-specific Telegram content generated earlier
+    telegram_message = state.get("telegram_message", "")
     trend_data = state.get("trend_data", "")
     tweet_text = state.get("tweet_text", "")
     image_url = state.get("image_url", "")
     
-    if not tweet_text:
-        logger.warning("No tweet text available, skipping Telegram post")
-        return {
-            "telegram_status": "Skipped: No content",
-            "telegram_message": ""
-        }
+    # Fallback to crypto conversion if no telegram_message (backward compatibility)
+    if not telegram_message:
+        if not tweet_text:
+            logger.warning("No content available for Telegram, skipping post")
+            return {
+                "telegram_status": "Skipped: No content",
+                "telegram_message": ""
+            }
+        telegram_message = convert_to_telegram_crypto_post(trend_data, tweet_text)
     
     try:
-        # Convert to Telegram crypto format (sub-agent processes data)
-        telegram_message = convert_to_telegram_crypto_post(trend_data, tweet_text)
-        logger.info("Telegram message formatted: %s", telegram_message[:100])
+        logger.info("Telegram message (platform-specific): %s", telegram_message[:100])
         
         # Send to Telegram group
         if image_url:
@@ -696,6 +1028,10 @@ def post_telegram_node(state: AgentState) -> dict:
             msg_data = result.get('data', {}).get('result', {})
             message_id = msg_data.get('message_id', 'N/A')
             logger.info("✅ Telegram post successful: message_id=%s", message_id)
+            
+            # Record post to prevent duplicates
+            record_post(telegram_message, "telegram", post_id=str(message_id))
+            
             return {
                 "telegram_status": f"Posted: message_id={message_id}",
                 "telegram_message": telegram_message
@@ -717,7 +1053,7 @@ def post_telegram_node(state: AgentState) -> dict:
 
 
 def post_instagram_node(state: AgentState) -> dict:
-    """Post to Instagram with image and caption.
+    """Post to Instagram with image and platform-specific caption.
 
     Args:
         state: Current agent state with instagram_caption and image_url.
@@ -726,15 +1062,22 @@ def post_instagram_node(state: AgentState) -> dict:
         Dictionary with instagram_status.
     """
     logger.info("---POSTING TO INSTAGRAM---")
+    
+    # Use platform-specific Instagram caption generated earlier
+    instagram_caption = state.get("instagram_caption", "")
     tweet_text = state.get("tweet_text", "")
     image_url = state.get("image_url")
 
-    if not tweet_text or not image_url:
-        return {"instagram_status": "Skipped: No content or image"}
-
-    # Convert tweet to Instagram caption
-    instagram_caption = convert_to_instagram_caption(tweet_text)
-    logger.info("Instagram caption: %s", instagram_caption[:100])
+    # Fallback to conversion if no instagram_caption (backward compatibility)
+    if not instagram_caption:
+        if not tweet_text or not image_url:
+            return {"instagram_status": "Skipped: No content or image"}
+        instagram_caption = convert_to_instagram_caption(tweet_text)
+    
+    if not image_url:
+        return {"instagram_status": "Skipped: No image"}
+    
+    logger.info("Instagram caption (platform-specific): %s", instagram_caption[:100])
 
     try:
         # Get Instagram user ID from environment
@@ -777,6 +1120,10 @@ def post_instagram_node(state: AgentState) -> dict:
             if publish_response.get("successful", False):
                 post_id = publish_response.get("data", {}).get("id", "")
                 logger.info("Instagram posted successfully! Post ID: %s", post_id)
+                
+                # Record post to prevent duplicates
+                record_post(instagram_caption, "instagram", post_id=post_id, image_url=image_url)
+                
                 return {"instagram_status": "Posted", "instagram_caption": instagram_caption, "instagram_post_id": post_id}
             else:
                 error_msg = publish_response.get("error", "Publish failed")
@@ -793,7 +1140,7 @@ def post_instagram_node(state: AgentState) -> dict:
 
 
 def post_linkedin_node(state: AgentState) -> dict:
-    """Post to LinkedIn using converted text.
+    """Post to LinkedIn using platform-specific professional content.
 
     Args:
         state: Current agent state with linkedin_text and image_url.
@@ -802,15 +1149,19 @@ def post_linkedin_node(state: AgentState) -> dict:
         Dictionary with linkedin_status.
     """
     logger.info("---POSTING TO LINKEDIN---")
+    
+    # Use platform-specific LinkedIn content generated earlier
+    linkedin_text = state.get("linkedin_text", "")
     tweet_text = state.get("tweet_text", "")
     image_url = state.get("image_url")
 
-    if not tweet_text:
-        return {"linkedin_status": "Skipped: No content"}
-
-    # Convert tweet to LinkedIn post
-    linkedin_text = convert_to_linkedin_post(tweet_text)
-    logger.info("LinkedIn post: %s", linkedin_text[:100])
+    # Fallback to conversion if no linkedin_text (backward compatibility)
+    if not linkedin_text:
+        if not tweet_text:
+            return {"linkedin_status": "Skipped: No content"}
+        linkedin_text = convert_to_linkedin_post(tweet_text)
+    
+    logger.info("LinkedIn post (platform-specific): %s", linkedin_text[:100])
 
     try:
         # Hardcoded LinkedIn credentials (same pattern as Twitter/Facebook)
@@ -838,6 +1189,10 @@ def post_linkedin_node(state: AgentState) -> dict:
         
         if linkedin_response.get("successful", False):
             logger.info("LinkedIn posted successfully!")
+            
+            # Record post to prevent duplicates
+            record_post(linkedin_text, "linkedin")
+            
             return {"linkedin_status": "Posted", "linkedin_text": linkedin_text}
         else:
             error_msg = linkedin_response.get("error", "Unknown error")
@@ -859,12 +1214,15 @@ def post_social_media_node(state: AgentState) -> dict:
         Dictionary with twitter_url and facebook_status.
     """
     logger.info("---POSTING TO SOCIAL MEDIA---")
+    _broadcast_sync("start_step", "post_social", "Publishing content to Twitter and Facebook")
+    
     tweet_text = state.get("tweet_text")
     twitter_text = tweet_text
     image_url = state.get("image_url")
     image_path = state.get("image_path")
 
     if not tweet_text:
+        _broadcast_sync("error", "Tweet text is empty, skipping post")
         return {"error": "Tweet text is empty, skipping post."}
 
     if image_url:
@@ -888,6 +1246,7 @@ def post_social_media_node(state: AgentState) -> dict:
 
     # Post to Twitter with image support
     logger.info("Posting to Twitter: %s", twitter_text)
+    _broadcast_sync("update", "Publishing to Twitter...")
     try:
         twitter_params = {"text": twitter_text}
         
@@ -900,7 +1259,6 @@ def post_social_media_node(state: AgentState) -> dict:
                 
                 if local_image_path:
                     # Make sure path is absolute
-                    import os
                     local_image_path = os.path.abspath(local_image_path)
                     logger.warning("Local image path: %s", local_image_path)
                     logger.warning("File exists: %s", os.path.exists(local_image_path))
@@ -961,20 +1319,34 @@ def post_social_media_node(state: AgentState) -> dict:
         results["twitter_post_id"] = twitter_id
         logger.info("Twitter posted successfully! URL: %s", twitter_url)
         logger.info("Twitter Post ID: %s", twitter_id)
+        _broadcast_sync("update", f"✓ Twitter posted: {twitter_url}")
+        
+        # Record post to prevent duplicates
+        record_post(twitter_text, "twitter", post_id=twitter_id, image_url=image_url)
+        
     except Exception as e:
-        logger.exception("Twitter posting failed: %s", e)
-        results["twitter_url"] = f"Twitter failed: {e!s}"
+        error_msg = str(e)
+        # Check for expired account
+        if "EXPIRED state" in error_msg or "410" in error_msg:
+            logger.error("⚠️  Twitter account expired! Reconnect at: https://app.composio.dev/")
+            _broadcast_sync("error", "Twitter account expired - needs reconnection at https://app.composio.dev/")
+            results["twitter_url"] = "Twitter failed: Account expired - reconnect at https://app.composio.dev/"
+        else:
+            logger.exception("Twitter posting failed: %s", e)
+            _broadcast_sync("error", f"Twitter error: {error_msg}")
+            results["twitter_url"] = f"Twitter failed: {e!s}"
     
-    # Post to Facebook
+    # Post to Facebook (use Facebook-specific content)
+    facebook_text = state.get("facebook_text") or tweet_text  # Fall back to tweet if not set
     logger.info("Posting to Facebook")
-    logger.info("Message: %s", tweet_text)
+    logger.info("Message: %s", facebook_text[:100])
     logger.info("Page ID: %s", os.getenv("FACEBOOK_PAGE_ID"))
     logger.info("Image File: %s", image_path if image_path else "None")
     logger.info("Published: True")
     try:
         facebook_params = {
             "page_id": os.getenv("FACEBOOK_PAGE_ID"),
-            "message": tweet_text,
+            "message": facebook_text,
             "published": True,
         }
 
@@ -1034,13 +1406,28 @@ def post_social_media_node(state: AgentState) -> dict:
         
         logger.info("Facebook posted successfully!")
         logger.info("Post ID: %s", facebook_post_id)
+        _broadcast_sync("update", f"✓ Facebook posted: {facebook_post_id}")
         
         results["facebook_status"] = f"Posted: {facebook_post_id}"
         results["facebook_post_id"] = facebook_post_id
+        
+        # Record post to prevent duplicates (use Facebook-specific content)
+        record_post(facebook_text, "facebook", post_id=facebook_post_id, image_url=image_url)
+        
     except Exception as e:
-        logger.exception("Facebook posting failed: %s", e)
-        results["facebook_status"] = f"Failed: {e!s}"
+        error_msg = str(e)
+        # Check for expired account
+        if "EXPIRED state" in error_msg or "410" in error_msg:
+            logger.error("⚠️  Facebook account expired! Reconnect at: https://app.composio.dev/")
+            _broadcast_sync("error", "Facebook account expired - needs reconnection at https://app.composio.dev/")
+            results["facebook_status"] = f"Failed: Account expired - reconnect at https://app.composio.dev/"
+        else:
+            logger.exception("Facebook posting failed: %s", e)
+            _broadcast_sync("error", f"Facebook error: {error_msg}")
+            results["facebook_status"] = f"Failed: {e!s}"
     
+    # Complete social media posting step
+    _broadcast_sync("complete_step", "post_social", results)
     return results
 
 

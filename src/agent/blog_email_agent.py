@@ -2,6 +2,7 @@
 
 This agent generates blog content using predefined templates and sends it via Gmail.
 Image URLs are embedded directly in the HTML body for display.
+Now includes strategic knowledge base integration and link performance tracking.
 """
 
 import hashlib
@@ -9,9 +10,12 @@ import json
 import logging
 import os
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+import requests
 from composio import Composio
 from dotenv import load_dotenv
 
@@ -26,6 +30,15 @@ composio_client = Composio(
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Import link tracker for performance tracking
+try:
+    from .link_tracker import LinkPerformanceTracker
+    link_tracker = LinkPerformanceTracker()
+    logger.info("✅ Link performance tracker initialized")
+except Exception as e:
+    logger.warning(f"Link tracker not available: {e}")
+    link_tracker = None
 
 # File to track sent blog posts (prevents duplicates)
 SENT_POSTS_FILE = Path(__file__).parent.parent.parent / "sent_blog_posts.json"
@@ -319,10 +332,34 @@ def _load_business_profile() -> Dict[str, Any]:
             logger.exception("Failed to load business_profile.json")
     # Fallback: minimal profile built from env
     return {
-        "primary_site": os.getenv("PRIMARY_SITE", "https://fwda.site"),
-        "about": os.getenv("BUSINESS_ABOUT", "FWDA builds custom AI automation workflows for SMBs."),
+        "primary_site": os.getenv("PRIMARY_SITE", "https://fdwa.site"),
+        "about": os.getenv("BUSINESS_ABOUT", "FDWA builds custom AI automation workflows for SMBs."),
         "products": []
     }
+
+
+def _load_knowledge_base() -> str:
+    """Load FDWA knowledge base for strategic content generation."""
+    kb_path = Path(__file__).parent.parent.parent / "FDWA_KNOWLEDGE_BASE.md"
+    if kb_path.exists():
+        try:
+            with open(kb_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Could not load knowledge base: {e}")
+    return ""
+
+
+def _load_products_catalog() -> str:
+    """Load FDWA products catalog for intelligent product recommendations."""
+    catalog_path = Path(__file__).parent.parent.parent / "FDWA_PRODUCTS_CATALOG.md"
+    if catalog_path.exists():
+        try:
+            with open(catalog_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Could not load products catalog: {e}")
+    return ""
 
 
 def _save_business_profile(profile: Dict[str, Any]) -> None:
@@ -342,8 +379,6 @@ def scrape_buymeacoffee_shop(url: str) -> list:
     are unavailable or parsing fails, returns an empty list.
     """
     try:
-        import re
-        import requests
         from bs4 import BeautifulSoup
 
         resp = requests.get(url, timeout=10)
@@ -560,52 +595,63 @@ def generate_blog_content(trend_data: str, image_path: Optional[str] = None) -> 
                 except Exception as e:
                     logger.debug("Mistral initialization failed: %s", e)
 
-                # 2) Hugging Face Inference API via HTTP (matches HF router docs)
+                # 2) Hugging Face Inference API via official InferenceClient with Provider routing
                 try:
-                    import requests
+                    from huggingface_hub import InferenceClient
                     hf_token = os.getenv("HF_TOKEN")
                     if hf_token:
-                        hf_model = os.getenv("BLOG_LLM_MODEL_HF", "HuggingFaceTB/SmolLM3-3B:hf-inference")
-                        hf_temp = float(os.getenv("BLOG_LLM_TEMPERATURE", "0.25"))
+                        # Use provider routing for reliable model access
+                        # Providers: sambanova, groq, together, cerebras, novita, etc.
+                        hf_provider = os.getenv("HF_INFERENCE_PROVIDER", "sambanova")
+                        hf_model = os.getenv("BLOG_LLM_MODEL_HF", "meta-llama/Meta-Llama-3.1-8B-Instruct")
+                        hf_temp = float(os.getenv("BLOG_LLM_TEMPERATURE", "0.7"))
 
                         class HFChatWrapper:
-                            def __init__(self, model, token, temperature=0.25):
+                            """Wrapper to use InferenceClient with .invoke() interface for compatibility"""
+                            def __init__(self, model, token, provider="sambanova", temperature=0.7):
                                 self.model = model
-                                self.token = token
+                                self.provider = provider
+                                # Use provider routing through Hugging Face
+                                self.client = InferenceClient(
+                                    provider=provider,
+                                    api_key=token  # HF token for billing through HF account
+                                )
                                 self.temperature = temperature
 
                             def invoke(self, prompt_text: str):
-                                url = "https://router.huggingface.co/v1/chat/completions"
-                                headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
-                                payload = {
-                                    "model": self.model,
-                                    "messages": [{"role": "user", "content": prompt_text}],
-                                    "temperature": float(self.temperature)
-                                }
                                 try:
-                                    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-                                    resp.raise_for_status()
-                                    data = resp.json()
-                                    content = data["choices"][0]["message"]["content"]
-                                except requests.HTTPError as http_err:
-                                    status = getattr(http_err.response, 'status_code', None)
-                                    if status == 401:
-                                        raise RuntimeError("Hugging Face Inference API: Unauthorized (HTTP 401). Check HF_TOKEN and grant 'Inference' permission or regenerate token.") from http_err
-                                    if status == 429:
-                                        raise RuntimeError("Hugging Face Inference API: Rate limited (HTTP 429). Check quota or retry later.") from http_err
-                                    raise RuntimeError(f"Hugging Face Inference API HTTP error: {http_err}") from http_err
+                                    completion = self.client.chat_completion(
+                                        model=self.model,
+                                        messages=[
+                                            {"role": "user", "content": prompt_text}
+                                        ],
+                                        temperature=self.temperature,
+                                        max_tokens=8192  # Allow for detailed blog content
+                                    )
+                                    
+                                    content = completion.choices[0].message.content
+                                    
+                                    # Check if content is empty or whitespace
+                                    if not content or not content.strip():
+                                        raise RuntimeError("Hugging Face returned empty content")
+                                    
+                                    # Return object with .content attribute for compatibility
+                                    class _R:
+                                        def __init__(self, c):
+                                            self.content = c
+                                    
+                                    return _R(content)
+                                    
                                 except Exception as e:
+                                    error_msg = str(e)
+                                    if "401" in error_msg or "Unauthorized" in error_msg:
+                                        raise RuntimeError("Hugging Face Inference API: Unauthorized (HTTP 401). Check HF_TOKEN and grant 'Inference' permission or regenerate token.") from e
+                                    if "429" in error_msg or "rate" in error_msg.lower():
+                                        raise RuntimeError("Hugging Face Inference API: Rate limited (HTTP 429). Check quota or retry later.") from e
                                     raise RuntimeError(f"Hugging Face Inference API request failed: {e}") from e
 
-                                # mimic LangChain ChatModel response object with `content` attr
-                                class _R:
-                                    def __init__(self, c):
-                                        self.content = c
-
-                                return _R(content)
-
-                        logger.info("Initializing Hugging Face Inference wrapper for blog generation")
-                        return HFChatWrapper(hf_model, hf_token, hf_temp)
+                        logger.info("Initializing Hugging Face InferenceClient with provider '%s' (model: %s)", hf_provider, hf_model)
+                        return HFChatWrapper(hf_model, hf_token, hf_provider, hf_temp)
                 except Exception as e:
                     logger.debug("Hugging Face LLM unavailable: %s", e)
 
@@ -626,53 +672,195 @@ def generate_blog_content(trend_data: str, image_path: Optional[str] = None) -> 
             llm = _get_preferred_llm()
             require_llm = os.getenv("BLOG_REQUIRE_LLM", "false").lower() in ("1", "true", "yes")
             if not llm:
-                msg = "No LLM provider available (Mistral, Hugging Face, or Google)"
+                msg = "No LLM provider available (Mistral, Hugging Face, or Google) - using template fallback"
                 logger.warning(msg)
                 if require_llm:
-                    raise RuntimeError(msg)
-                # otherwise allow existing template fallback path by raising to outer handler
+                    raise RuntimeError("No LLM provider available and BLOG_REQUIRE_LLM is set to true")
+                # Trigger template fallback by raising
                 raise RuntimeError(msg)
 
-            import json as _json
             past_posts_json = _get_recent_posts_for_prompt(limit=6)
 
             business_profile = _load_business_profile()
+            knowledge_base = _load_knowledge_base()
+            products_catalog = _load_products_catalog()
+            
+            # Load blog writing style guide
+            style_guide = ""
+            try:
+                style_guide_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "BLOG_WRITING_STYLE_GUIDE.md")
+                if os.path.exists(style_guide_path):
+                    with open(style_guide_path, 'r', encoding='utf-8') as f:
+                        style_guide = f.read()
+                    logger.info("Loaded blog writing style guide (%d chars)", len(style_guide))
+            except Exception as e:
+                logger.warning("Could not load style guide: %s", e)
 
-            prompt = _json.dumps({
+            prompt = json.dumps({
                 "topic": topic,
                 "trend_data": (trend_data or ""),
                 "affiliate_links": {k: v for k, v in AFFILIATE_LINKS.items()},
-                "our_recent_posts": _json.loads(past_posts_json),
-                "business_profile": business_profile
+                "our_recent_posts": json.loads(past_posts_json),
+                "business_profile": business_profile,
+                "knowledge_base_summary": knowledge_base[:3000] if knowledge_base else "No knowledge base loaded",
+                "products_catalog_summary": products_catalog[:2000] if products_catalog else "No products catalog loaded"
             })
 
             generation_prompt = f"""
-You are an expert content marketer and long-form copywriter for FDWA (Futurist Digital Wealth Agency).
+You are an expert content strategist and educational copywriter for FDWA (Futurist Digital Wealth Agency).
 
-Input (JSON): {prompt}
+Your mission: Create FULL, DETAILED, EDUCATIONAL blog articles that teach, not just list. Break down topics, explain WHY tools matter, show HOW to apply information, include real data and examples.
 
-Task: 1) Analyze the `our_recent_posts` examples and the `trend_data`. Identify patterns that likely drove engagement (hooks, CTAs, examples, statistics, tone, length). 2) Produce a conversion-focused, data-driven, long-form blog post in HTML format that improves on our past posts using those high-performing patterns.
+=== INPUT DATA (JSON) ===
+{prompt}
 
-REQUIREMENTS:
-- Output MUST be valid JSON only, with keys: "title" (string), "html" (string), "excerpt" (string), "rationale" (short list of 3 improvements made based on our past posts).
-- The "html" field must contain well-structured HTML (headings <h1>/<h2>/<h3>, paragraphs, numbered steps, examples/case-studies, bullet lists) and include at least 700 words.
-- Explicitly reference one or two data points from `trend_data` when available; if no concrete numbers exist, provide conservative estimates and label them as estimates.
-- Include 2 short actionable examples or mini case-studies showing how a reader can apply the advice.
-- End with a persuasive CTA that points to https://fdwa.site and an invitation to schedule a consultation.
-- Embed exactly 3 recommended affiliate tools (use links from affiliate_links) inside the HTML.
-- Provide an "excerpt" (1-2 sentence hook) suitable for social sharing.
-- Provide a small JSON array `rationale` (3 items) explaining which past-post patterns were used and why.
-- Tone: authoritative, helpful, conversational. Active voice. No filler or vague platitudes.
+=== BLOG WRITING STYLE GUIDE ===
+{style_guide[:8000] if style_guide else "Write detailed, educational content with real examples and data."}
 
-Return ONLY the JSON. Do NOT include any explanatory text.
+=== YOUR TASK ===
+
+Create a comprehensive blog post (1000-1500 words) following this structure:
+
+1. **OPENING HOOK** (100-200 words):
+   - Start with real data/statistics from trend_data
+   - Include specific numbers, growth rates, or compelling facts
+   - Example: "Weather trading bots are generating thousands in monthly profits" with proof links
+   - Set clear expectations for what readers will learn
+
+2. **CONTEXT & CURRENT EVENTS** (150-300 words):
+   - Latest trends and industry data from trend_data
+   - Market statistics: "84% of organizations already use [technology]"
+   - Real examples: "One trader grew $1,000 to $24,000 since April 2025"
+   - Why this matters NOW
+
+3. **MAIN EDUCATIONAL CONTENT** (800-1200 words):
+   
+   **For Tool Guides:**
+   - Organize by category (AI Automation, Business Banking, Content Creation, etc.)
+   - Each tool gets: What it does + WHY you need it + Benefit/discount + Link
+   - Example format:
+     ```
+     **n8n** – Build advanced automations without paying Zapier prices:
+     https://n8n.partnerlinks.io/pxw8nlb4iwfh
+     
+     **Emergent** – Transform ideas into fully functional websites and mobile apps:
+     https://get.emergent.sh/y62pekmn0zfq
+     ```
+   
+   **For How-To/Tutorial:**
+   - Step-by-step breakdown with numbered steps
+   - Explain WHY each step matters, not just WHAT to do
+   - Include actual commands/code if applicable
+   - Troubleshooting tips
+   - Optimization advice
+   
+   **For Concept/Strategy:**
+   - Break down the meaning and implications
+   - Multiple perspectives or approaches
+   - Real-world application to FDWA's niches (credit, automation, business, finance)
+   - Actionable tips readers can implement immediately
+
+4. **THE REALITY CHECK** (100-200 words):
+   - Be honest: "I read the manuals — it's a maze of contracts and forms"
+   - Address real pain points and challenges
+   - Show how FDWA's approach cuts through complexity
+   - Build trust through transparency
+
+5. **RESOURCES & LINKS SECTION**:
+   - Relevant FDWA products (2-3 matched to topic)
+   - Community: https://whop.com/futuristicwealth/
+   - Newsletter: https://futuristic-wealth.beehiiv.com/
+   - BuyMeACoffee: https://buymeacoffee.com/coinvest
+   - LinkTree: https://linktr.ee/omniai
+   - Consultation booking (pick appropriate type based on topic)
+   - Website: https://fdwa.site
+
+6. **DISCLAIMER** (if applicable):
+   - Trading/investing: "Involves risk of loss. Use funds you can afford to lose."
+   - Credit/legal: "We provide guidance, not legal advice."
+   - Results: "Results vary; past performance not indicative of future."
+
+=== AFFILIATE LINK INTEGRATION RULES ===
+
+❌ WRONG: "Check out ElevenLabs for AI voice"
+
+✅ RIGHT: "**ElevenLabs** – AI voice, narration, and audio content (10% discount):
+https://try.elevenlabs.io/2dh4kqbqw25i"
+
+Integrate 3-5 affiliate links naturally:
+- From affiliate_links provided
+- Match to content topic
+- Include benefit/discount
+- Explain WHY reader needs it
+
+=== FDWA PRODUCT RECOMMENDATIONS ===
+
+Match to topic keywords from trend_data:
+- **AI/automation** → AI Vibe Coding Bootcamp, Social Media Game Plan, n8n, Blackbox AI
+- **Credit/finance** → 72 Hour Credit Hack, Ultimate Credit Vault, AVA Finance, NAV
+- **Business/marketing** → 50 Business Ideas, Digital products, ManyChat, Beehiiv
+
+=== CONSULTATION BOOKING LINKS ===
+
+Pick ONE based on primary topic:
+- **AI/automation focus** → https://cal.com/bookme-daniel/ai-consultation-smb
+- **Credit/finance focus** → https://cal.com/bookme-daniel/credit-consultation
+- **General business** → https://cal.com/bookme-daniel/30min
+
+=== WRITING TONE ===
+
+✅ DO:
+- Conversational but authoritative: "We're back with more valuable information"
+- Data-driven: Back every claim with numbers
+- Honest: "Trust me — I run up a serious bill with AI tools"
+- Educational: Teach, don't just pitch
+- Action-oriented: Tell readers exactly what to do
+
+❌ DON'T:
+- Generic fluff: "In today's digital age..."
+- Weak CTAs: "Click here to learn more"
+- Just listing without explaining WHY/HOW
+- Overly salesy without education first
+
+=== OUTPUT FORMAT (VALID JSON ONLY) ===
+
+{{
+  "title": "engaging title with data or specific benefit (not generic)",
+  "html": "1000-1500 word detailed HTML article with:
+    - Opening hook with statistics (100-200 words)
+    - Context & trends section (150-300 words)
+    - Main educational content (800-1200 words) with <h2>/<h3> headers
+    - Real examples with specific numbers
+    - 3-5 affiliate links embedded naturally with benefits explained
+    - 2-3 FDWA products mentioned contextually
+    - Reality check section (honest about challenges)
+    - Resources section with all FDWA links
+    - Disclaimer if needed
+    - Appropriate consultation CTA",
+  "excerpt": "compelling 1-2 sentence hook mentioning data or specific outcome",
+  "rationale": ["how this improves on past posts", "unique angle taken", "specific value provided"],
+  "products_mentioned": ["FDWA product 1", "FDWA product 2"],
+  "affiliate_tools_used": ["tool 1", "tool 2", "tool 3"],
+  "consultation_type": "ai" or "credit" or "general",
+  "word_count": 1200
+}}
+
+Return ONLY valid JSON. NO text before or after the JSON object.
 """
 
             response = llm.invoke(generation_prompt)
-            response_text = response.strip()
+            # Handle both string and object responses (langchain AIMessage or _R wrapper)
+            response_text = response.content if hasattr(response, 'content') else str(response)
+            response_text = response_text.strip()
+
+            # Check if response is empty
+            if not response_text:
+                logger.warning("LLM returned empty response, falling back to template")
+                raise ValueError("Empty LLM response")
 
             # Try to parse JSON from model output
             try:
-                parsed = _json.loads(response_text)
+                parsed = json.loads(response_text)
                 title = parsed.get("title")
                 html_output = parsed.get("html")
                 excerpt = parsed.get("excerpt", "")
@@ -693,75 +881,141 @@ Return ONLY the JSON. Do NOT include any explanatory text.
                         "intro_paragraph": excerpt,
                         "image_url": image_url
                     }
+                else:
+                    logger.warning("LLM response missing title/html or duplicate, falling back to template")
+                    raise ValueError("Invalid or duplicate LLM response")
+            except json.JSONDecodeError as json_exc:
+                logger.warning("LLM output is not valid JSON: %s - Response: %s", json_exc, response_text[:200])
+                
+                # Try to extract content from plain text/markdown response
+                try:
+                    logger.info("Attempting to extract content from plain text response...")
+                    
+                    # Extract title from various markdown/text patterns
+                    import re
+                    title = None
+                    
+                    # Try patterns: **Title**, # Title, ## Title
+                    title_patterns = [
+                        r'\*\*([^*\n]{10,100})\*\*',  # **Bold Title**
+                        r'^#\s+(.{10,100})$',         # # Title
+                        r'^##\s+(.{10,100})$',        # ## Title
+                    ]
+                    
+                    for pattern in title_patterns:
+                        match = re.search(pattern, response_text, re.MULTILINE)
+                        if match:
+                            title = match.group(1).strip()
+                            break
+                    
+                    if not title:
+                        # Use first non-empty line as title
+                        for line in response_text.split('\n'):
+                            line = line.strip()
+                            if line and len(line) > 10 and len(line) < 150:
+                                title = line.lstrip('#').lstrip('*').strip()
+                                break
+                    
+                    if title:
+                        # Convert markdown to HTML (basic conversion)
+                        html_content = response_text
+                        
+                        # Replace markdown headers with HTML
+                        html_content = re.sub(r'^###\s+(.+)$', r'<h3>\1</h3>', html_content, flags=re.MULTILINE)
+                        html_content = re.sub(r'^##\s+(.+)$', r'<h2>\1</h2>', html_content, flags=re.MULTILINE)
+                        html_content = re.sub(r'^#\s+(.+)$', r'<h1>\1</h1>', html_content, flags=re.MULTILINE)
+                        
+                        # Replace bold/italic
+                        html_content = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html_content)
+                        html_content = re.sub(r'\*([^*]+)\*', r'<em>\1</em>', html_content)
+                        
+                        # Replace markdown links with HTML
+                        html_content = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" target="_blank">\1</a>', html_content)
+                        
+                        # Replace bullet points
+                        html_content = re.sub(r'^-\s+(.+)$', r'<li>\1</li>', html_content, flags=re.MULTILINE)
+                        html_content = re.sub(r'^•\s+(.+)$', r'<li>\1</li>', html_content, flags=re.MULTILINE)
+                        
+                        # Wrap lists
+                        html_content = re.sub(r'(<li>.*?</li>\n?)+', lambda m: '<ul>' + m.group(0) + '</ul>', html_content)
+                        
+                        # Wrap paragraphs (text blocks between tags)
+                        lines = html_content.split('\n\n')
+                        processed_lines = []
+                        for line in lines:
+                            line = line.strip()
+                            if line and not line.startswith('<'):
+                                processed_lines.append(f'<p>{line}</p>')
+                            else:
+                                processed_lines.append(line)
+                        html_content = '\n'.join(processed_lines)
+                        
+                        # Extract excerpt (first paragraph or sentence)
+                        excerpt_match = re.search(r'<p>([^<]{50,300})', html_content)
+                        excerpt = excerpt_match.group(1)[:200] if excerpt_match else title
+                        
+                        if not _is_duplicate_post(title, excerpt, topic):
+                            image_html = ""
+                            image_url = image_path or os.environ.get("BLOG_IMAGE_URL")
+                            if image_url and image_url.startswith(('http://', 'https://')):
+                                image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;display:block;" />\n'
+                            
+                            blog_html = image_html + html_content
+                            logger.info("✅ LLM-generated blog extracted from plain text: %s", title)
+                            return {
+                                "blog_html": blog_html,
+                                "title": title,
+                                "topic": topic,
+                                "intro_paragraph": excerpt,
+                                "image_url": image_url
+                            }
+                    
+                    raise ValueError("Could not extract valid content from plain text")
+                    
+                except Exception as extract_exc:
+                    logger.warning("Failed to extract content from plain text: %s", extract_exc)
+                    logger.info("Falling back to template-based generation")
+                    raise json_exc  # Re-raise original to trigger template fallback
             except Exception as llm_parse_exc:
-                logger.exception("LLM output parsing failed: %s", llm_parse_exc)
-                if require_llm:
-                    raise
+                logger.warning("LLM output parsing failed: %s", llm_parse_exc)
+                logger.info("Falling back to template-based generation")
+                raise  # Trigger template fallback
+                
         except Exception as llm_exc:
-            # Respect BLOG_REQUIRE_LLM: re-raise if set, otherwise continue to template fallback
-            require_llm = os.getenv("BLOG_REQUIRE_LLM", "false").lower() in ("1", "true", "yes")
-            logger.exception("LLM blog generation failed: %s", llm_exc)
-            if require_llm:
-                raise
-
-        # Fallback: Try each variation until we find one that hasn't been sent recently
-        random.shuffle(variations)  # Randomize order for variety
-        
-        selected_content = None
-        for content in variations:
-            if not _is_duplicate_post(content["title"], content["intro_paragraph"], topic):
-                selected_content = content
-                break
-        
-        # If all variations have been used, force rotation to different topic
-        if not selected_content:
-            logger.warning("All %s variations used recently, rotating to different topic", topic)
-            all_topics = ["ai", "marketing", "finance", "general"]
-            all_topics.remove(topic)
+            # Template fallback when LLM fails
+            logger.warning("LLM blog generation failed, using template fallback: %s", str(llm_exc)[:200])
             
-            for alt_topic in all_topics:
-                alt_variations = content_variations.get(alt_topic, [])
-                random.shuffle(alt_variations)
-                for content in alt_variations:
-                    if not _is_duplicate_post(content["title"], content["intro_paragraph"], alt_topic):
-                        selected_content = content
-                        topic = alt_topic
-                        break
-                if selected_content:
-                    break
-        
-        # Last resort: pick random content anyway (shouldn't happen with enough variations)
-        if not selected_content:
-            logger.warning("No unique content found, selecting random variation")
-            selected_content = random.choice(variations)
-        
-        template = get_template_by_topic(topic)
-
-        # Add image using direct URL (not CID - Composio doesn't support MIME attachments)
-        image_html = ""
-        image_url = image_path or os.environ.get("BLOG_IMAGE_URL")
-        if image_url and image_url.startswith(('http://', 'https://')):
-            # Use the actual image URL directly in the HTML
-            image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;display:block;" />\n'
-            logger.info("Adding image URL to blog HTML: %s", image_url[:60])
-
-        # Fill in the template
-        blog_html = image_html + template.format(
-            title=selected_content["title"],
-            intro_paragraph=selected_content["intro_paragraph"],
-            main_content_header=selected_content["main_content_header"],
-            main_content=selected_content["main_content"],
-            **AFFILIATE_LINKS
-        )
-
-        logger.info("Blog content generated successfully: %s", selected_content["title"])
-        return {
-            "blog_html": blog_html,
-            "title": selected_content["title"],
-            "topic": topic,
-            "intro_paragraph": selected_content["intro_paragraph"],
-            "image_url": image_url  # Return image URL for reference
-        }
+            # Use template-based generation
+            import random
+            variation = random.choice(variations)
+            
+            template = get_template_by_topic(topic)
+            
+            # Format template with content
+            blog_html_content = template.format(
+                title=variation["title"],
+                intro_paragraph=variation["intro_paragraph"],
+                main_content_header=variation["main_content_header"],
+                main_content=variation["main_content"],
+                **AFFILIATE_LINKS
+            )
+            
+            # Add image if available
+            image_html = ""
+            image_url = image_path or os.environ.get("BLOG_IMAGE_URL")
+            if image_url and image_url.startswith(('http://', 'https://')):
+                image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;display:block;" />\n'
+            
+            blog_html = image_html + blog_html_content
+            
+            logger.info("Template-based blog created: %s", variation["title"])
+            return {
+                "blog_html": blog_html,
+                "title": variation["title"],
+                "topic": topic,
+                "intro_paragraph": variation["intro_paragraph"],
+                "image_url": image_url
+            }
 
     except Exception as e:
         logger.exception("Error generating blog content: %s", e)
