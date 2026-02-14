@@ -26,7 +26,9 @@ load_dotenv()
 # Initialize Composio client
 composio_client = Composio(
     api_key=os.getenv("COMPOSIO_API_KEY"),
-    entity_id="default"
+    toolkit_versions={
+        "gmail": os.getenv("COMPOSIO_TOOLKIT_VERSION_GMAIL")
+    }
 )
 
 # Pydantic model for structured blog output
