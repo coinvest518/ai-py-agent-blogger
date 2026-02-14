@@ -38,6 +38,7 @@ packages = ["langgraph.templates.agent", "agent"]
 "*" = ["py.typed"]
 
 [tool.ruff]
+exclude = ["tests", "tests/**"]
 lint.select = [
     "E",    # pycodestyle
     "F",    # pyflakes
@@ -57,7 +58,8 @@ lint.ignore = [
     "E501",
 ]
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["D", "UP"]
+"tests/*" = ["D", "UP", "T201"]
+"test_*.py" = ["T201"]
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 

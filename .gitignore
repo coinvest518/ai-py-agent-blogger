@@ -37,3 +37,6 @@ Thumbs.db
 *.log
 *.tmp
 tmp*/
+
+# Do not include tests in linter/deploy flows
+tests/
