@@ -13,11 +13,12 @@ import random
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import requests
 from composio import Composio
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 
 # Load environment variables
 load_dotenv()
@@ -27,6 +28,18 @@ composio_client = Composio(
     api_key=os.getenv("COMPOSIO_API_KEY"),
     entity_id="default"
 )
+
+# Pydantic model for structured blog output
+class BlogPost(BaseModel):
+    """Structured blog post output from LLM."""
+    title: str = Field(description="Engaging title with data or specific benefit")
+    html: str = Field(description="1000-1500 word detailed HTML article")
+    excerpt: str = Field(description="Compelling 1-2 sentence hook")
+    rationale: List[str] = Field(default_factory=list, description="Why this approach")
+    products_mentioned: List[str] = Field(default_factory=list, description="FDWA products used")
+    affiliate_tools_used: List[str] = Field(default_factory=list, description="Affiliate tools mentioned")
+    consultation_type: str = Field(default="general", description="ai, credit, or general")
+    word_count: int = Field(default=1200, description="Approximate word count")
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -591,7 +604,9 @@ def generate_blog_content(trend_data: str, image_path: str | None = None) -> Dic
                         mistral_model = os.getenv("BLOG_LLM_MODEL_MISTRAL", "mistral-large-2512")
                         mistral_temp = float(os.getenv("BLOG_LLM_TEMPERATURE", "0.25"))
                         logger.info("Initializing ChatMistralAI for blog generation")
-                        return ChatMistralAI(model=mistral_model, temperature=mistral_temp, mistral_api_key=mistral_key)
+                        llm = ChatMistralAI(model=mistral_model, temperature=mistral_temp, mistral_api_key=mistral_key)
+                        # Enable structured output mode for guaranteed JSON
+                        return llm.with_structured_output(BlogPost)
                 except Exception as e:
                     logger.debug("Mistral initialization failed: %s", e)
 
@@ -623,10 +638,12 @@ def generate_blog_content(trend_data: str, image_path: str | None = None) -> Dic
                                     completion = self.client.chat_completion(
                                         model=self.model,
                                         messages=[
+                                            {"role": "system", "content": "You are a technical writer. Always respond with valid JSON only."},
                                             {"role": "user", "content": prompt_text}
                                         ],
                                         temperature=self.temperature,
-                                        max_tokens=8192  # Allow for detailed blog content
+                                        max_tokens=8192,  # Allow for detailed blog content
+                                        response_format={"type": "json_object"}  # Force JSON mode
                                     )
                                     
                                     content = completion.choices[0].message.content
@@ -849,137 +866,63 @@ Return ONLY valid JSON. NO text before or after the JSON object.
 """
 
             response = llm.invoke(generation_prompt)
-            # Handle both string and object responses (langchain AIMessage or _R wrapper)
-            response_text = response.content if hasattr(response, 'content') else str(response)
-            response_text = response_text.strip()
-
-            # Check if response is empty
-            if not response_text:
-                logger.warning("LLM returned empty response, falling back to template")
-                raise ValueError("Empty LLM response")
-
-            # Try to parse JSON from model output
-            try:
-                parsed = json.loads(response_text)
-                title = parsed.get("title")
-                html_output = parsed.get("html")
-                excerpt = parsed.get("excerpt", "")
-
-                # If title/html present and not duplicate, return immediately
-                if title and html_output and not _is_duplicate_post(title, excerpt or html_output[:200], topic):
-                    image_html = ""
-                    image_url = image_path or os.environ.get("BLOG_IMAGE_URL")
-                    if image_url and image_url.startswith(('http://', 'https://')):
-                        image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;display:block;" />\n'
-
-                    blog_html = image_html + html_output
-                    logger.info("LLM-generated blog created: %s", title)
-                    return {
-                        "blog_html": blog_html,
-                        "title": title,
-                        "topic": topic,
-                        "intro_paragraph": excerpt,
-                        "image_url": image_url
-                    }
-                else:
-                    logger.warning("LLM response missing title/html or duplicate, falling back to template")
-                    raise ValueError("Invalid or duplicate LLM response")
-            except json.JSONDecodeError as json_exc:
-                logger.warning("LLM output is not valid JSON: %s - Response: %s", json_exc, response_text[:200])
+            
+            # Handle structured output (Pydantic BlogPost) or text response
+            if isinstance(response, BlogPost):
+                # Structured output from Mistral with_structured_output()
+                logger.info("Received structured BlogPost from LLM")
+                title = response.title
+                html_output = response.html
+                excerpt = response.excerpt
+            else:
+                # Text response from HuggingFace or fallback - parse JSON
+                response_text = response.content if hasattr(response, 'content') else str(response)
+                response_text = response_text.strip()
                 
-                # Try to extract content from plain text/markdown response
+                # Check if response is empty
+                if not response_text:
+                    logger.warning("LLM returned empty response, falling back to template")
+                    raise ValueError("Empty LLM response")
+                
+                # Extract JSON from response (handle wrapped JSON)
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if json_match:
+                    response_text = json_match.group(0)
+                
                 try:
-                    logger.info("Attempting to extract content from plain text response...")
-                    
-                    # Extract title from various markdown/text patterns
-                    import re
-                    title = None
-                    
-                    # Try patterns: **Title**, # Title, ## Title
-                    title_patterns = [
-                        r'\*\*([^*\n]{10,100})\*\*',  # **Bold Title**
-                        r'^#\s+(.{10,100})$',         # # Title
-                        r'^##\s+(.{10,100})$',        # ## Title
-                    ]
-                    
-                    for pattern in title_patterns:
-                        match = re.search(pattern, response_text, re.MULTILINE)
-                        if match:
-                            title = match.group(1).strip()
-                            break
-                    
-                    if not title:
-                        # Use first non-empty line as title
-                        for line in response_text.split('\n'):
-                            line = line.strip()
-                            if line and len(line) > 10 and len(line) < 150:
-                                title = line.lstrip('#').lstrip('*').strip()
-                                break
-                    
-                    if title:
-                        # Convert markdown to HTML (basic conversion)
-                        html_content = response_text
-                        
-                        # Replace markdown headers with HTML
-                        html_content = re.sub(r'^###\s+(.+)$', r'<h3>\1</h3>', html_content, flags=re.MULTILINE)
-                        html_content = re.sub(r'^##\s+(.+)$', r'<h2>\1</h2>', html_content, flags=re.MULTILINE)
-                        html_content = re.sub(r'^#\s+(.+)$', r'<h1>\1</h1>', html_content, flags=re.MULTILINE)
-                        
-                        # Replace bold/italic
-                        html_content = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html_content)
-                        html_content = re.sub(r'\*([^*]+)\*', r'<em>\1</em>', html_content)
-                        
-                        # Replace markdown links with HTML
-                        html_content = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" target="_blank">\1</a>', html_content)
-                        
-                        # Replace bullet points
-                        html_content = re.sub(r'^-\s+(.+)$', r'<li>\1</li>', html_content, flags=re.MULTILINE)
-                        html_content = re.sub(r'^•\s+(.+)$', r'<li>\1</li>', html_content, flags=re.MULTILINE)
-                        
-                        # Wrap lists
-                        html_content = re.sub(r'(<li>.*?</li>\n?)+', lambda m: '<ul>' + m.group(0) + '</ul>', html_content)
-                        
-                        # Wrap paragraphs (text blocks between tags)
-                        lines = html_content.split('\n\n')
-                        processed_lines = []
-                        for line in lines:
-                            line = line.strip()
-                            if line and not line.startswith('<'):
-                                processed_lines.append(f'<p>{line}</p>')
-                            else:
-                                processed_lines.append(line)
-                        html_content = '\n'.join(processed_lines)
-                        
-                        # Extract excerpt (first paragraph or sentence)
-                        excerpt_match = re.search(r'<p>([^<]{50,300})', html_content)
-                        excerpt = excerpt_match.group(1)[:200] if excerpt_match else title
-                        
-                        if not _is_duplicate_post(title, excerpt, topic):
-                            image_html = ""
-                            image_url = image_path or os.environ.get("BLOG_IMAGE_URL")
-                            if image_url and image_url.startswith(('http://', 'https://')):
-                                image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;display:block;" />\n'
-                            
-                            blog_html = image_html + html_content
-                            logger.info("✅ LLM-generated blog extracted from plain text: %s", title)
-                            return {
-                                "blog_html": blog_html,
-                                "title": title,
-                                "topic": topic,
-                                "intro_paragraph": excerpt,
-                                "image_url": image_url
-                            }
-                    
-                    raise ValueError("Could not extract valid content from plain text")
-                    
-                except Exception as extract_exc:
-                    logger.warning("Failed to extract content from plain text: %s", extract_exc)
-                    logger.info("Falling back to template-based generation")
-                    raise json_exc  # Re-raise original to trigger template fallback
-            except Exception as llm_parse_exc:
-                logger.warning("LLM output parsing failed: %s", llm_parse_exc)
-                logger.info("Falling back to template-based generation")
-                raise  # Trigger template fallback
+                    parsed = json.loads(response_text)
+                    title = parsed.get("title")
+                    html_output = parsed.get("html")
+                    excerpt = parsed.get("excerpt", "")
+                except json.JSONDecodeError as e:
+                    logger.error("Failed to parse LLM JSON: %s - Response: %s", e, response_text[:500])
+                    raise ValueError(f"Invalid JSON from LLM: {e}")
+            
+            # Validate required fields
+            if not title or not html_output:
+                logger.warning("LLM response missing title or html")
+                raise ValueError("Missing required fields in LLM response")
+            
+            # Check for duplicates
+            if _is_duplicate_post(title, excerpt or html_output[:200], topic):
+                logger.warning("LLM generated duplicate content, falling back to template")
+                raise ValueError("Duplicate content detected")
+            
+            # Add image to blog HTML
+            image_html = ""
+            image_url = image_path or os.environ.get("BLOG_IMAGE_URL")
+            if image_url and image_url.startswith(('http://', 'https://')):
+                image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;display:block;" />\n'
+            
+            blog_html = image_html + html_output
+            logger.info("✅ LLM-generated blog created: %s", title)
+            return {
+                "blog_html": blog_html,
+                "title": title,
+                "topic": topic,
+                "intro_paragraph": excerpt,
+                "image_url": image_url
+            }
                 
         except Exception as llm_exc:
             # Template fallback when LLM fails
