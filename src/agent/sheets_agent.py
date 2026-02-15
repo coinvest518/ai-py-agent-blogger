@@ -134,6 +134,8 @@ class GoogleSheetsAgent:
             sheet_id = self._create_sheet_with_fallback("FDWA AI Agent - Social Media Posts", "en_US")
 
             if sheet_id:
+                # Rename default "Sheet1" to "AI Agent Memory"
+                self._rename_sheet_tab(sheet_id, "Sheet1", "AI Agent Memory")
                 # Set up headers
                 self._setup_posts_headers(sheet_id)
                 return sheet_id
@@ -188,6 +190,8 @@ class GoogleSheetsAgent:
             sheet_id = self._create_sheet_with_fallback("FDWA AI Agent - Crypto Tokens", "en_US")
 
             if sheet_id:
+                # Rename default "Sheet1" to "AI Agent Memory"
+                self._rename_sheet_tab(sheet_id, "Sheet1", "AI Agent Memory")
                 # Set up headers
                 self._setup_tokens_headers(sheet_id)
                 return sheet_id
@@ -277,7 +281,7 @@ class GoogleSheetsAgent:
                 ]
                 
                 # Append to sheet using batch_update
-                # Try new sheet name first, fall back to old name for backwards compatibility
+                # Try different sheet names with fallback chain: Posts Tracking → AI Agent Memory → Sheet1
                 sheet_name = "Posts Tracking"  # New sheets use this name
                 response = self._execute_tool(
                     "GOOGLESHEETS_BATCH_UPDATE",
@@ -288,13 +292,24 @@ class GoogleSheetsAgent:
                     }
                 )
                 
-                # If failed, try old sheet name for backwards compatibility
+                # Fallback to "AI Agent Memory" (legacy sheets)
                 if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
                     response = self._execute_tool(
                         "GOOGLESHEETS_BATCH_UPDATE",
                         {
                             "spreadsheet_id": self.posts_sheet_id,
                             "sheet_name": "AI Agent Memory",
+                            "values": [row_data]
+                        }
+                    )
+                
+                # Final fallback to "Sheet1" (brand new/unconfigured sheets)
+                if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
+                    response = self._execute_tool(
+                        "GOOGLESHEETS_BATCH_UPDATE",
+                        {
+                            "spreadsheet_id": self.posts_sheet_id,
+                            "sheet_name": "Sheet1",
                             "values": [row_data]
                         }
                     )
@@ -393,7 +408,7 @@ class GoogleSheetsAgent:
                 ]
                 
                 # Append to sheet using batch_update
-                # Try new sheet name first, fall back to old name for backwards compatibility
+                # Try different sheet names with fallback chain: Token Tracking → AI Agent Memory → Sheet1
                 sheet_name = "Token Tracking"  # New sheets use this name
                 response = self._execute_tool(
                     "GOOGLESHEETS_BATCH_UPDATE",
@@ -404,13 +419,24 @@ class GoogleSheetsAgent:
                     }
                 )
                 
-                # If failed, try old sheet name for backwards compatibility
+                # Fallback to "AI Agent Memory" (legacy sheets)
                 if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
                     response = self._execute_tool(
                         "GOOGLESHEETS_BATCH_UPDATE",
                         {
                             "spreadsheet_id": self.tokens_sheet_id,
                             "sheet_name": "AI Agent Memory",
+                            "values": [row_data]
+                        }
+                    )
+                
+                # Final fallback to "Sheet1" (brand new/unconfigured sheets)
+                if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
+                    response = self._execute_tool(
+                        "GOOGLESHEETS_BATCH_UPDATE",
+                        {
+                            "spreadsheet_id": self.tokens_sheet_id,
+                            "sheet_name": "Sheet1",
                             "values": [row_data]
                         }
                     )
@@ -465,15 +491,30 @@ class GoogleSheetsAgent:
         
         try:
             # Read all data using batch_get
-            response = self._execute_tool(
-                "GOOGLESHEETS_BATCH_GET",
-                {
-                    "spreadsheet_id": self.posts_sheet_id,
-                    "ranges": ["AI Agent Memory!A2:I1000"]  # Skip header, read up to 1000 rows
-                }
-            )
+            # Try different sheet names with fallback chain
+            sheet_names_to_try = ["Posts Tracking", "AI Agent Memory", "Sheet1"]
+            response = None
             
-            if not response.get("successful"):
+            for sheet_name in sheet_names_to_try:
+                response = self._execute_tool(
+                    "GOOGLESHEETS_BATCH_GET",
+                    {
+                        "spreadsheet_id": self.posts_sheet_id,
+                        "ranges": [f"{sheet_name}!A2:I1000"]  # Skip header, read up to 1000 rows
+                    }
+                )
+                
+                if response.get("successful"):
+                    break  # Success, stop trying
+                
+                # If sheet not found, try next name
+                if "not found" in str(response.get('error', '')).lower():
+                    continue
+                else:
+                    # Other error, don't retry
+                    break
+            
+            if not response or not response.get("successful"):
                 return []
             
             # GOOGLESHEETS_BATCH_GET returns data.valueRanges[0].values
@@ -530,15 +571,30 @@ class GoogleSheetsAgent:
         
         try:
             # Read all data using batch_get
-            response = self._execute_tool(
-                "GOOGLESHEETS_BATCH_GET",
-                {
-                    "spreadsheet_id": self.tokens_sheet_id,
-                    "ranges": ["AI Agent Memory!A2:P1000"]  # Skip header (16 columns)
-                }
-            )
+            # Try different sheet names with fallback chain
+            sheet_names_to_try = ["Token Tracking", "AI Agent Memory", "Sheet1"]
+            response = None
             
-            if not response.get("successful"):
+            for sheet_name in sheet_names_to_try:
+                response = self._execute_tool(
+                    "GOOGLESHEETS_BATCH_GET",
+                    {
+                        "spreadsheet_id": self.tokens_sheet_id,
+                        "ranges": [f"{sheet_name}!A2:P1000"]  # Skip header (16 columns)
+                    }
+                )
+                
+                if response.get("successful"):
+                    break  # Success, stop trying
+                
+                # If sheet not found, try next name
+                if "not found" in str(response.get('error', '')).lower():
+                    continue
+                else:
+                    # Other error, don't retry
+                    break
+            
+            if not response or not response.get("successful"):
                 return []
             
             # GOOGLESHEETS_BATCH_GET returns data.valueRanges[0].values
