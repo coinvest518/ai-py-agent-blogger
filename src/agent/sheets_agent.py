@@ -112,16 +112,8 @@ class GoogleSheetsAgent:
             try:
                 logger.debug(f"Attempting sheet create with tool: {slug}")
 
-                # If the discovered slug requires a toolkit version, use env or default
-                toolkit_version = None
-                env_key = f"COMPOSIO_TOOLKIT_VERSION_{slug}"
-                if os.getenv(env_key):
-                    toolkit_version = os.getenv(env_key)
-                elif slug == "GOOGLESHEETS_CREATE_GOOGLE_SHEET1":
-                    # default to the version observed in your Playground
-                    toolkit_version = "20260211_00"
-
-                resp = self._execute_tool(slug, {"title": title, "locale": locale}, toolkit_version=toolkit_version)
+                # Toolkit version is already set globally in composio_client initialization
+                resp = self._execute_tool(slug, {"title": title, "locale": locale})
 
                 if resp.get("successful"):
                     sid = resp.get("data", {}).get("spreadsheetId")
@@ -208,10 +200,11 @@ class GoogleSheetsAgent:
             return None
     
     def _setup_tokens_headers(self, sheet_id: str):
-        """Set up column headers for tokens sheet."""
+        """Set up column headers for tokens sheet with AI analysis."""
         headers = [
-            ["Timestamp", "Token Symbol", "Token Name", "Contract Address", "Chain",
-             "Source", "Price", "Market Cap", "Mentions", "Sentiment", "Notes"]
+            ["Timestamp", "Token Symbol", "Token Name", "Price", "24h Change %", "Volume 24h", "Market Cap",
+             "Trade Score", "Profit Prob %", "Risk Level", "Trading Signal", "Momentum", "Liquidity",
+             "Source", "AI Reasoning", "Notes"]
         ]
         
         try:
@@ -226,7 +219,7 @@ class GoogleSheetsAgent:
                                 "startRowIndex": 0,
                                 "endRowIndex": 1,
                                 "startColumnIndex": 0,
-                                "endColumnIndex": 11
+                                "endColumnIndex": 16
                             },
                             "rows": [{
                                 "values": [
@@ -247,6 +240,8 @@ class GoogleSheetsAgent:
                   image_url: str = "", metadata: Dict | None = None) -> bool:
         """Save a social media post to Google Sheets.
         
+        Auto-creates new sheet if current one hits 10M cell limit.
+        
         Args:
             platform: Platform name (twitter, facebook, linkedin, etc.)
             content: Post content/text
@@ -261,62 +256,109 @@ class GoogleSheetsAgent:
             logger.warning("Posts spreadsheet not configured, skipping Sheets save")
             return False
         
-        try:
-            # Create row data
-            timestamp = datetime.now().isoformat()
-            content_preview = content[:200]
-            content_hash = self._get_content_hash(content)
-            
-            row_data = [
-                timestamp,
-                platform.upper(),
-                content_preview,
-                post_id or "N/A",
-                image_url or "",
-                metadata.get("engagement", "") if metadata else "",
-                "Posted",
-                content_hash,
-                content
-            ]
-            
-            # Append to sheet using batch_update (omit first_cell_location to append)
-            response = self._execute_tool(
-                "GOOGLESHEETS_BATCH_UPDATE",
-                {
-                    "spreadsheet_id": self.posts_sheet_id,
-                    "sheet_name": "AI Agent Memory",
-                    "values": [row_data]
-                }
-            )
-            
-            if response.get("successful"):
-                logger.info(f"✓ Saved {platform} post to Google Sheets")
-                return True
-            else:
-                logger.error(f"Failed to save post: {response.get('error')}")
-                return False
+        # Try to save, with auto-recovery if cell limit hit
+        for attempt in range(2):  # Try twice: original + retry after new sheet
+            try:
+                # Create row data
+                timestamp = datetime.now().isoformat()
+                content_preview = content[:200]
+                content_hash = self._get_content_hash(content)
                 
-        except Exception as e:
-            logger.exception(f"Error saving post to Sheets: {e}")
-            return False
+                row_data = [
+                    timestamp,
+                    platform.upper(),
+                    content_preview,
+                    post_id or "N/A",
+                    image_url or "",
+                    metadata.get("engagement", "") if metadata else "",
+                    "Posted",
+                    content_hash,
+                    content
+                ]
+                
+                # Append to sheet using batch_update
+                # Try new sheet name first, fall back to old name for backwards compatibility
+                sheet_name = "Posts Tracking"  # New sheets use this name
+                response = self._execute_tool(
+                    "GOOGLESHEETS_BATCH_UPDATE",
+                    {
+                        "spreadsheet_id": self.posts_sheet_id,
+                        "sheet_name": sheet_name,
+                        "values": [row_data]
+                    }
+                )
+                
+                # If failed, try old sheet name for backwards compatibility
+                if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
+                    response = self._execute_tool(
+                        "GOOGLESHEETS_BATCH_UPDATE",
+                        {
+                            "spreadsheet_id": self.posts_sheet_id,
+                            "sheet_name": "AI Agent Memory",
+                            "values": [row_data]
+                        }
+                    )
+                
+                if response.get("successful"):
+                    logger.info(f"✓ Saved {platform} post to Google Sheets")
+                    return True
+                else:
+                    error_msg = response.get('error', '')
+                    
+                    # Check if cell limit error
+                    if attempt == 0 and self._is_cell_limit_error(error_msg):
+                        logger.warning(f"⚠️ Posts sheet hit cell limit, creating new sheet...")
+                        new_sheet_id = self._create_new_posts_sheet_and_update_env()
+                        if new_sheet_id:
+                            logger.info("🔄 Retrying save with new sheet...")
+                            continue  # Retry with new sheet
+                    
+                    logger.error(f"Failed to save post: {error_msg}")
+                    return False
+                    
+            except Exception as e:
+                error_msg = str(e)
+                
+                # Check if cell limit error in exception
+                if attempt == 0 and self._is_cell_limit_error(error_msg):
+                    logger.warning(f"⚠️ Posts sheet hit cell limit (exception), creating new sheet...")
+                    new_sheet_id = self._create_new_posts_sheet_and_update_env()
+                    if new_sheet_id:
+                        logger.info("🔄 Retrying save with new sheet...")
+                        continue  # Retry with new sheet
+                
+                logger.exception(f"Error saving post to Sheets: {e}")
+                return False
+        
+        return False
     
-    def save_crypto_token(self, symbol: str, name: str = "", contract: str = "",
-                         chain: str = "ETH", source: str = "telegram",
-                         price: str = "", market_cap: str = "", 
-                         mentions: int = 1, sentiment: str = "neutral",
-                         notes: str = "") -> bool:
-        """Save a crypto token mention to Google Sheets.
+    def save_crypto_token(self, symbol: str, name: str = "", 
+                         price: str = "", percent_change_24h: str = "",
+                         volume_24h: str = "", market_cap: str = "",
+                         trade_score: str = "", profit_probability: str = "",
+                         risk_level: str = "", trading_signal: str = "",
+                         momentum: str = "", liquidity: str = "",
+                         source: str = "ai_analysis",
+                         reasoning: str = "", notes: str = "") -> bool:
+        """Save an AI-analyzed crypto token to Google Sheets.
+        
+        Auto-creates new sheet if current one hits 10M cell limit.
         
         Args:
             symbol: Token symbol (e.g., BTC, ETH, DOGE)
             name: Full token name
-            contract: Contract address
-            chain: Blockchain (ETH, BSC, SOL, etc.)
-            source: Where token was mentioned (telegram, twitter, etc.)
-            price: Current price
-            market_cap: Market cap
-            mentions: Number of mentions
-            sentiment: bullish, bearish, neutral
+            price: Current price (USD)
+            percent_change_24h: 24h percentage change
+            volume_24h: 24h trading volume
+            market_cap: Market capitalization
+            trade_score: AI trade score (0-100)
+            profit_probability: Profit probability (0-100%)
+            risk_level: Risk assessment (LOW/MEDIUM/HIGH)
+            trading_signal: Trading signal (STRONG_BUY, BUY, HOLD, etc.)
+            momentum: Momentum strength (STRONG, MODERATE, WEAK, etc.)
+            liquidity: Liquidity quality (EXCELLENT, GOOD, FAIR, POOR)
+            source: Data source (default: ai_analysis)
+            reasoning: AI reasoning for selecting this token
             notes: Additional notes
             
         Returns:
@@ -326,43 +368,85 @@ class GoogleSheetsAgent:
             logger.warning("Tokens spreadsheet not configured, skipping Sheets save")
             return False
         
-        try:
-            timestamp = datetime.now().isoformat()
-            
-            row_data = [
-                timestamp,
-                symbol.upper(),
-                name,
-                contract,
-                chain.upper(),
-                source,
-                price,
-                market_cap,
-                str(mentions),
-                sentiment,
-                notes
-            ]
-            
-            # Append to sheet using batch_update (omit first_cell_location to append)
-            response = self._execute_tool(
-                "GOOGLESHEETS_BATCH_UPDATE",
-                {
-                    "spreadsheet_id": self.tokens_sheet_id,
-                    "sheet_name": "AI Agent Memory",
-                    "values": [row_data]
-                }
-            )
-            
-            if response.get("successful"):
-                logger.info(f"✓ Saved {symbol} token to Google Sheets")
-                return True
-            else:
-                logger.error(f"Failed to save token: {response.get('error')}")
-                return False
+        # Try to save, with auto-recovery if cell limit hit
+        for attempt in range(2):  # Try twice: original + retry after new sheet
+            try:
+                timestamp = datetime.now().isoformat()
                 
-        except Exception as e:
-            logger.exception(f"Error saving token to Sheets: {e}")
-            return False
+                row_data = [
+                    timestamp,
+                    symbol.upper(),
+                    name,
+                    price,
+                    percent_change_24h,
+                    volume_24h,
+                    market_cap,
+                    trade_score,
+                    profit_probability,
+                    risk_level,
+                    trading_signal,
+                    momentum,
+                    liquidity,
+                    source,
+                    reasoning,
+                    notes
+                ]
+                
+                # Append to sheet using batch_update
+                # Try new sheet name first, fall back to old name for backwards compatibility
+                sheet_name = "Token Tracking"  # New sheets use this name
+                response = self._execute_tool(
+                    "GOOGLESHEETS_BATCH_UPDATE",
+                    {
+                        "spreadsheet_id": self.tokens_sheet_id,
+                        "sheet_name": sheet_name,
+                        "values": [row_data]
+                    }
+                )
+                
+                # If failed, try old sheet name for backwards compatibility
+                if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
+                    response = self._execute_tool(
+                        "GOOGLESHEETS_BATCH_UPDATE",
+                        {
+                            "spreadsheet_id": self.tokens_sheet_id,
+                            "sheet_name": "AI Agent Memory",
+                            "values": [row_data]
+                        }
+                    )
+                
+                if response.get("successful"):
+                    logger.info(f"✓ Saved {symbol} token to Google Sheets")
+                    return True
+                else:
+                    error_msg = response.get('error', '')
+                    
+                    # Check if cell limit error
+                    if attempt == 0 and self._is_cell_limit_error(error_msg):
+                        logger.warning(f"⚠️ Tokens sheet hit cell limit, creating new sheet...")
+                        new_sheet_id = self._create_new_tokens_sheet_and_update_env()
+                        if new_sheet_id:
+                            logger.info("🔄 Retrying save with new sheet...")
+                            continue  # Retry with new sheet
+                    
+                    logger.error(f"Failed to save token: {error_msg}")
+                    return False
+                    
+            except Exception as e:
+                error_msg = str(e)
+                
+                # Check if cell limit error in exception
+                if attempt == 0 and self._is_cell_limit_error(error_msg):
+                    logger.warning(f"⚠️ Tokens sheet hit cell limit (exception), creating new sheet...")
+                    new_sheet_id = self._create_new_tokens_sheet_and_update_env()
+                    if new_sheet_id:
+                        logger.info("🔄 Retrying save with new sheet...")
+                        continue  # Retry with new sheet
+                
+                logger.exception(f"Error saving token to Sheets: {e}")
+                return False
+        
+        return False
     
     def search_posts(self, platform: str | None = None, 
                     days_back: int = 30, limit: int = 100) -> List[Dict]:
@@ -450,7 +534,7 @@ class GoogleSheetsAgent:
                 "GOOGLESHEETS_BATCH_GET",
                 {
                     "spreadsheet_id": self.tokens_sheet_id,
-                    "ranges": ["AI Agent Memory!A2:K1000"]  # Skip header
+                    "ranges": ["AI Agent Memory!A2:P1000"]  # Skip header (16 columns)
                 }
             )
             
@@ -470,14 +554,19 @@ class GoogleSheetsAgent:
                     "timestamp": row[0] if len(row) > 0 else "",
                     "symbol": row[1] if len(row) > 1 else "",
                     "name": row[2] if len(row) > 2 else "",
-                    "contract": row[3] if len(row) > 3 else "",
-                    "chain": row[4] if len(row) > 4 else "",
-                    "source": row[5] if len(row) > 5 else "",
-                    "price": row[6] if len(row) > 6 else "",
-                    "market_cap": row[7] if len(row) > 7 else "",
-                    "mentions": row[8] if len(row) > 8 else "1",
-                    "sentiment": row[9] if len(row) > 9 else "",
-                    "notes": row[10] if len(row) > 10 else ""
+                    "price": row[3] if len(row) > 3 else "",
+                    "percent_change_24h": row[4] if len(row) > 4 else "",
+                    "volume_24h": row[5] if len(row) > 5 else "",
+                    "market_cap": row[6] if len(row) > 6 else "",
+                    "trade_score": row[7] if len(row) > 7 else "",
+                    "profit_probability": row[8] if len(row) > 8 else "",
+                    "risk_level": row[9] if len(row) > 9 else "",
+                    "trading_signal": row[10] if len(row) > 10 else "",
+                    "momentum": row[11] if len(row) > 11 else "",
+                    "liquidity": row[12] if len(row) > 12 else "",
+                    "source": row[13] if len(row) > 13 else "",
+                    "reasoning": row[14] if len(row) > 14 else "",
+                    "notes": row[15] if len(row) > 15 else ""
                 }
                 
                 # Filter by symbol
@@ -522,11 +611,23 @@ class GoogleSheetsAgent:
                     "GOOGLESHEETS_BATCH_UPDATE",
                     {
                         "spreadsheet_id": self.posts_sheet_id,
-                        "sheet_name": "AI Agent Memory",
+                        "sheet_name": "Posts Tracking",
                         "values": headers,
                         "first_cell_location": "A1"
                     }
                 )
+                
+                # Try old name if new name fails (backwards compatibility)
+                if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
+                    response = self._execute_tool(
+                        "GOOGLESHEETS_BATCH_UPDATE",
+                        {
+                            "spreadsheet_id": self.posts_sheet_id,
+                            "sheet_name": "AI Agent Memory",
+                            "values": headers,
+                            "first_cell_location": "A1"
+                        }
+                    )
                 
                 if response.get("successful"):
                     logger.info("✓ Posts sheet headers set up")
@@ -540,19 +641,32 @@ class GoogleSheetsAgent:
         if self.tokens_sheet_id:
             try:
                 headers = [
-                    ["Timestamp", "Symbol", "Name", "Contract", "Chain", "Source", 
-                     "Price", "Market Cap", "Mentions", "Sentiment", "Notes"]
+                    ["Timestamp", "Token Symbol", "Token Name", "Price", "24h Change %", "Volume 24h", "Market Cap",
+                     "Trade Score", "Profit Prob %", "Risk Level", "Trading Signal", "Momentum", "Liquidity",
+                     "Source", "AI Reasoning", "Notes"]
                 ]
                 
                 response = self._execute_tool(
                     "GOOGLESHEETS_BATCH_UPDATE",
                     {
                         "spreadsheet_id": self.tokens_sheet_id,
-                        "sheet_name": "AI Agent Memory",
+                        "sheet_name": "Token Tracking",
                         "values": headers,
                         "first_cell_location": "A1"
                     }
                 )
+                
+                # Try old name if new name fails (backwards compatibility)
+                if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
+                    response = self._execute_tool(
+                        "GOOGLESHEETS_BATCH_UPDATE",
+                        {
+                            "spreadsheet_id": self.tokens_sheet_id,
+                            "sheet_name": "AI Agent Memory",
+                            "values": headers,
+                            "first_cell_location": "A1"
+                        }
+                    )
                 
                 if response.get("successful"):
                     logger.info("✓ Tokens sheet headers set up")
@@ -563,6 +677,171 @@ class GoogleSheetsAgent:
                 logger.exception(f"Error setting up tokens headers: {e}")
         
         return results
+    
+    def _rename_sheet_tab(self, spreadsheet_id: str, old_title: str, new_title: str) -> bool:
+        """Rename a sheet tab (e.g., 'Sheet1' to 'AI Agent Memory').
+        
+        Args:
+            spreadsheet_id: The spreadsheet ID
+            old_title: Current sheet tab name
+            new_title: New sheet tab name
+            
+        Returns:
+            True if successful
+        """
+        try:
+            # First, get the sheet ID (numeric gid) from the sheet name
+            response = self._execute_tool(
+                "GOOGLESHEETS_GET_SHEET_NAMES",
+                {"spreadsheet_id": spreadsheet_id}
+            )
+            
+            if not response.get("successful"):
+                logger.error(f"Failed to get sheet names: {response.get('error')}")
+                return False
+            
+            sheets = response.get("data", {}).get("sheets", [])
+            sheet_id = None
+            
+            for sheet in sheets:
+                # Handle both dict and string formats
+                if isinstance(sheet, str):
+                    # Sheet API returned just sheet names as strings
+                    if sheet == old_title:
+                        sheet_id = 0  # Use default sheet ID
+                        break
+                elif isinstance(sheet, dict):
+                    properties = sheet.get("properties", {})
+                    if properties.get("title") == old_title:
+                        sheet_id = properties.get("sheetId")
+                        break
+            
+            if sheet_id is None:
+                logger.warning(f"Sheet '{old_title}' not found, trying with sheetId=0")
+                sheet_id = 0  # Default first sheet
+            
+            # Rename the sheet using updateSheetProperties
+            rename_response = self._execute_tool(
+                "GOOGLESHEETS_BATCH_UPDATE",
+                {
+                    "spreadsheet_id": spreadsheet_id,
+                    "requests": [{
+                        "updateSheetProperties": {
+                            "properties": {
+                                "sheetId": sheet_id,
+                                "title": new_title
+                            },
+                            "fields": "title"
+                        }
+                    }]
+                }
+            )
+            
+            if rename_response.get("successful"):
+                logger.info(f"✓ Renamed sheet tab from '{old_title}' to '{new_title}'")
+                return True
+            else:
+                logger.error(f"Failed to rename sheet: {rename_response.get('error')}")
+                return False
+                
+        except Exception as e:
+            logger.exception(f"Error renaming sheet tab: {e}")
+            return False
+    
+    @staticmethod
+    def _is_cell_limit_error(error_msg: str) -> bool:
+        """Check if error message indicates Google Sheets cell limit reached."""
+        if not error_msg:
+            return False
+        error_lower = str(error_msg).lower()
+        return (
+            "10,000,000 cells" in error_msg or
+            "10000000 cells" in error_msg or
+            "exceeding google sheets' limit" in error_lower or
+            "cannot expand sheet" in error_lower
+        )
+    
+    def _create_new_tokens_sheet_and_update_env(self) -> str | None:
+        """Create new tokens sheet when current one hits cell limit.
+        
+        Returns:
+            New sheet ID if successful, None otherwise
+        """
+        try:
+            # Create new sheet with timestamp
+            timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            new_title = f"FDWA AI Agent - Crypto Tokens - {timestamp}"
+            
+            logger.info(f"🆕 Creating new tokens sheet: {new_title}")
+            new_sheet_id = self._create_sheet_with_fallback(new_title, "en_US")
+            
+            if not new_sheet_id:
+                logger.error("Failed to create new tokens sheet")
+                return None
+            
+            # Rename default "Sheet1" to "Token Tracking"
+            self._rename_sheet_tab(new_sheet_id, "Sheet1", "Token Tracking")
+            
+            # Set up headers on new sheet
+            self._setup_tokens_headers(new_sheet_id)
+            
+            # Update .env file
+            _update_env_file("GOOGLESHEETS_TOKENS_SPREADSHEET_ID", new_sheet_id)
+            
+            # Update instance variable
+            self.tokens_sheet_id = new_sheet_id
+            
+            # Update global variable
+            global TOKENS_SHEET_ID
+            TOKENS_SHEET_ID = new_sheet_id
+            
+            logger.info(f"✅ New tokens sheet created and configured: {new_sheet_id}")
+            return new_sheet_id
+            
+        except Exception as e:
+            logger.exception(f"Error creating new tokens sheet: {e}")
+            return None
+    
+    def _create_new_posts_sheet_and_update_env(self) -> str | None:
+        """Create new posts sheet when current one hits cell limit.
+        
+        Returns:
+            New sheet ID if successful, None otherwise
+        """
+        try:
+            # Create new sheet with timestamp
+            timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            new_title = f"FDWA AI Agent - Social Media Posts - {timestamp}"
+            
+            logger.info(f"🆕 Creating new posts sheet: {new_title}")
+            new_sheet_id = self._create_sheet_with_fallback(new_title, "en_US")
+            
+            if not new_sheet_id:
+                logger.error("Failed to create new posts sheet")
+                return None
+            
+            # Rename default "Sheet1" to "Posts Tracking"
+            self._rename_sheet_tab(new_sheet_id, "Sheet1", "Posts Tracking")
+            
+            # Set up headers on new sheet
+            self._setup_posts_headers(new_sheet_id)
+            
+            # Update .env file
+            _update_env_file("GOOGLESHEETS_POSTS_SPREADSHEET_ID", new_sheet_id)
+            
+            # Update instance variable
+            self.posts_sheet_id = new_sheet_id
+            
+            # Update global variable
+            global POSTS_SHEET_ID
+            POSTS_SHEET_ID = new_sheet_id
+            
+            logger.info(f"✅ New posts sheet created and configured: {new_sheet_id}")
+            return new_sheet_id
+            
+        except Exception as e:
+            logger.exception(f"Error creating new posts sheet: {e}")
+            return None
     
     @staticmethod
     def _get_content_hash(content: str) -> str:
@@ -634,6 +913,46 @@ def extract_crypto_tokens_from_text(text: str) -> List[str]:
                 tokens.add(match)
     
     return list(tokens)
+
+
+def save_ai_analyzed_tokens(token_analyses: List, source: str = "ai_crypto_analyzer") -> int:
+    """Save multiple AI-analyzed tokens to Google Sheets.
+    
+    Args:
+        token_analyses: List of TokenAnalysis objects from CryptoTradingAnalyzer
+        source: Data source identifier (default: ai_crypto_analyzer)
+        
+    Returns:
+        Number of tokens successfully saved
+    """
+    saved_count = 0
+    
+    for token in token_analyses:
+        try:
+            success = sheets_agent.save_crypto_token(
+                symbol=token.symbol,
+                name=token.name,
+                price=f"${token._format_price()}",
+                percent_change_24h=f"{token.percent_change_24h:+.2f}%",
+                volume_24h=f"${token.volume_24h:,.0f}",
+                market_cap=f"${token.market_cap:,.0f}",
+                trade_score=f"{token.trade_score:.0f}",
+                profit_probability=f"{token.profit_probability:.0f}%",
+                risk_level=token.risk_level,
+                trading_signal=token.trading_signal,
+                momentum=token.momentum,
+                liquidity=token.liquidity,
+                source=source,
+                reasoning=token.reasoning,
+                notes="AI-selected trading opportunity"
+            )
+            if success:
+                saved_count += 1
+        except Exception as e:
+            logger.error(f"Failed to save token {token.symbol}: {e}")
+    
+    logger.info(f"✓ Saved {saved_count}/{len(token_analyses)} AI-analyzed tokens to Google Sheets")
+    return saved_count
 
 def initialize_google_sheets() -> Dict[str, str]:
     """Validate Google Sheets configuration.

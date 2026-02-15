@@ -61,20 +61,18 @@ class CascadingLLMWrapper:
         mistral_model = os.getenv("LLM_MODEL_MISTRAL", "mistral-large-2512")
         mistral_temp = float(os.getenv("LLM_TEMPERATURE", "0.25"))
         
-        # Add configurable timeout and max_tokens for cost/performance optimization
-        mistral_timeout = int(os.getenv("MISTRAL_TIMEOUT", "60"))  # 60 second default (vs 120s before)
+        # Add configurable max_tokens for cost/performance optimization
         mistral_max_tokens = int(os.getenv("MISTRAL_MAX_TOKENS", "4096"))  # Reduced from unlimited
         
         # For blog generation, use even more conservative limits
         if "blog" in self.purpose.lower():
-            mistral_timeout = int(os.getenv("BLOG_MISTRAL_TIMEOUT", "90"))  # 90s for blogs
             mistral_max_tokens = int(os.getenv("BLOG_MAX_TOKENS", "3000"))  # 3000 tokens ≈ 2000 words (plenty for blogs)
         
+        # NOTE: Mistral API no longer accepts timeout/request_timeout parameters (as of 2026)
         llm = ChatMistralAI(
             model=mistral_model,
             temperature=mistral_temp,
             mistral_api_key=mistral_key,
-            request_timeout=mistral_timeout,
             max_tokens=mistral_max_tokens
         )
         if self.structured_output_schema:

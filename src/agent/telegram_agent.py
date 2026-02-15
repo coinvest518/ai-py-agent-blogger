@@ -108,23 +108,8 @@ def send_message(
     # Use Composio v3 API only — follow toolkit docs (accepts `@channelusername`)
     result = _execute_telegram_tool("TELEGRAM_SEND_MESSAGE", arguments)
     
-    # Extract and save crypto tokens mentioned in message
-    if result.get("success"):
-        try:
-            from src.agent.sheets_agent import (
-                extract_crypto_tokens_from_text,
-                save_token_to_sheets,
-            )
-            tokens = extract_crypto_tokens_from_text(text)
-            for token in tokens:
-                save_token_to_sheets(
-                    symbol=token,
-                    source="telegram_outbound",
-                    notes=f"Mentioned in bot message to {chat_id}"
-                )
-                logger.debug(f"Tracked token {token} from Telegram message")
-        except Exception as e:
-            logger.debug(f"Token extraction error (non-critical): {e}")
+    # Note: Token saving is now handled separately with AI analysis data
+    # (not extracted from message text to ensure we have trade scores, signals, reasoning)
     
     return result
 
@@ -199,23 +184,8 @@ def send_photo(
     
     result = _execute_telegram_tool("TELEGRAM_SEND_PHOTO", arguments)
     
-    # Extract and save crypto tokens from caption
-    if result.get("success") and caption:
-        try:
-            from src.agent.sheets_agent import (
-                extract_crypto_tokens_from_text,
-                save_token_to_sheets,
-            )
-            tokens = extract_crypto_tokens_from_text(caption)
-            for token in tokens:
-                save_token_to_sheets(
-                    symbol=token,
-                    source="telegram_photo_caption",
-                    notes=f"Mentioned in photo caption to {chat_id}"
-                )
-                logger.debug(f"Tracked token {token} from Telegram photo caption")
-        except Exception as e:
-            logger.debug(f"Token extraction error (non-critical): {e}")
+    # Note: Token saving is now handled separately with AI analysis data
+    # (not extracted from caption to ensure we have trade scores, signals, reasoning)
     
     return result
 

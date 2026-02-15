@@ -16,11 +16,11 @@ The engine decides:
 
 import json
 import logging
-import os
-import random
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from src.agent.memory_store import AgentMemoryStore, get_memory_store
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +35,24 @@ MEMORY_PATH = BASE_DIR / "agent_memory.json"
 class AIDecisionEngine:
     """Smart AI decision-making system that uses ALL available data."""
     
-    def __init__(self):
-        """Initialize the decision engine."""
+    def __init__(self, use_memory_store: bool = True):
+        """Initialize the decision engine.
+        
+        Args:
+            use_memory_store: Use LangGraph memory store (recommended) vs JSON file
+        """
+        self.use_memory_store = use_memory_store
         self.business_profile = self._load_business_profile()
         self.products_catalog = self._load_products_catalog()
         self.knowledge_base = self._load_knowledge_base()
-        self.memory = self._load_memory()
+        
+        # Use modern memory store or fallback to JSON
+        if use_memory_store:
+            self.memory_store = get_memory_store()
+            logger.info("✅ Using LangGraph memory store")
+        else:
+            self.memory = self._load_memory()
+            logger.info("⚠️ Using legacy JSON memory")
         
     def _load_business_profile(self) -> Dict:
         """Load business profile with products, links, CTAs."""
@@ -196,9 +208,19 @@ class AIDecisionEngine:
             
             # Check past performance in memory
             product_name = product["name"]
-            if product_name in self.memory.get("product_mentions", {}):
-                mentions = self.memory["product_mentions"][product_name]
-                score += min(mentions, 5)  # Cap boost at 5
+            if self.use_memory_store:
+                # Use modern memory store
+                product_data = self.memory_store.get_top_products(limit=100)
+                for p in product_data:
+                    if p.get("product_name") == product_name:
+                        mentions = p.get("mention_count", 0)
+                        score += min(mentions, 5)  # Cap boost at 5
+                        break
+            else:
+                # Legacy JSON memory
+                if product_name in self.memory.get("product_mentions", {}):
+                    mentions = self.memory["product_mentions"][product_name]
+                    score += min(mentions, 5)  # Cap boost at 5
             
             scored_products.append((score, product))
         
@@ -359,19 +381,31 @@ class AIDecisionEngine:
         """Get relevant insights from past performance."""
         insights = []
         
-        # Check if topic was successful before
-        if topic in self.memory.get("successful_topics", []):
-            insights.append(f"✅ Topic '{topic}' performed well in past")
-        
-        # Check best posting times for platforms
-        best_times = self.memory.get("best_posting_times", {})
-        if best_times:
-            insights.append(f"⏰ Best times: {best_times}")
-        
-        # Check if there are failed attempts to avoid
-        failed = self.memory.get("failed_attempts", [])
-        if failed:
-            insights.append(f"⚠️ Avoid: {', '.join(failed[-3:])}")
+        if self.use_memory_store:
+            # Use modern memory store
+            successful_topics = self.memory_store.get_successful_topics(limit=20)
+            if topic in successful_topics:
+                insights.append(f"✅ Topic '{topic}' performed well in past")
+            
+            best_times = self.memory_store.get_user_preference("best_posting_times")
+            if best_times:
+                insights.append(f"⏰ Best times: {best_times}")
+            
+            failed = self.memory_store.get_user_preference("failed_attempts", [])
+            if failed:
+                insights.append(f"⚠️ Avoid: {', '.join(failed[-3:])}")
+        else:
+            # Legacy JSON memory
+            if topic in self.memory.get("successful_topics", []):
+                insights.append(f"✅ Topic '{topic}' performed well in past")
+            
+            best_times = self.memory.get("best_posting_times", {})
+            if best_times:
+                insights.append(f"⏰ Best times: {best_times}")
+            
+            failed = self.memory.get("failed_attempts", [])
+            if failed:
+                insights.append(f"⚠️ Avoid: {', '.join(failed[-3:])}")
         
         return " | ".join(insights) if insights else "No historical data yet"
     
@@ -379,38 +413,60 @@ class AIDecisionEngine:
                            engagement: Optional[int] = None, success: bool = True):
         """Record post outcome to improve future decisions."""
         try:
-            memory = self._load_memory()
-            
-            if success:
-                # Track successful topic
-                if topic not in memory["successful_topics"]:
-                    memory["successful_topics"].append(topic)
+            if self.use_memory_store:
+                # Use modern memory store
+                self.memory_store.record_post_performance(
+                    topic=topic,
+                    platform=platform,
+                    engagement=engagement or 0,
+                    success=success,
+                    metadata={"products": products}
+                )
                 
                 # Track product mentions
                 for product in products:
-                    if product in memory["product_mentions"]:
-                        memory["product_mentions"][product] += 1
-                    else:
-                        memory["product_mentions"][product] = 1
+                    self.memory_store.record_product_mention(
+                        product_name=product,
+                        platform=platform,
+                        engagement=engagement or 0,
+                        conversion=False  # Would need conversion tracking
+                    )
                 
-                # Track engagement if provided
-                if engagement:
-                    if "high_engagement_posts" not in memory:
-                        memory["high_engagement_posts"] = []
-                    memory["high_engagement_posts"].append({
-                        "topic": topic,
-                        "platform": platform,
-                        "engagement": engagement,
-                        "timestamp": datetime.now().isoformat()
-                    })
+                logger.info("💾 Recorded post outcome (memory store): topic=%s, success=%s", topic, success)
             else:
-                # Track failed attempts
-                if "failed_attempts" not in memory:
-                    memory["failed_attempts"] = []
-                memory["failed_attempts"].append(topic)
-            
-            self._save_memory(memory)
-            logger.info("💾 Recorded post outcome: topic=%s, success=%s", topic, success)
+                # Legacy JSON memory
+                memory = self._load_memory()
+                
+                if success:
+                    # Track successful topic
+                    if topic not in memory["successful_topics"]:
+                        memory["successful_topics"].append(topic)
+                    
+                    # Track product mentions
+                    for product in products:
+                        if product in memory["product_mentions"]:
+                            memory["product_mentions"][product] += 1
+                        else:
+                            memory["product_mentions"][product] = 1
+                    
+                    # Track engagement if provided
+                    if engagement:
+                        if "high_engagement_posts" not in memory:
+                            memory["high_engagement_posts"] = []
+                        memory["high_engagement_posts"].append({
+                            "topic": topic,
+                            "platform": platform,
+                            "engagement": engagement,
+                            "timestamp": datetime.now().isoformat()
+                        })
+                else:
+                    # Track failed attempts
+                    if "failed_attempts" not in memory:
+                        memory["failed_attempts"] = []
+                    memory["failed_attempts"].append(topic)
+                
+                self._save_memory(memory)
+                logger.info("💾 Recorded post outcome (JSON): topic=%s, success=%s", topic, success)
             
         except Exception as e:
             logger.error("Could not record outcome: %s", e)

@@ -27,11 +27,17 @@ def _get_headers() -> Dict[str, str]:
     return {"X-CMC_PRO_API_KEY": key, "Accept": "application/json"}
 
 
-def get_top_gainers(limit: int = 5) -> List[Dict]:
+def get_top_gainers(limit: int = 50) -> List[Dict]:
     """Return top gainers sorted by 24h percent change.
 
-    Returns a list of dicts: {symbol, name, price_usd, percent_change_24h, market_cap}
-    Empty list on error or missing API key.
+    Returns a list of full token dicts with all CoinMarketCap data including:
+    {symbol, name, quote: {USD: {price, percent_change_24h, volume_24h, market_cap, ...}}}
+    
+    Args:
+        limit: Number of top gainers to fetch (default 50 for AI analysis filtering)
+    
+    Returns:
+        List of token dicts with full CMC data, or empty list on error
     """
     headers = _get_headers()
     if not headers:
@@ -39,63 +45,76 @@ def get_top_gainers(limit: int = 5) -> List[Dict]:
         return []
 
     try:
-        params = {"start": 1, "limit": max(30, limit * 5), "convert": "USD", "sort": "percent_change_24h", "sort_dir": "desc"}
+        # Fetch more tokens than needed so AI can filter out low-quality ones
+        params = {"start": 1, "limit": limit, "convert": "USD", "sort": "percent_change_24h", "sort_dir": "desc"}
         resp = requests.get(BASE_URL, headers=headers, params=params, timeout=10)
         resp.raise_for_status()
         body = resp.json()
         data = body.get("data", [])
 
-        results = []
-        for item in data[: limit * 2]:
-            quote = item.get("quote", {}).get("USD", {})
-            results.append({
-                "symbol": item.get("symbol"),
-                "name": item.get("name"),
-                "price_usd": quote.get("price"),
-                "percent_change_24h": quote.get("percent_change_24h"),
-                "market_cap": quote.get("market_cap")
-            })
-            if len(results) >= limit:
-                break
-
-        return results
+        # Return full token data (analyzer will extract what it needs)
+        return data
 
     except Exception as e:
         logger.warning("CoinMarketCap top gainers call failed: %s", e)
         return []
 
 
-def get_top_losers(limit: int = 5) -> List[Dict]:
+def get_top_losers(limit: int = 50) -> List[Dict]:
     """Return top losers (biggest negative percent_change_24h).
 
-    Same return structure as get_top_gainers.
+    Returns a list of full token dicts with all CoinMarketCap data including:
+    {symbol, name, quote: {USD: {price, percent_change_24h, volume_24h, market_cap, ...}}}
+    
+    Args:
+        limit: Number of top losers to fetch (default 50 for AI analysis filtering)
+    
+    Returns:
+        List of token dicts with full CMC data, or empty list on error
     """
     headers = _get_headers()
     if not headers:
         return []
 
     try:
-        params = {"start": 1, "limit": max(30, limit * 5), "convert": "USD", "sort": "percent_change_24h", "sort_dir": "asc"}
+        # Fetch more tokens than needed so AI can filter out low-quality ones
+        params = {"start": 1, "limit": limit, "convert": "USD", "sort": "percent_change_24h", "sort_dir": "asc"}
         resp = requests.get(BASE_URL, headers=headers, params=params, timeout=10)
         resp.raise_for_status()
         body = resp.json()
         data = body.get("data", [])
 
-        results = []
-        for item in data[: limit * 2]:
-            quote = item.get("quote", {}).get("USD", {})
-            results.append({
-                "symbol": item.get("symbol"),
-                "name": item.get("name"),
-                "price_usd": quote.get("price"),
-                "percent_change_24h": quote.get("percent_change_24h"),
-                "market_cap": quote.get("market_cap")
-            })
-            if len(results) >= limit:
-                break
-
-        return results
+        # Return full token data (analyzer will extract what it needs)
+        return data
 
     except Exception as e:
         logger.warning("CoinMarketCap top losers call failed: %s", e)
+        return []
+
+
+def get_top_by_market_cap(limit: int = 200) -> List[Dict]:
+    """Return top cryptocurrencies by market cap (filters quality tokens).
+    
+    Fetches established tokens with real volume/liquidity, avoiding pump & dumps.
+    
+    Args:
+        limit: Number of top tokens to fetch by market cap (default 200)
+    
+    Returns:
+        List of quality token dicts sorted by market cap, or empty list on error
+    """
+    headers = _get_headers()
+    if not headers:
+        logger.debug("CoinMarketCap API key not configured")
+        return []
+
+    try:
+        params = {"start": 1, "limit": limit, "convert": "USD", "sort": "market_cap"}
+        resp = requests.get(BASE_URL, headers=headers, params=params, timeout=10)
+        resp.raise_for_status()
+        body = resp.json()
+        data = body.get("data", [])
+        return data
+    except Exception as e:
+        logger.warning("CoinMarketCap top by market cap call failed: %s", e)
         return []

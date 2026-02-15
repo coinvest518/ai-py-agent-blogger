@@ -34,13 +34,19 @@ from src.agent.instagram_comment_agent import generate_instagram_reply
 from src.agent.linkedin_agent import convert_to_linkedin_post
 from src.agent.llm_provider import get_llm
 from src.agent.ai_decision_engine import get_decision_engine  # ✅ NEW: AI Brain
-# Optional CoinMarketCap helper for Telegram crypto market data
+from src.agent.memory_store import get_memory_store  # ✅ NEW: Long-term memory
+# CoinMarketCap integration for Telegram crypto market data
 try:
-    from src.agent.cmc_client import get_top_gainers
+    from src.agent.cmc_client import get_top_gainers, get_top_losers
+    from src.agent.crypto_trading_analyzer import CryptoTradingAnalyzer
+    CMC_AVAILABLE = True
 except Exception:
-    # optional integration — continue without CoinMarketCap if not configured
+    # Fallback when CoinMarketCap not configured
     def get_top_gainers(limit: int = 5):
         return []
+    def get_top_losers(limit: int = 5):
+        return []
+    CMC_AVAILABLE = False
 
 from src.agent.realtime_status import broadcaster
 
@@ -115,6 +121,7 @@ class AgentState(TypedDict):
     blog_status: str
     blog_title: str
     telegram_status: str
+    memory_status: str  # ✅ NEW: Memory recording status
     error: str
 
 
@@ -257,63 +264,156 @@ def _extract_search_insights(search_data: dict) -> str:
     """
     insights = []
     
-    # SERPAPI format: Check for nested structure first
-    # Option 1: data.results.organic_results (Composio nested)
-    # Option 2: data.organic_results (direct)
+    # DEBUG: Log the response structure to understand what we're getting
+    logger.info("🔍 DEBUG: Search data keys: %s", list(search_data.keys()))
+    logger.info("🔍 DEBUG: Search data type: %s", type(search_data))
+    
+    # Handle multiple possible nested structures from Composio
     organic_results = None
-    
-    if "results" in search_data and isinstance(search_data["results"], dict):
-        # Nested format: search_data.results.organic_results
-        nested_results = search_data.get("results", {})
-        organic_results = nested_results.get("organic_results", [])
-    elif "organic_results" in search_data:
-        # Direct format: search_data.organic_results
-        organic_results = search_data.get("organic_results", [])
-    
-    if organic_results and isinstance(organic_results, list):
-        for result in organic_results[:5]:  # Top 5 results
-            if isinstance(result, dict):
-                title = result.get("title", "")
-                snippet = result.get("snippet", "")
-                if title:
-                    insights.append(f"{title}")
-                if snippet and snippet != title:
-                    insights.append(f"{snippet}")
-    
-    # Tavily format: Check for nested structure first
-    # Option 1: data.response_data.results (Composio nested)
-    # Option 2: data.results (direct)
     tavily_results = None
     tavily_answer = None
     
-    if "response_data" in search_data and isinstance(search_data["response_data"], dict):
-        # Nested format: search_data.response_data.results
-        response_data = search_data.get("response_data", {})
-        tavily_results = response_data.get("results", [])
-        tavily_answer = response_data.get("answer", "")
-    elif "results" in search_data and isinstance(search_data["results"], list):
-        # Direct format: search_data.results
-        tavily_results = search_data.get("results", [])
-        tavily_answer = search_data.get("answer", "")
+    # SERPAPI parsing - try multiple nested paths
+    possible_serpapi_paths = [
+        ["results", "organic_results"],  # search_data.results.organic_results
+        ["organic_results"],             # search_data.organic_results
+        ["data", "organic_results"],     # search_data.data.organic_results
+        ["response", "organic_results"], # search_data.response.organic_results
+    ]
     
-    if tavily_results and isinstance(tavily_results, list):
-        for result in tavily_results[:5]:  # Top 5 results
+    for path in possible_serpapi_paths:
+        current = search_data
+        try:
+            for key in path:
+                if isinstance(current, dict) and key in current:
+                    current = current[key]
+                else:
+                    current = None
+                    break
+            
+            if isinstance(current, list) and current:
+                organic_results = current
+                logger.info("🔍 Found SERPAPI results at path: %s (%d items)", " -> ".join(path), len(organic_results))
+                break
+        except Exception:
+            continue
+    
+    # Process SERPAPI results
+    if organic_results:
+        for i, result in enumerate(organic_results[:5]):  # Top 5 results
+            if isinstance(result, dict):
+                title = result.get("title", "")
+                snippet = result.get("snippet", "")
+                
+                if title and len(title) > 10:  # Only meaningful titles
+                    insights.append(f"📰 {title}")
+                if snippet and snippet != title and len(snippet) > 20:
+                    # Clean and truncate snippet
+                    clean_snippet = snippet.replace("...", "").strip()[:150]
+                    insights.append(f"   💡 {clean_snippet}")
+                
+                logger.info("🔍 SERPAPI result %d: title=%s, snippet=%s", i+1, title[:50], snippet[:50])
+    
+    # Tavily parsing - try multiple nested paths
+    possible_tavily_paths = [
+        ["response_data", "results"],    # search_data.response_data.results
+        ["results"],                     # search_data.results
+        ["data", "results"],            # search_data.data.results
+    ]
+    
+    for path in possible_tavily_paths:
+        current = search_data
+        try:
+            for key in path:
+                if isinstance(current, dict) and key in current:
+                    current = current[key]
+                else:
+                    current = None
+                    break
+            
+            if isinstance(current, list) and current:
+                tavily_results = current
+                logger.info("🔍 Found Tavily results at path: %s (%d items)", " -> ".join(path), len(tavily_results))
+                break
+        except Exception:
+            continue
+    
+    # Try to get Tavily answer
+    for answer_path in [["response_data", "answer"], ["answer"], ["data", "answer"]]:
+        current = search_data
+        try:
+            for key in answer_path:
+                if isinstance(current, dict) and key in current:
+                    current = current[key]
+                else:
+                    current = None
+                    break
+            
+            if isinstance(current, str) and len(current) > 10:
+                tavily_answer = current
+                logger.info("🔍 Found Tavily answer at path: %s", " -> ".join(answer_path))
+                break
+        except Exception:
+            continue
+    
+    # Process Tavily results  
+    if tavily_results:
+        for i, result in enumerate(tavily_results[:5]):  # Top 5 results
             if isinstance(result, dict):
                 title = result.get("title", "")
                 content = result.get("content", "")
-                if title:
-                    insights.append(f"{title}")
-                if content and content != title:
-                    # Take first 200 chars of content
-                    insights.append(f"{content[:200]}")
+                
+                if title and len(title) > 10:
+                    insights.append(f"🔍 {title}")
+                if content and content != title and len(content) > 20:
+                    # Take first 150 chars of content
+                    clean_content = content[:150].replace("...", "").strip()
+                    insights.append(f"   📝 {clean_content}")
+                
+                logger.info("🔍 Tavily result %d: title=%s, content=%s", i+1, title[:50], content[:50])
     
-    # Handle answer field (Tavily)
-    if tavily_answer:
-        insights.insert(0, tavily_answer)
+    # Handle Tavily answer (summary)
+    if tavily_answer and len(tavily_answer) > 20:
+        insights.insert(0, f"🎯 {tavily_answer[:200]}")
+    
+    # If no structured results found, try to extract any text content
+    if not insights:
+        logger.warning("🔍 No structured results found, trying to extract any text content...")
+        
+        # Try to find any meaningful text in the response
+        def extract_text_recursive(obj, depth=0):
+            extracted = []
+            if depth > 3:  # Prevent infinite recursion
+                return extracted
+                
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if isinstance(value, str) and len(value) > 30 and key in ["title", "snippet", "content", "description", "text"]:
+                        extracted.append(value[:150])
+                    elif isinstance(value, (dict, list)):
+                        extracted.extend(extract_text_recursive(value, depth + 1))
+            elif isinstance(obj, list):
+                for item in obj[:3]:  # Limit to first 3 items
+                    extracted.extend(extract_text_recursive(item, depth + 1))
+            
+            return extracted
+        
+        fallback_texts = extract_text_recursive(search_data)
+        if fallback_texts:
+            insights.extend([f"📄 {text}" for text in fallback_texts[:3]])
+            logger.info("🔍 Extracted %d fallback text snippets", len(fallback_texts))
     
     # Join with newlines and limit total length
     text = "\n".join(insights)
-    return text[:800] if text else "No results found"
+    
+    if text and len(text) > 50:
+        logger.info("✅ Successfully extracted %d characters of trend insights", len(text))
+        return text[:1000]  # Increased limit for more comprehensive insights
+    else:
+        logger.warning("❌ No meaningful insights extracted from search data")
+        # Log the raw data structure for debugging
+        logger.info("🔍 Raw search_data structure: %s", str(search_data)[:500])
+        return "No actionable trends found in current search results"
 
 
 # ==================== MARKDOWN CLEANING UTILITY ====================
@@ -558,153 +658,221 @@ Output ONLY the LinkedIn post text, nothing else."""
 
 
 def _adapt_for_telegram(base_insights: str) -> str:
-    """Adapt content for Telegram: Crypto/DeFi focused with market data.
+    """Generate Telegram content using focused crypto agent.
     
-    This creates crypto-specific content for Telegram group members
-    interested in DeFi, tokens, and cryptocurrency trends.
-    
-    Uses LLM-first approach with intelligent template fallback.
+    🎯 NEW APPROACH: Uses TelegramCryptoAgent for:
+    - CONCISE token data in message (2-3 symbols max)
+    - DETAILED analysis saved to memory + Google Sheets
+    - SERPAPI + Tavily research integration
+    - Focused DeFi messaging for @yieldbotai group
     
     Args:
-        base_insights: Research insights from trend data
-        
+        base_insights: Base insights from trend research (used as fallback)
+
     Returns:
-        Telegram crypto-optimized content
+        Concise Telegram message with token highlights only.
     """
-    # Get current year for context
     from datetime import datetime
-    current_year = datetime.now().year
     
-    # Try LLM-first approach (RECOMMENDED for quality)
-    llm_failed = False
+    # Try TelegramCryptoAgent first (NEW focused approach)
     try:
-        llm = get_llm(purpose="Telegram content adaptation")
+        from src.agent.telegram_crypto_agent import TelegramCryptoAgent
+        import asyncio
         
-        if not llm:
-            logger.warning("No LLM provider available for Telegram, using template")
-            llm_failed = True
-        else:
-            prompt = f"""Current year: {current_year}. Create a Telegram message for a crypto/DeFi community based on this insight:
-
-{base_insights[:800]}
-
-Requirements:
-- Start with topic-relevant hook (AI/automation OR crypto/DeFi OR credit/business - match the insight)
-- 400-800 characters (detailed but readable)
-- Plain text only (NO Markdown: no **bold**, *italic*, or [links](url) syntax)
-- Use {current_year} for any year references (NOT 2025)
-- Include specific data, tools, or strategies from the insights
-- Add relevant emojis (🚀 📊 💰 📈 🤖)
-- Mention FDWA tools/products if relevant: https://fdwa.site
-- Add consultation link: https://cal.com/bookme-daniel
-- End with relevant hashtags (#AI #DeFi #Crypto #Automation #YieldBot)
-- Be actionable and valuable
-
-Output ONLY the Telegram message text, nothing else."""
-
-            response = llm.invoke(prompt)
-            message = response.content if hasattr(response, 'content') else str(response)
-            message = _strip_markdown(message.strip())  # Remove Markdown formatting
+        logger.info("🚀 Using TelegramCryptoAgent for focused crypto messaging...")
+        
+        crypto_agent = TelegramCryptoAgent()
+        
+        # Get crypto market data with AI analysis
+        market_data = asyncio.run(crypto_agent.get_crypto_market_data())
+        
+        if market_data.get('success') and market_data.get('tokens'):
+            tokens = market_data['tokens']
+            gainers = tokens.get('gainers', [])
+            losers = tokens.get('losers', [])
             
-            # Validation: Ensure message is substantial (not just template)
-            if len(message) < 150 or "Key opportunities:" in message:
-                logger.warning("LLM generated low-quality content, using template fallback")
-                llm_failed = True
-            else:
-                logger.info("✅ Generated Telegram content with LLM (%d chars)", len(message))
-                return message
+            # Create CONCISE Telegram message
+            message_parts = []
+            message_parts.append("🚀 DeFi Market Update\n")
+            
+            # Top trending tokens (show top 3 symbols)
+            trending = []
+            for token in gainers[:3]:
+                trending.append(token['symbol'])
+            
+            if trending:
+                message_parts.append(f"📊 Trending: {' | '.join(trending)}\n")
+            
+            # Show top pick details
+            if gainers:
+                top_pick = gainers[0]
+                message_parts.append(f"\n💎 Top Pick: {top_pick['symbol']}")
+                message_parts.append(f"   ${top_pick['price']:.6f} (+{top_pick['change_24h']:.2f}%)")
+                message_parts.append(f"   Score: {top_pick['trade_score']:.0f}/100 | {top_pick['signal']}\n")
+            
+            # FDWA product mention
+            message_parts.append("\n📈 Create unique dispute letters with Letters by AI\n")
+            message_parts.append("\n💡 Stay ahead with real-time DeFi insights and AI-powered automation.")
+            message_parts.append("Get YBOT tools at https://fdwa.site\n")
+            message_parts.append("\n#DeFi #Crypto #YieldBot #FinancialFreedom")
+            
+            message = "".join(message_parts)
+            
+            # Save detailed analysis to memory
+            try:
+                from src.agent.memory_store import AgentMemoryStore
+                memory_store = AgentMemoryStore(user_id="fdwa_agent")
+                
+                # Save all analyzed tokens to memory
+                for token in gainers[:5]:
+                    memory_store.record_crypto_insight(
+                        token_symbol=token['symbol'],
+                        insight_type="quality_gainer",
+                        data={
+                            "signal": token['signal'],
+                            "trade_score": token['trade_score'],
+                            "profit_probability": token['profit_probability'],
+                            "risk_level": token['risk_level'],
+                            "reasoning": token['reasoning'][:200],
+                            "price": token['price'],
+                            "change_24h": token['change_24h']
+                        }
+                    )
+                
+                logger.info("💾 Saved %d tokens to memory", len(gainers[:5]))
+            except Exception as mem_err:
+                logger.warning("⚠️ Memory save failed: %s", mem_err)
+            
+            logger.info("✅ TelegramCryptoAgent: Message created with %d gainers, %d losers", len(gainers), len(losers))
+            return message
+        else:
+            logger.warning("⚠️ TelegramCryptoAgent returned no quality tokens")
+            
+    except ImportError:
+        logger.info("📦 TelegramCryptoAgent not available, using legacy crypto analysis...")
+    except Exception as e:
+        logger.warning("⚠️ TelegramCryptoAgent failed: %s", e)
+        import traceback
+        logger.debug(traceback.format_exc())
+    
+    # Fallback: Legacy crypto analysis (CONCISE version)
+    logger.info("🔄 Using legacy crypto analysis with concise output...")
+    
+    try:
+        # Fetch quality tokens by market cap (avoid pump & dumps)
+        from src.agent.cmc_client import get_top_by_market_cap
+        
+        all_tokens = get_top_by_market_cap(limit=200)
+        
+        if not all_tokens:
+            return _telegram_crypto_fallback()
+        
+        # Separate into gainers and losers
+        gainers = []
+        losers = []
+        
+        for token in all_tokens:
+            try:
+                pct_change = token.get('quote', {}).get('USD', {}).get('percent_change_24h', 0)
+                if pct_change > 0:
+                    gainers.append(token)
+                elif pct_change < 0:
+                    losers.append(token)
+            except Exception:
+                continue
+        
+        # Sort and take top 50 of each
+        gainers.sort(key=lambda x: x.get('quote', {}).get('USD', {}).get('percent_change_24h', 0), reverse=True)
+        losers.sort(key=lambda x: x.get('quote', {}).get('USD', {}).get('percent_change_24h', 0))
+        gainers = gainers[:50]
+        losers = losers[:50]
+        
+        logger.info(f"📥 Fetched {len(gainers)} gainers, {len(losers)} losers from quality tokens")
+        
+        # Analyze but only show TOP 2 tokens
+        if CMC_AVAILABLE:
+            best_gainers, best_losers = CryptoTradingAnalyzer.analyze_tokens(
+                gainers=gainers, losers=losers, top_n=2
+            )
+        else:
+            # Simple fallback - just get top 2 by volume
+            best_gainers = sorted(gainers, key=lambda x: x.get('quote', {}).get('USD', {}).get('volume_24h', 0), reverse=True)[:2]
+            best_losers = sorted(losers, key=lambda x: x.get('quote', {}).get('USD', {}).get('volume_24h', 0), reverse=True)[:2]
+        
+        # Create CONCISE message
+        message_parts = []
+        message_parts.append("🚀 DeFi Market Update\n")
+        
+        # Show only TOP 2 symbols
+        trending_symbols = []
+        if best_gainers:
+            for token in best_gainers[:2]:
+                symbol = token.symbol if hasattr(token, 'symbol') else token.get('symbol', 'N/A')
+                trending_symbols.append(symbol.upper())
+        
+        if trending_symbols:
+            message_parts.append(f"📊 Trending: {' | '.join(trending_symbols)}\n")
+        
+        message_parts.append("\n📈 Create unique dispute letters with Letters by AI\n")
+        message_parts.append("\n💡 Stay ahead with real-time DeFi insights and AI-powered automation.")
+        message_parts.append("Get YBOT tools at https://fdwa.site\n")
+        message_parts.append("\n#DeFi #Crypto #YieldBot #FinancialFreedom")
+        
+        message = "".join(message_parts)
+        
+        # Save detailed analysis to memory (if available)
+        try:
+            from src.agent.memory_store import AgentMemoryStore
+            memory_store = AgentMemoryStore(user_id="fdwa_agent")
+            
+            # Save detailed token data to memory
+            for token in (best_gainers + best_losers)[:5]:
+                symbol = token.symbol if hasattr(token, 'symbol') else token.get('symbol', 'N/A')
+                price = getattr(token, 'price', token.get('price', 0))
+                change = getattr(token, 'percent_change_24h', token.get('percent_change_24h', 0))
+                
+                insight = f"{symbol} - Price: ${price}, Change: {change}%"
+                asyncio.run(memory_store.record_crypto_insight(insight, {
+                    "symbol": symbol,
+                    "price": price,
+                    "change_24h": change,
+                    "analysis_date": datetime.now().isoformat()
+                }))
+            
+            logger.info("✅ Detailed crypto analysis saved to memory")
+        
+        except Exception as e:
+            logger.warning("⚠️ Failed to save to memory: %s", e)
+        
+        logger.info(f"✅ Generated concise Telegram crypto message ({len(message)} chars)")
+        return message
         
     except Exception as e:
-        logger.warning("LLM generation failed for Telegram: %s - using intelligent template", str(e)[:100])
-        llm_failed = True
-    
-    # Template fallback (only if LLM failed or unavailable)
-    if llm_failed:
-        logger.info("Using template-based Telegram content generation")
-        
-        # Extract crypto tokens from insights
-        crypto_keywords = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "LINK", "UNI", 
-                           "AAVE", "CRV", "bitcoin", "ethereum", "defi", "crypto", "token",
-                           "blockchain", "web3", "nft", "dao"]
-        
-        found_tokens = []
-        insights_lower = base_insights.lower()
-        
-        for keyword in crypto_keywords:
-            if keyword.lower() in insights_lower:
-                found_tokens.append(keyword.upper() if len(keyword) <= 5 else keyword.title())
-        
-        # Remove duplicates and limit
-        found_tokens = list(dict.fromkeys(found_tokens))[:5]
-        
-        # Get first line for context
-        first_line = base_insights.split('\n')[0][:100]
-        
-        # Build crypto-focused Telegram message
-        if found_tokens:
-            tokens_list = " | ".join(found_tokens)
-            message = (
-                f"🚀 DeFi Market Update\n\n"
-                f"📊 Trending: {tokens_list}\n\n"
-                f"📈 {first_line}\n\n"
-                f"💡 Stay ahead with real-time DeFi insights and AI-powered automation.\n"
-                f"Get YBOT tools at https://fdwa.site\n\n"
-                f"#DeFi #Crypto #YieldBot #FinancialFreedom"
-            )
-        else:
-            # Intelligent fallback: Extract key content instead of generic template
-            # Get more context from base_insights (not just title)
-            lines = [l.strip() for l in base_insights.split('\n') if l.strip()]
-            
-            # Build message from actual content
-            topic = lines[0][:100] if lines else "Market Update"
-            
-            # Extract 2-3 key points from insights
-            key_points = []
-            for line in lines[1:6]:  # Check next 5 lines
-                if len(line) > 20 and not line.startswith('http'):  # Skip links
-                    key_points.append(f"→ {line[:80]}")
-                    if len(key_points) >= 3:
-                        break
-            
-            # If no key points found, use content-aware defaults based on topic
-            if not key_points:
-                topic_lower = topic.lower()
-                if 'ai' in topic_lower or 'automation' in topic_lower:
-                    key_points = [
-                        "→ AI workflow automation tools",
-                        "→ No-code AI agent builders", 
-                        "→ Productivity & cost savings"
-                    ]
-                elif 'credit' in topic_lower or 'debt' in topic_lower:
-                    key_points = [
-                        "→ Automated credit dispute letters",
-                        "→ AI-powered credit analysis",
-                        "→ 72-hour credit optimization"
-                    ]
-                else:
-                    key_points = [
-                        "→ Digital business automation",
-                        "→ Revenue growth strategies",
-                        "→ AI-powered marketing systems"
-                    ]
-            
-            message = (
-                f"🚀 {topic}\n\n"  # Removed ** markdown
-                f"💡 Key insights:\n"
-                + "\n".join(key_points) + "\n\n"
-                f"🤖 Automate with FDWA tools: https://fdwa.site\n"
-                f"📅 Free consultation: https://cal.com/bookme-daniel\n\n"
-                f"#Automation #AI #Business #YieldBot"
-            )
-            
-            # Strip Markdown from template fallback too (in case any remains)
-            message = _strip_markdown(message)
-            message = _strip_markdown(message)
-            
-            logger.warning("Using intelligent template fallback for Telegram (no crypto tokens found)")
-        
-        return message
+        logger.error(f"❌ Legacy crypto analysis failed: {e}")
+        return _telegram_crypto_fallback()
+
+
+def _telegram_crypto_fallback() -> str:
+    """Fallback message when CoinMarketCap API or trading analyzer is unavailable."""
+    from datetime import datetime
+    return f"""🎯 CRYPTO TRADING OPPORTUNITIES
+📅 {datetime.now().strftime('%b %d, %Y')}
+
+⚠️ AI trading analysis temporarily unavailable
+
+💡 Trading Essentials:
+→ High volume = Better liquidity
+→ Risk management > Entry timing
+→ DYOR before every trade
+→ Never invest more than you can lose
+
+🤖 Automate DeFi: https://fdwa.site
+📅 Strategy call: https://cal.com/bookme-daniel
+
+#CryptoTrading #DeFi #YieldBot
+
+🔧 Admin: Add COINMARKETCAP_API_KEY to .env
+   Get free key: https://pro.coinmarketcap.com/signup"""
 
 
 def _adapt_for_instagram(base_insights: str) -> str:
@@ -1040,9 +1208,10 @@ def generate_tweet_node(state: AgentState) -> dict:
 
 
 def generate_image_node(state: AgentState) -> dict:
-    """Generate FDWA-branded image using Hugging Face FLUX model with AI strategy.
+    """Generate FDWA-branded image using Pollinations.ai (primary) → HuggingFace (fallback).
     
-    ✅ NEW: Uses AI Decision Engine strategy for topic-appropriate visuals.
+    ✅ NEW: Uses Pollinations.ai for best quality, automatically falls back to HF if needed.
+    ✅ Uses AI Decision Engine strategy for topic-appropriate visuals.
 
     Args:
         state: Current agent state with tweet_text and optional ai_strategy.
@@ -1050,8 +1219,8 @@ def generate_image_node(state: AgentState) -> dict:
     Returns:
         Dictionary with image_path (local file) and image_url (HTTP) or error.
     """
-    logger.info("---GENERATING FDWA-BRANDED IMAGE WITH HUGGING FACE---")
-    _broadcast_sync("start_step", "generate_image", "Generating strategic AI image with FLUX")
+    logger.info("---GENERATING FDWA-BRANDED IMAGE WITH POLLINATIONS.AI---")
+    _broadcast_sync("start_step", "generate_image", "Generating strategic AI image with Pollinations → HF fallback")
     
     tweet_text = state.get("tweet_text", "")
     ai_strategy = state.get("ai_strategy")  # ✅ Get AI strategy from state
@@ -1072,45 +1241,57 @@ def generate_image_node(state: AgentState) -> dict:
     logger.info("Enhanced visual prompt: %s", visual_prompt[:150])
     
     try:
-        # Import Hugging Face image generator
-        from src.agent.hf_image_gen import (
-            generate_image_hf,
+        # Import Pollinations image generator (with automatic HF fallback)
+        from src.agent.pollinations_image_gen import (
+            generate_image_with_fallback,
             save_image_locally,
             upload_to_imgbb,
         )
         
-        # Generate image with Hugging Face FLUX (fast and high quality)
-        result = generate_image_hf(
+        # Generate image with Pollinations → HF fallback (automatic quality selection)
+        result = generate_image_with_fallback(
             prompt=visual_prompt,
-            model="flux-schnell",  # FLUX.1-schnell - fast and high quality
-            width=1024,  # ✅ Higher resolution for better quality
+            model="flux",  # FLUX Schnell - fast, high quality, FREE (5K images per pollen)
+            width=1024,  # ✅ High resolution for professional quality
             height=1024,
+            timeout=90  # Generous timeout for quality generation
         )
         
         if result.get("success"):
             # Save image locally
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"hf_generated_{timestamp}.png"
+            provider = result.get("provider", "pollinations").lower().replace(" ", "_")
+            filename = f"{provider}_generated_{timestamp}.png"
             
-            image_path = save_image_locally(result["image_bytes"], filename)
-            logger.info("Generated image saved to: %s", image_path)
+            image_path = save_image_locally(
+                result["image_bytes"],
+                filename,
+                provider=result.get("provider", "pollinations")
+            )
+            logger.info("✅ Generated image saved to: %s", image_path)
+            logger.info(f"   Provider: {result.get('provider', 'Unknown')}")
+            logger.info(f"   Model: {result.get('model', 'Unknown')}")
             
             # Upload to imgbb for public HTTP URL (needed for Instagram/Blog/Email)
-            logger.info("Uploading to imgbb for public URL...")
+            logger.info("📤 Uploading to imgbb for public URL...")
             upload_result = upload_to_imgbb(result["image_bytes"])
             
             if upload_result.get("success"):
                 http_url = upload_result["url"]
-                logger.info("Image uploaded to imgbb: %s", http_url)
-                _broadcast_sync("complete_step", "generate_image", {"url": http_url, "path": image_path})
+                logger.info(f"✅ Image uploaded to imgbb: {http_url}")
+                _broadcast_sync("complete_step", "generate_image", {
+                    "url": http_url,
+                    "path": image_path,
+                    "provider": result.get("provider")
+                })
                 
                 return {
                     "image_path": image_path,
                     "image_url": http_url  # HTTP URL works everywhere
                 }
             else:
-                logger.warning("Upload to imgbb failed: %s", upload_result.get("error"))
+                logger.warning(f"⚠️ Upload to imgbb failed: {upload_result.get('error')}")
                 logger.info("Falling back to local file for Twitter/Facebook")
                 
                 # Return local file path - still works for Twitter/Facebook
@@ -1119,15 +1300,30 @@ def generate_image_node(state: AgentState) -> dict:
                     "image_url": f"file:///{image_path.replace(chr(92), '/')}"  # Local fallback
                 }
         else:
-            error_msg = result.get("error", "Unknown HF error")
-            logger.error("Hugging Face image generation failed: %s", error_msg)
-            _broadcast_sync("error", f"Image generation failed: {error_msg}")
-            return {"error": f"HF generation failed: {error_msg}"}
+            error_msg = result.get("error", "Unknown error")
+            logger.warning("⚠️ Image generation failed (both Pollinations and HuggingFace): %s", error_msg)
+            _broadcast_sync("warn", f"Image generation failed: {error_msg}")
+            
+            # ✅ Continue without image - agent can still post text content
+            logger.info("📝 Agent will continue WITHOUT image (text-only posts)")
+            return {
+                "image_path": None,
+                "image_url": None,
+                "image_generation_failed": True,
+                "error_details": error_msg
+            }
             
     except Exception as e:
-        logger.exception("Error generating image with Hugging Face: %s", e)
-        _broadcast_sync("error", f"Image generation error: {str(e)}")
-        return {"error": f"Image generation error: {e!s}"}
+        logger.exception("⚠️ Image generation crashed: %s", e)
+        _broadcast_sync("warn", f"Image generation error: {str(e)}")
+        
+        # ✅ Continue without image - non-fatal error
+        return {
+            "image_path": None,
+            "image_url": None,
+            "image_generation_failed": True,
+            "error_details": str(e)
+        }
 
 
 def monitor_instagram_comments_node(state: AgentState) -> dict:
@@ -1426,6 +1622,162 @@ def convert_to_telegram_crypto_post(trend_data: str, tweet_text: str) -> str:
     
     logger.info("Telegram post generated: %d chars", len(telegram_post))
     return telegram_post
+
+
+def record_memory_outcomes_node(state: AgentState) -> dict:
+    """Record post outcomes to long-term memory for learning and improvement.
+    
+    This node runs at the END of the workflow to save:
+    - Content performance (engagement, success/failure per platform)
+    - Product mentions and their effectiveness
+    - Crypto insights from trading analysis
+    - Topic performance for future decision making
+    
+    Args:
+        state: Final agent state with all post results
+        
+    Returns:
+        Dictionary with memory_status
+    """
+    logger.info("---RECORDING OUTCOMES TO MEMORY---")
+    
+    try:
+        # Get memory store
+        memory = get_memory_store(user_id="fdwa_agent")
+        
+        # Extract AI strategy (if used)
+        ai_strategy = state.get("ai_strategy", {})
+        topic = ai_strategy.get("topic", "general")
+        products = [p.get("name") for p in ai_strategy.get("products", [])]
+        
+        # Determine success per platform based on status
+        platforms_success = {
+            "twitter": "Posted" in str(state.get("twitter_url", "")),
+            "facebook": "Posted" in str(state.get("facebook_status", "")),
+            "linkedin": "Posted" in str(state.get("linkedin_status", "")),
+            "instagram": "Posted" in str(state.get("instagram_status", "")),
+            "telegram": "Posted" in str(state.get("telegram_status", ""))
+        }
+        
+        # Calculate overall success (at least 3 platforms posted)
+        successful_posts = sum(platforms_success.values())
+        overall_success = successful_posts >= 3
+        
+        # Estimate engagement (would need API calls to get real engagement)
+        # For now, use a placeholder - you can enhance this with actual metrics
+        estimated_engagement = successful_posts * 10  # Rough estimate
+        
+        logger.info("📊 Post Performance:")
+        logger.info("   Topic: %s", topic)
+        logger.info("   Products: %s", products)
+        logger.info("   Platforms succeeded: %d/5", successful_posts)
+        logger.info("   Overall success: %s", overall_success)
+        
+        # Record performance for each platform
+        for platform, success in platforms_success.items():
+            if success:
+                memory.record_post_performance(
+                    topic=topic,
+                    platform=platform,
+                    engagement=estimated_engagement,
+                    success=True,
+                    metadata={
+                        "products": products,
+                        "tweet_text": state.get("tweet_text", "")[:100],
+                        "has_image": bool(state.get("image_url")),
+                        "blog_posted": bool(state.get("blog_title"))
+                    }
+                )
+                logger.info("   ✅ Recorded %s success", platform)
+        
+        # Record product mentions
+        for product_name in products:
+            for platform, success in platforms_success.items():
+                if success:
+                    memory.record_product_mention(
+                        product_name=product_name,
+                        platform=platform,
+                        engagement=estimated_engagement,
+                        conversion=False  # Would need conversion tracking
+                    )
+        
+        if products:
+            logger.info("   ✅ Recorded %d product mentions", len(products))
+        
+        # Record crypto insights if Telegram was used
+        if platforms_success.get("telegram") and "crypto" in topic.lower():
+            try:
+                # Get the actual analyzed tokens from state (only the TOP quality tokens)
+                crypto_analysis = state.get("crypto_analysis", {})
+                gainers = crypto_analysis.get("best_gainers", [])
+                losers = crypto_analysis.get("best_losers", [])
+                
+                # Save ONLY the picked tokens (not all analyzed tokens)
+                for token in gainers:
+                    if hasattr(token, 'symbol'):
+                        memory.record_crypto_insight(
+                            token_symbol=token.symbol,
+                            insight_type="gainer_pick",
+                            data={
+                                "topic": topic,
+                                "platform": "telegram",
+                                "price": token.price_usd,
+                                "percent_change_24h": token.percent_change_24h,
+                                "trade_score": token.trade_score,
+                                "profit_probability": token.profit_probability,
+                                "trading_signal": token.trading_signal,
+                                "timestamp": str(datetime.now())
+                            }
+                        )
+                        logger.debug(f"   💾 Saved gainer: {token.symbol}")
+                
+                for token in losers:
+                    if hasattr(token, 'symbol'):
+                        memory.record_crypto_insight(
+                            token_symbol=token.symbol,
+                            insight_type="loser_pick",
+                            data={
+                                "topic": topic,
+                                "platform": "telegram",
+                                "price": token.price_usd,
+                                "percent_change_24h": token.percent_change_24h,
+                                "trade_score": token.trade_score,
+                                "profit_probability": token.profit_probability,
+                                "trading_signal": token.trading_signal,
+                                "timestamp": str(datetime.now())
+                            }
+                        )
+                        logger.debug(f"   💾 Saved loser: {token.symbol}")
+                
+                if gainers or losers:
+                    logger.info("   ✅ Recorded %d crypto tokens (quality picks only)", len(gainers) + len(losers))
+            except Exception as e:
+                logger.debug("Crypto insight recording skipped: %s", e)
+        
+        # Use AI Decision Engine to record outcome
+        try:
+            decision_engine = get_decision_engine()
+            decision_engine.record_post_outcome(
+                topic=topic,
+                products=products,
+                platform="multi",  # Cross-platform post
+                engagement=estimated_engagement,
+                success=overall_success
+            )
+            logger.info("   ✅ Recorded outcome in AI Decision Engine")
+        except Exception as e:
+            logger.warning("AI Decision Engine recording failed: %s", e)
+        
+        logger.info("💾 Memory recording complete!")
+        logger.info("   Agent will learn from this post for future content decisions")
+        
+        return {
+            "memory_status": f"Recorded: {successful_posts} platforms, topic={topic}, success={overall_success}"
+        }
+        
+    except Exception as e:
+        logger.error("Memory recording failed: %s", e)
+        return {"memory_status": f"Failed: {str(e)}"}
 
 
 def post_telegram_node(state: AgentState) -> dict:
@@ -1915,6 +2267,7 @@ workflow.add_node("monitor_instagram_comments", monitor_instagram_comments_node)
 workflow.add_node("reply_to_twitter", reply_to_twitter_node)
 workflow.add_node("comment_on_facebook", comment_on_facebook_node)
 workflow.add_node("generate_blog_email", generate_blog_email_node)
+workflow.add_node("record_memory", record_memory_outcomes_node)  # ✅ NEW: Memory recording
 
 # Set the entrypoint
 workflow.set_entry_point("research_trends")
@@ -1930,7 +2283,8 @@ workflow.add_edge("post_instagram", "monitor_instagram_comments")
 workflow.add_edge("monitor_instagram_comments", "reply_to_twitter")
 workflow.add_edge("reply_to_twitter", "comment_on_facebook")
 workflow.add_edge("comment_on_facebook", "generate_blog_email")
-workflow.add_edge("generate_blog_email", "__end__")
+workflow.add_edge("generate_blog_email", "record_memory")  # ✅ NEW: Record memory
+workflow.add_edge("record_memory", "__end__")  # ✅ NEW: Memory → End
 
 # Compile the graph
 graph = workflow.compile()
@@ -1960,6 +2314,7 @@ if __name__ == "__main__":
         logger.info("Facebook Comment: %s", final_state.get("comment_status", "N/A"))
         logger.info("Blog Email: %s", final_state.get("blog_status", "N/A"))
         logger.info("Blog Title: %s", final_state.get("blog_title", "N/A"))
+        logger.info("Memory: %s", final_state.get("memory_status", "N/A"))  # ✅ NEW: Memory status
 
         if final_state.get("error"):
             logger.error("Error: %s", final_state.get("error"))

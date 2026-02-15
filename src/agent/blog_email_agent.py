@@ -684,10 +684,27 @@ Return ONLY valid JSON. NO text before or after the JSON object.
                     else:
                         response_text = response.content if hasattr(response, 'content') else str(response)
                         response_text = response_text.strip()
+                        
+                        # Handle empty response
+                        if not response_text:
+                            logger.warning("LLM returned empty response")
+                            continue
+                        
+                        # Try to extract JSON
                         json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
                         if json_match:
                             response_text = json_match.group(0)
-                        parsed = json.loads(response_text)
+                        else:
+                            logger.warning("No JSON found in LLM response: %s", response_text[:200])
+                            continue
+                        
+                        # Parse JSON with error handling
+                        try:
+                            parsed = json.loads(response_text)
+                        except json.JSONDecodeError as e:
+                            logger.warning("JSON parse failed: %s. Response: %s", e, response_text[:200])
+                            continue
+                        
                         title = parsed.get("title")
                         html_output = parsed.get("html")
                         excerpt = parsed.get("excerpt", "")

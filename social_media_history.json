@@ -71,6 +71,33 @@
       "post_id": "18073091729145144",
       "image_url": "https://i.ibb.co/TqN2Vgsw/8da9c985368d.png",
       "metadata": {}
+    },
+    {
+      "timestamp": "2026-02-15T11:50:51.485579",
+      "platform": "facebook",
+      "content_hash": "0f18a6a562a1a59d01fefc6cb89dd930",
+      "content_preview": "boost your credit repair business with aiautomation! 🚀 imagine automating disputes, freeing up your team, and growing faster. we’ve got tools for that! check out our ai stack map (free!) and ai bootca",
+      "post_id": "",
+      "image_url": null,
+      "metadata": {}
+    },
+    {
+      "timestamp": "2026-02-15T11:51:04.129245",
+      "platform": "linkedin",
+      "content_hash": "94e3688e0e2b1020d535bff926bde052",
+      "content_preview": "Transform your credit‑repair business with AI automation and business automation. Our platform powers 30% faster dispute resolution, 25% higher client retention, and up to 4× ROI on digital products. ",
+      "post_id": null,
+      "image_url": null,
+      "metadata": {}
+    },
+    {
+      "timestamp": "2026-02-15T11:51:07.942913",
+      "platform": "telegram",
+      "content_hash": "09c8a39ccfda65eeeb09d8bec7a8e78c",
+      "content_preview": "🎯 CRYPTO TRADING OPPORTUNITIES\n📅 Feb 15, 2026\n\n⚠️ AI trading analysis temporarily unavailable\n\n💡 Trading Essentials:\n→ High volume = Better liquidity\n→ Risk management > Entry timing\n→ DYOR before eve",
+      "post_id": "769",
+      "image_url": null,
+      "metadata": {}
     }
   ],
   "hashes": [
@@ -81,7 +108,10 @@
     "cc1d6df5691d3160d80934d3df686ff3",
     "462e958032b4298474e85636dcc4a220",
     "27de9ffaf57e85ce1d09e14fb2658a85",
-    "3b78ad0638c9960b6c8ff49b940ff7c7"
+    "3b78ad0638c9960b6c8ff49b940ff7c7",
+    "0f18a6a562a1a59d01fefc6cb89dd930",
+    "94e3688e0e2b1020d535bff926bde052",
+    "09c8a39ccfda65eeeb09d8bec7a8e78c"
   ],
-  "last_updated": "2026-02-14T20:40:19.117648"
+  "last_updated": "2026-02-15T11:51:07.942913"
 }
