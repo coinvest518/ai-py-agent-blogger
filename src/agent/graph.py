@@ -32,6 +32,16 @@ from src.agent.duplicate_detector import is_duplicate_post, record_post
 from src.agent.instagram_agent import convert_to_instagram_caption
 from src.agent.instagram_comment_agent import generate_instagram_reply
 from src.agent.linkedin_agent import convert_to_linkedin_post
+from src.agent.llm_provider import get_llm
+from src.agent.ai_decision_engine import get_decision_engine  # ✅ NEW: AI Brain
+# Optional CoinMarketCap helper for Telegram crypto market data
+try:
+    from src.agent.cmc_client import get_top_gainers
+except Exception:
+    # optional integration — continue without CoinMarketCap if not configured
+    def get_top_gainers(limit: int = 5):
+        return []
+
 from src.agent.realtime_status import broadcaster
 
 # Load environment variables from .env file
@@ -152,18 +162,20 @@ def _download_image_from_url(image_url: str) -> str:
 
 
 @traceable(name="enhance_image_prompt")
-def _enhance_prompt_for_image(text: str) -> str:
-    """Convert social media text into a clean visual prompt for image generation.
+def _enhance_prompt_for_image(text: str, ai_strategy: dict = None) -> str:
+    """Convert social media text into FDWA-branded visual prompt for image generation.
+    
+    ✅ NEW: Uses AI Decision Engine strategy to create topic-appropriate images.
 
     Args:
         text: Social media post text with hashtags and formatting.
+        ai_strategy: Optional AI strategy dict with topic and products info
 
     Returns:
-        Clean, descriptive image prompt optimized for Hugging Face Stable Diffusion.
+        FDWA-branded image prompt optimized for Hugging Face FLUX model.
     """
-    logger.info("Enhancing image prompt...")
+    logger.info("Enhancing image prompt with FDWA branding...")
 
-    # Template-based prompt enhancement (no AI needed)
     # Clean up text: remove hashtags, @ mentions, URLs, special chars
     clean_text = re.sub(r"#\w+", "", text)  # Remove hashtags
     clean_text = re.sub(r"@\w+", "", clean_text)  # Remove mentions
@@ -171,17 +183,63 @@ def _enhance_prompt_for_image(text: str) -> str:
     clean_text = re.sub(r"[*#@\[\]{}()\'\"\\]", "", clean_text)  # Remove special chars
     clean_text = re.sub(r"\s+", " ", clean_text).strip()  # Normalize whitespace
     
-    # Truncate to reasonable length (150 chars)
-    clean_text = clean_text[:150]
+    # Truncate to reasonable length (120 chars)
+    clean_text = clean_text[:120]
     
-    # Create structured prompt for Stable Diffusion
+    # Determine visual style based on AI strategy topic
+    topic = ai_strategy.get("topic", "business") if ai_strategy else "business"
+    topic_lower = topic.lower()
+    
+    # Topic-specific visual elements
+    if "ai" in topic_lower or "automation" in topic_lower:
+        style = (
+            "futuristic AI automation workspace, holographic interfaces, "
+            "neural network visualizations, robotic assistants, glowing blue/purple tech, "
+            "modern minimalist office, professional business setting"
+        )
+    elif "credit" in topic_lower or "financial" in topic_lower or "debt" in topic_lower:
+        style = (
+            "professional financial growth concept, credit score dashboard rising, "
+            "banking documents organized, calculator and charts, green upward graphs, "
+            "clean modern business office, wealth building imagery"
+        )
+    elif "real estate" in topic_lower or "property" in topic_lower:
+        style = (
+            "modern real estate investment concept, aerial city view with buildings, "
+            "property blueprints with digital overlays, keys and contracts, "
+            "professional real estate office, clean architecture photography"
+        )
+    elif "crypto" in topic_lower or "bitcoin" in topic_lower:
+        style = (
+            "cryptocurrency trading dashboard, Bitcoin and Ethereum symbols, "
+            "candlestick charts rising, digital blockchain visualization, "
+            "futuristic finance concept, neon blue/gold accents on dark background"
+        )
+    else:
+        # Default business/entrepreneurship style
+        style = (
+            "modern successful entrepreneur workspace, professional business growth, "
+            "laptop with analytics dashboard, clean minimalist office design, "
+            "urban skyline through windows, motivational business imagery"
+        )
+    
+    # Add product visual elements if products are featured
+    product_hint = ""
+    if ai_strategy and ai_strategy.get("products"):
+        products = ai_strategy.get("products", [])
+        # Subtle product hints in visual
+        product_hint = ", course materials visible, digital product showcase"
+    
+    # Create structured prompt for FLUX
     visual_prompt = (
-        f"Professional modern business image: {clean_text}. "
-        "Futuristic neon cyberpunk style, clean business graphics, urban modern energy, "
-        "digital holograms, AI automation scenes, minimalist Gen Z design, high quality, 4k"
+        f"Professional high-quality photograph: {clean_text}. "
+        f"{style}{product_hint}. "
+        "Cinematic lighting, ultra realistic, 8K quality, sharp focus, "
+        "proper composition, professional color grading, inspirational mood, "
+        "no text or words in image, photorealistic style"
     )
     
-    logger.info("Generated visual prompt: %s", visual_prompt[:100])
+    logger.info("Generated FDWA-branded visual prompt for '%s': %s...", topic, visual_prompt[:80])
     return visual_prompt
 
 
@@ -258,6 +316,54 @@ def _extract_search_insights(search_data: dict) -> str:
     return text[:800] if text else "No results found"
 
 
+# ==================== MARKDOWN CLEANING UTILITY ====================
+
+def _strip_markdown(text: str) -> str:
+    """Remove Markdown formatting from text for social media posts.
+    
+    Social media platforms don't render Markdown, so we need plain text.
+    Converts:
+    - **bold** → bold
+    - *italic* → italic
+    - [text](url) → text (url)
+    - ### Headers → Headers
+    - `code` → code
+    
+    Args:
+        text: Text potentially containing Markdown syntax
+        
+    Returns:
+        Plain text without Markdown formatting
+    """
+    import re
+    
+    # Remove bold: **text** or __text__
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    
+    # Remove italic: *text* or _text_ (but not URLs or email)
+    text = re.sub(r'(?<!\w)\*(.+?)\*(?!\w)', r'\1', text)
+    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'\1', text)
+    
+    # Convert links: [text](url) → text (url) or just text if URL is mentioned
+    text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', lambda m: f"{m.group(1)} ({m.group(2)})" if m.group(1).lower() not in m.group(2).lower() else m.group(1), text)
+    
+    # Remove headers: ### text → text
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    
+    # Remove code blocks: `code` → code
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    
+    # Remove horizontal rules
+    text = re.sub(r'^[-*_]{3,}$', '', text, flags=re.MULTILINE)
+    
+    # Clean up multiple spaces/newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r' {2,}', ' ', text)
+    
+    return text.strip()
+
+
 # ==================== PLATFORM-SPECIFIC CONTENT ADAPTERS ====================
 
 def _adapt_for_twitter(base_insights: str) -> str:
@@ -269,21 +375,69 @@ def _adapt_for_twitter(base_insights: str) -> str:
     Returns:
         Twitter-optimized content (280 chars)
     """
-    # Extract key topic from first line
-    first_line = base_insights.split('\n')[0][:100]
+    # Get current year for context
+    from datetime import datetime
+    current_year = datetime.now().year
     
-    # Create engaging Twitter format
-    tweet = (
-        f"🚀 {first_line}\n\n"
-        f"Get AI automation tools at https://fdwa.site ✨\n\n"
-        f"#YBOT #AIAutomation #CreditRepair #FinancialFreedom"
-    )
-    
-    # Ensure under 280 characters
-    if len(tweet) > 280:
-        tweet = tweet[:277] + "..."
-    
-    return tweet
+    # Try LLM-first approach with template fallback
+    try:
+        llm = get_llm(purpose="Twitter content adaptation")
+        
+        prompt = f"""Current year: {current_year}. Create a Twitter post (MAX 280 characters) based on this insight:
+
+{base_insights[:300]}
+
+Requirements:
+- MUST be under 280 characters total
+- Plain text only (NO Markdown formatting like **bold** or *italic*)
+- Use {current_year} for any year references (NOT 2025 or older years)
+- Include relevant emojis
+- Mention FDWA AI automation: https://fdwa.site
+- Add hashtags: #YBOT #AIAutomation
+- Be engaging and actionable
+
+Output ONLY the tweet text, nothing else."""
+
+        response = llm.invoke(prompt)
+        tweet = response.content if hasattr(response, 'content') else str(response)
+        tweet = _strip_markdown(tweet.strip())  # Remove Markdown formatting
+        
+        # Ensure under 280 characters
+        if len(tweet) > 280:
+            tweet = tweet[:277] + "..."
+
+        # Ensure our primary site / CTA is always present (post-process)
+        primary_site = os.getenv("PRIMARY_SITE", "https://fdwa.site")
+        try:
+            if primary_site and "fdwa.site" not in tweet.lower():
+                suffix = " " + primary_site
+                if len(tweet) + len(suffix) <= 280:
+                    tweet = tweet + suffix
+                else:
+                    allowed = 280 - len(suffix) - 3
+                    tweet = tweet[:allowed].rstrip() + "..." + suffix
+        except Exception:
+            # non-critical if post-processing fails
+            pass
+
+        logger.info("Generated Twitter content with LLM (%d chars)", len(tweet))
+        return tweet
+        
+    except Exception as e:
+        logger.warning("LLM generation failed for Twitter, using template: %s", e)
+        
+        # Template fallback
+        first_line = base_insights.split('\n')[0][:100]
+        tweet = (
+            f"🚀 {first_line}\n\n"
+            f"Get AI automation tools at https://fdwa.site ✨\n\n"
+            f"#YBOT #AIAutomation #CreditRepair #FinancialFreedom"
+        )
+        
+        if len(tweet) > 280:
+            tweet = tweet[:277] + "..."
+        
+        return tweet
 
 
 def _adapt_for_facebook(base_insights: str) -> str:
@@ -295,25 +449,53 @@ def _adapt_for_facebook(base_insights: str) -> str:
     Returns:
         Facebook-optimized content (500+ chars)
     """
-    # Extract key points
-    first_line = base_insights.split('\n')[0][:150]
-    
-    # Create conversational Facebook format
-    post = (
-        f"💡 {first_line}\n\n"
-        f"The future of business is here, and it's powered by AI automation. "
-        f"Whether you're building credit, scaling your business, or creating passive income streams, "
-        f"the right tools make all the difference.\n\n"
-        f"🎯 What we're focused on:\n"
-        f"• AI automation for business workflows\n"
-        f"• Credit repair strategies that actually work\n"
-        f"• Digital products and passive income\n"
-        f"• Financial empowerment through technology\n\n"
-        f"Ready to transform your business? Visit https://fdwa.site to learn more.\n\n"
-        f"#AIAutomation #BusinessGrowth #FinancialFreedom #CreditRepair #FDWA"
-    )
-    
-    return post
+    # Try LLM-first approach with template fallback
+    try:
+        llm = get_llm(purpose="Facebook content adaptation")
+        
+        prompt = f"""Create a Facebook post based on this insight:
+
+{base_insights[:500]}
+
+Requirements:
+- Conversational and community-focused tone
+- 400-600 characters
+- Plain text only (NO Markdown formatting: no **bold**, *italic*, or ### headers)
+- Include relevant emojis
+- Mention FDWA services: AI automation, credit repair, digital products
+- Include call-to-action: https://fdwa.site
+- Add hashtags: #AIAutomation #BusinessGrowth #FinancialFreedom
+- Be engaging and value-driven
+
+Output ONLY the Facebook post text, nothing else."""
+
+        response = llm.invoke(prompt)
+        post = response.content if hasattr(response, 'content') else str(response)
+        post = _strip_markdown(post.strip())  # Remove Markdown formatting
+        
+        logger.info("Generated Facebook content with LLM (%d chars)", len(post))
+        return post
+        
+    except Exception as e:
+        logger.warning("LLM generation failed for Facebook, using template: %s", e)
+        
+        # Template fallback
+        first_line = base_insights.split('\n')[0][:150]
+        post = (
+            f"💡 {first_line}\n\n"
+            f"The future of business is here, and it's powered by AI automation. "
+            f"Whether you're building credit, scaling your business, or creating passive income streams, "
+            f"the right tools make all the difference.\n\n"
+            f"🎯 What we're focused on:\n"
+            f"• AI automation for business workflows\n"
+            f"• Credit repair strategies that actually work\n"
+            f"• Digital products and passive income\n"
+            f"• Financial empowerment through technology\n\n"
+            f"Ready to transform your business? Visit https://fdwa.site to learn more.\n\n"
+            f"#AIAutomation #BusinessGrowth #FinancialFreedom #CreditRepair #FDWA"
+        )
+        
+        return post
 
 
 def _adapt_for_linkedin(base_insights: str) -> str:
@@ -325,26 +507,54 @@ def _adapt_for_linkedin(base_insights: str) -> str:
     Returns:
         LinkedIn-optimized content (professional tone)
     """
-    # Extract key topic
-    first_line = base_insights.split('\n')[0][:120]
-    
-    # Create professional LinkedIn format
-    post = (
-        f"📊 {first_line}\n\n"
-        f"In today's rapidly evolving business landscape, organizations that embrace AI automation "
-        f"and data-driven strategies are achieving 3-5x better operational efficiency.\n\n"
-        f"Key areas driving business transformation:\n\n"
-        f"🤖 AI Automation - Streamlining workflows and reducing operational costs\n"
-        f"📈 Financial Optimization - Strategic credit management and wealth building\n"
-        f"💼 Digital Product Development - Creating scalable revenue streams\n"
-        f"🎯 Process Automation - Eliminating manual tasks and human error\n\n"
-        f"At FDWA, we help businesses implement these strategies through custom AI solutions "
-        f"and proven financial frameworks.\n\n"
-        f"Interested in learning more? Connect with us at https://fdwa.site\n\n"
-        f"#BusinessTransformation #AI #Automation #FinancialStrategy #DigitalInnovation"
-    )
-    
-    return post
+    # Try LLM-first approach with template fallback
+    try:
+        llm = get_llm(purpose="LinkedIn content adaptation")
+        
+        prompt = f"""Create a LinkedIn post based on this insight:
+
+{base_insights[:500]}
+
+Requirements:
+- Professional, business-focused tone
+- 500-700 characters
+- Data-driven language (metrics, percentages)
+- Focus on business transformation and ROI
+- Mention FDWA: AI automation, financial optimization, digital products
+- Include call-to-action: https://fdwa.site
+- Add hashtags: #BusinessTransformation #AI #Automation #FinancialStrategy
+- Be authoritative and value-driven
+
+Output ONLY the LinkedIn post text, nothing else."""
+
+        response = llm.invoke(prompt)
+        post = response.content if hasattr(response, 'content') else str(response)
+        post = _strip_markdown(post.strip())  # Remove Markdown formatting
+        
+        logger.info("Generated LinkedIn content with LLM (%d chars)", len(post))
+        return post
+        
+    except Exception as e:
+        logger.warning("LLM generation failed for LinkedIn, using template: %s", e)
+        
+        # Template fallback
+        first_line = base_insights.split('\n')[0][:120]
+        post = (
+            f"📊 {first_line}\n\n"
+            f"In today's rapidly evolving business landscape, organizations that embrace AI automation "
+            f"and data-driven strategies are achieving 3-5x better operational efficiency.\n\n"
+            f"Key areas driving business transformation:\n\n"
+            f"🤖 AI Automation - Streamlining workflows and reducing operational costs\n"
+            f"📈 Financial Optimization - Strategic credit management and wealth building\n"
+            f"💼 Digital Product Development - Creating scalable revenue streams\n"
+            f"🎯 Process Automation - Eliminating manual tasks and human error\n\n"
+            f"At FDWA, we help businesses implement these strategies through custom AI solutions "
+            f"and proven financial frameworks.\n\n"
+            f"Interested in learning more? Connect with us at https://fdwa.site\n\n"
+            f"#BusinessTransformation #AI #Automation #FinancialStrategy #DigitalInnovation"
+        )
+        
+        return post
 
 
 def _adapt_for_telegram(base_insights: str) -> str:
@@ -353,56 +563,148 @@ def _adapt_for_telegram(base_insights: str) -> str:
     This creates crypto-specific content for Telegram group members
     interested in DeFi, tokens, and cryptocurrency trends.
     
+    Uses LLM-first approach with intelligent template fallback.
+    
     Args:
         base_insights: Research insights from trend data
         
     Returns:
         Telegram crypto-optimized content
     """
-    # Extract crypto tokens from insights
-    crypto_keywords = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "LINK", "UNI", 
-                       "AAVE", "CRV", "bitcoin", "ethereum", "defi", "crypto", "token",
-                       "blockchain", "web3", "nft", "dao"]
+    # Get current year for context
+    from datetime import datetime
+    current_year = datetime.now().year
     
-    found_tokens = []
-    insights_lower = base_insights.lower()
+    # Try LLM-first approach (RECOMMENDED for quality)
+    llm_failed = False
+    try:
+        llm = get_llm(purpose="Telegram content adaptation")
+        
+        if not llm:
+            logger.warning("No LLM provider available for Telegram, using template")
+            llm_failed = True
+        else:
+            prompt = f"""Current year: {current_year}. Create a Telegram message for a crypto/DeFi community based on this insight:
+
+{base_insights[:800]}
+
+Requirements:
+- Start with topic-relevant hook (AI/automation OR crypto/DeFi OR credit/business - match the insight)
+- 400-800 characters (detailed but readable)
+- Plain text only (NO Markdown: no **bold**, *italic*, or [links](url) syntax)
+- Use {current_year} for any year references (NOT 2025)
+- Include specific data, tools, or strategies from the insights
+- Add relevant emojis (🚀 📊 💰 📈 🤖)
+- Mention FDWA tools/products if relevant: https://fdwa.site
+- Add consultation link: https://cal.com/bookme-daniel
+- End with relevant hashtags (#AI #DeFi #Crypto #Automation #YieldBot)
+- Be actionable and valuable
+
+Output ONLY the Telegram message text, nothing else."""
+
+            response = llm.invoke(prompt)
+            message = response.content if hasattr(response, 'content') else str(response)
+            message = _strip_markdown(message.strip())  # Remove Markdown formatting
+            
+            # Validation: Ensure message is substantial (not just template)
+            if len(message) < 150 or "Key opportunities:" in message:
+                logger.warning("LLM generated low-quality content, using template fallback")
+                llm_failed = True
+            else:
+                logger.info("✅ Generated Telegram content with LLM (%d chars)", len(message))
+                return message
+        
+    except Exception as e:
+        logger.warning("LLM generation failed for Telegram: %s - using intelligent template", str(e)[:100])
+        llm_failed = True
     
-    for keyword in crypto_keywords:
-        if keyword.lower() in insights_lower:
-            found_tokens.append(keyword.upper() if len(keyword) <= 5 else keyword.title())
-    
-    # Remove duplicates and limit
-    found_tokens = list(dict.fromkeys(found_tokens))[:5]
-    
-    # Get first line for context
-    first_line = base_insights.split('\n')[0][:100]
-    
-    # Build crypto-focused Telegram message
-    if found_tokens:
-        tokens_list = " | ".join(found_tokens)
-        message = (
-            f"🚀 DeFi Market Update\n\n"
-            f"📊 Trending: {tokens_list}\n\n"
-            f"📈 {first_line}\n\n"
-            f"💡 Stay ahead with real-time DeFi insights and AI-powered automation.\n"
-            f"Get YBOT tools at https://fdwa.site\n\n"
-            f"#DeFi #Crypto #YieldBot #FinancialFreedom"
-        )
-    else:
-        # Generic crypto focus when no specific tokens found
-        message = (
-            f"🚀 DeFi & Crypto Market Update\n\n"
-            f"📈 {first_line}\n\n"
-            f"💰 Key opportunities:\n"
-            f"→ DeFi yield farming strategies\n"
-            f"→ Smart contract automation\n"
-            f"→ Token portfolio optimization\n"
-            f"→ Market trend analysis\n\n"
-            f"🤖 Automate your crypto strategy: https://fdwa.site\n\n"
-            f"#DeFi #Crypto #Web3 #YieldBot #Automation"
-        )
-    
-    return message
+    # Template fallback (only if LLM failed or unavailable)
+    if llm_failed:
+        logger.info("Using template-based Telegram content generation")
+        
+        # Extract crypto tokens from insights
+        crypto_keywords = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "LINK", "UNI", 
+                           "AAVE", "CRV", "bitcoin", "ethereum", "defi", "crypto", "token",
+                           "blockchain", "web3", "nft", "dao"]
+        
+        found_tokens = []
+        insights_lower = base_insights.lower()
+        
+        for keyword in crypto_keywords:
+            if keyword.lower() in insights_lower:
+                found_tokens.append(keyword.upper() if len(keyword) <= 5 else keyword.title())
+        
+        # Remove duplicates and limit
+        found_tokens = list(dict.fromkeys(found_tokens))[:5]
+        
+        # Get first line for context
+        first_line = base_insights.split('\n')[0][:100]
+        
+        # Build crypto-focused Telegram message
+        if found_tokens:
+            tokens_list = " | ".join(found_tokens)
+            message = (
+                f"🚀 DeFi Market Update\n\n"
+                f"📊 Trending: {tokens_list}\n\n"
+                f"📈 {first_line}\n\n"
+                f"💡 Stay ahead with real-time DeFi insights and AI-powered automation.\n"
+                f"Get YBOT tools at https://fdwa.site\n\n"
+                f"#DeFi #Crypto #YieldBot #FinancialFreedom"
+            )
+        else:
+            # Intelligent fallback: Extract key content instead of generic template
+            # Get more context from base_insights (not just title)
+            lines = [l.strip() for l in base_insights.split('\n') if l.strip()]
+            
+            # Build message from actual content
+            topic = lines[0][:100] if lines else "Market Update"
+            
+            # Extract 2-3 key points from insights
+            key_points = []
+            for line in lines[1:6]:  # Check next 5 lines
+                if len(line) > 20 and not line.startswith('http'):  # Skip links
+                    key_points.append(f"→ {line[:80]}")
+                    if len(key_points) >= 3:
+                        break
+            
+            # If no key points found, use content-aware defaults based on topic
+            if not key_points:
+                topic_lower = topic.lower()
+                if 'ai' in topic_lower or 'automation' in topic_lower:
+                    key_points = [
+                        "→ AI workflow automation tools",
+                        "→ No-code AI agent builders", 
+                        "→ Productivity & cost savings"
+                    ]
+                elif 'credit' in topic_lower or 'debt' in topic_lower:
+                    key_points = [
+                        "→ Automated credit dispute letters",
+                        "→ AI-powered credit analysis",
+                        "→ 72-hour credit optimization"
+                    ]
+                else:
+                    key_points = [
+                        "→ Digital business automation",
+                        "→ Revenue growth strategies",
+                        "→ AI-powered marketing systems"
+                    ]
+            
+            message = (
+                f"🚀 {topic}\n\n"  # Removed ** markdown
+                f"💡 Key insights:\n"
+                + "\n".join(key_points) + "\n\n"
+                f"🤖 Automate with FDWA tools: https://fdwa.site\n"
+                f"📅 Free consultation: https://cal.com/bookme-daniel\n\n"
+                f"#Automation #AI #Business #YieldBot"
+            )
+            
+            # Strip Markdown from template fallback too (in case any remains)
+            message = _strip_markdown(message)
+            message = _strip_markdown(message)
+            
+            logger.warning("Using intelligent template fallback for Telegram (no crypto tokens found)")
+        
+        return message
 
 
 def _adapt_for_instagram(base_insights: str) -> str:
@@ -414,27 +716,61 @@ def _adapt_for_instagram(base_insights: str) -> str:
     Returns:
         Instagram-optimized caption (visual, engaging)
     """
-    # Extract key topic
-    first_line = base_insights.split('\n')[0][:80]
+    # Get current year for context
+    from datetime import datetime
+    current_year = datetime.now().year
     
-    # Create visual Instagram format
-    caption = (
-        f"✨ {first_line}\n\n"
-        f"🤖 AI automation isn't just for tech companies anymore\n"
-        f"💎 It's for entrepreneurs who want freedom\n"
-        f"🚀 It's for businesses ready to scale\n"
-        f"💰 It's for anyone building their financial future\n\n"
-        f"We help you:\n"
-        f"→ Build AI systems that work 24/7\n"
-        f"→ Fix your credit strategically\n"
-        f"→ Create digital products that sell\n"
-        f"→ Automate everything\n\n"
-        f"🔗 Learn more: fdwa.site\n\n"
-        f"#AIAutomation #FinancialFreedom #Entrepreneur #PassiveIncome #CreditRepair "
-        f"#DigitalProducts #BusinessGrowth #YBOT #FutureOfWork #Automation"
-    )
-    
-    return caption
+    # Try LLM-first approach with template fallback
+    try:
+        llm = get_llm(purpose="Instagram content adaptation")
+        
+        prompt = f"""Current year: {current_year}. Create an Instagram caption based on this insight:
+
+{base_insights[:400]}
+
+Requirements:
+- Visual-first, lifestyle-focused tone
+- 400-600 characters
+- Plain text only (NO Markdown formatting)
+- Use {current_year} for any year references (NOT 2025)
+- Emoji-heavy (but tasteful)
+- Focus on entrepreneurship, financial freedom, AI automation
+- Mention FDWA services: AI systems, credit repair, digital products
+- Include call-to-action: fdwa.site
+- Add hashtags: #AIAutomation #FinancialFreedom #Entrepreneur #PassiveIncome
+- Be inspiring and aspirational
+
+Output ONLY the Instagram caption text, nothing else."""
+
+        response = llm.invoke(prompt)
+        caption = response.content if hasattr(response, 'content') else str(response)
+        caption = _strip_markdown(caption.strip())  # Remove Markdown formatting
+        
+        logger.info("Generated Instagram content with LLM (%d chars)", len(caption))
+        return caption
+        
+    except Exception as e:
+        logger.warning("LLM generation failed for Instagram, using template: %s", e)
+        
+        # Template fallback
+        first_line = base_insights.split('\n')[0][:80]
+        caption = (
+            f"✨ {first_line}\n\n"
+            f"🤖 AI automation isn't just for tech companies anymore\n"
+            f"💎 It's for entrepreneurs who want freedom\n"
+            f"🚀 It's for businesses ready to scale\n"
+            f"💰 It's for anyone building their financial future\n\n"
+            f"We help you:\n"
+            f"→ Build AI systems that work 24/7\n"
+            f"→ Fix your credit strategically\n"
+            f"→ Create digital products that sell\n"
+            f"→ Automate everything\n\n"
+            f"🔗 Learn more: fdwa.site\n\n"
+            f"#AIAutomation #FinancialFreedom #Entrepreneur #PassiveIncome #CreditRepair "
+            f"#DigitalProducts #BusinessGrowth #YBOT #FutureOfWork #Automation"
+        )
+        
+        return caption
 
 
 def research_trends_node(state: AgentState) -> dict:
@@ -450,9 +786,13 @@ def research_trends_node(state: AgentState) -> dict:
     _broadcast_sync("start_step", "research", "Researching trending topics and market insights")
     _broadcast_sync("update", "Analyzing current trends in credit repair, AI automation, and digital products...")
 
-    # Diverse search queries for different business topics
+    # Get current year for search queries
+    from datetime import datetime
+    current_year = datetime.now().year
+
+    # Diverse search queries for different business topics (use current year)
     search_queries = [
-        "credit repair tips 2025",
+        f"credit repair tips {current_year}",
         "AI automation for credit repair",
         "digital products for financial freedom",
         "AI dispute letter generators",
@@ -461,7 +801,7 @@ def research_trends_node(state: AgentState) -> dict:
         "AI tools for business automation",
         "how to sell digital products online",
         "financial empowerment strategies",
-        "credit repair laws and updates",
+        f"credit repair laws and updates {current_year}",
         "AI credit report analyzers",
         "building wealth with digital tools",
         "credit denial solutions",
@@ -470,7 +810,7 @@ def research_trends_node(state: AgentState) -> dict:
         "financial education for entrepreneurs",
         "credit repair digital products",
         "AI for passive income streams",
-        "modern wealth building techniques",
+        f"modern wealth building techniques {current_year}",
         "credit repair automation tools",
     ]
 
@@ -555,7 +895,14 @@ def research_trends_node(state: AgentState) -> dict:
 
 
 def generate_tweet_node(state: AgentState) -> dict:
-    """Generate platform-specific content for ALL social media platforms.
+    """Generate platform-specific content for ALL social media platforms using AI DECISION ENGINE.
+    
+    ✅ NEW: Consults ALL data sources via AI Decision Engine:
+    - Google Sheets (recent posts, engagement)
+    - Products Catalog (150+ products)
+    - Knowledge Base (writing guidelines)
+    - Business Profile (offerings, CTAs)
+    - Memory (past performance)
     
     Uses base research insights to create tailored content for:
     - Twitter: Short, hashtag-heavy (280 chars)
@@ -570,9 +917,9 @@ def generate_tweet_node(state: AgentState) -> dict:
     Returns:
         Dictionary with platform-specific content for all channels.
     """
-    logger.info("---GENERATING PLATFORM-SPECIFIC CONTENT---")
-    _broadcast_sync("start_step", "generate_content", "Creating platform-specific content")
-    _broadcast_sync("update", "Adapting content for Twitter, Facebook, LinkedIn, Instagram, Telegram...")
+    logger.info("---GENERATING PLATFORM-SPECIFIC CONTENT WITH AI DECISION ENGINE---")
+    _broadcast_sync("start_step", "generate_content", "🧠 Consulting AI Decision Engine...")
+    _broadcast_sync("update", "Analyzing Google Sheets, products catalog, memory...")
 
     trend_data = state.get("trend_data", "")
     # Remove any error or search system text from trend_data
@@ -592,6 +939,63 @@ def generate_tweet_node(state: AgentState) -> dict:
             "automate customer service, and build passive income streams. "
             "Financial empowerment through technology is now accessible to everyone."
         )
+
+    # ========== ✅ NEW: AI DECISION ENGINE INTEGRATION ==========
+    try:
+        decision_engine = get_decision_engine()
+        strategy = decision_engine.get_content_strategy(trend_data=base_insights)
+        
+        logger.info("🧠 AI STRATEGY:")
+        logger.info("   Topic: %s", strategy["topic"])
+        logger.info("   Products: %s", [p["name"][:40] for p in strategy.get("products", [])])
+        logger.info("   CTA: %s", strategy["cta"][:60])
+        logger.info("   Memory: %s", strategy.get("memory_insights", "None"))
+        
+        # Broadcast AI thinking process to UI
+        _broadcast_sync("update", f"✅ Topic: {strategy['topic']}")
+        _broadcast_sync("update", f"✅ Products: {', '.join([p['name'][:30] for p in strategy.get('products', [])])}")
+        _broadcast_sync("update", f"✅ Strategy: {strategy.get('memory_insights', 'First time!')[:50]}")
+        
+        # Enhance base insights with product info
+        products = strategy.get("products", [])
+        if products:
+            product_context = "\n\nFeatured products to mention:\n"
+            for product in products[:2]:  # Max 2 products
+                product_context += f"- {product['name']} ({product['price']})\n"
+            base_insights = base_insights + product_context
+            
+        # Add CTA to base insights
+        base_insights = base_insights + f"\n\nCall-to-action: {strategy['cta']}"
+        
+        # Store strategy in state for later use
+        state["ai_strategy"] = strategy
+        
+    except Exception as e:
+        logger.warning("⚠️ AI Decision Engine failed, using standard approach: %s", e)
+        strategy = None
+    # ========== END AI DECISION ENGINE ==========
+
+    # --- Append short FDWA context so LLMs reference our profile + recent posts ---
+    try:
+        from src.agent.blog_email_agent import _load_business_profile, _get_recent_posts_for_prompt
+        bp = _load_business_profile() or {}
+        kb_about = bp.get("about", "")[:240]
+        recent_json = _get_recent_posts_for_prompt(limit=3)
+        import json as _json
+        recent_posts = []
+        try:
+            recent_posts = _json.loads(recent_json)
+        except Exception:
+            recent_posts = []
+        recent_titles = ", ".join([p.get("title", "") for p in recent_posts[:3]])
+        context_snippet = f"FDWA profile: {kb_about}. Recent posts: {recent_titles}".strip()
+        if context_snippet:
+            # keep context short to avoid overly long LLM prompts
+            base_insights = (base_insights + "\n\n" + context_snippet[:400]).strip()
+    except Exception:
+        # non-critical: continue without FDWA context
+        pass
+
     
     logger.info("Generating content from base insights (%d chars)", len(base_insights))
     
@@ -636,27 +1040,36 @@ def generate_tweet_node(state: AgentState) -> dict:
 
 
 def generate_image_node(state: AgentState) -> dict:
-    """Generate an image using Hugging Face Inference API (FREE alternative to Google Gemini).
+    """Generate FDWA-branded image using Hugging Face FLUX model with AI strategy.
+    
+    ✅ NEW: Uses AI Decision Engine strategy for topic-appropriate visuals.
 
     Args:
-        state: Current agent state with tweet_text.
+        state: Current agent state with tweet_text and optional ai_strategy.
 
     Returns:
         Dictionary with image_path (local file) and image_url (HTTP) or error.
     """
-    logger.info("---GENERATING IMAGE WITH HUGGING FACE---")
-    _broadcast_sync("start_step", "generate_image", "Generating AI image with Hugging Face")
-    _broadcast_sync("update", "Creating futuristic neon cyberpunk style image...")
+    logger.info("---GENERATING FDWA-BRANDED IMAGE WITH HUGGING FACE---")
+    _broadcast_sync("start_step", "generate_image", "Generating strategic AI image with FLUX")
     
     tweet_text = state.get("tweet_text", "")
+    ai_strategy = state.get("ai_strategy")  # ✅ Get AI strategy from state
 
     if not tweet_text:
         return {"error": "No tweet text for image generation"}
 
-    # Use sub-agent to enhance prompt
-    visual_prompt = _enhance_prompt_for_image(tweet_text)
+    # Use enhanced prompt with AI strategy
+    if ai_strategy:
+        topic = ai_strategy.get("topic", "business")
+        _broadcast_sync("update", f"Creating {topic}-themed image with FDWA branding...")
+        logger.info("Using AI strategy for image: topic=%s", topic)
+        visual_prompt = _enhance_prompt_for_image(tweet_text, ai_strategy)
+    else:
+        _broadcast_sync("update", "Creating FDWA-branded business image...")
+        visual_prompt = _enhance_prompt_for_image(tweet_text)
     
-    logger.info("Enhanced visual prompt: %s", visual_prompt)
+    logger.info("Enhanced visual prompt: %s", visual_prompt[:150])
     
     try:
         # Import Hugging Face image generator
@@ -666,12 +1079,12 @@ def generate_image_node(state: AgentState) -> dict:
             upload_to_imgbb,
         )
         
-        # Generate image with Hugging Face (FREE)
+        # Generate image with Hugging Face FLUX (fast and high quality)
         result = generate_image_hf(
             prompt=visual_prompt,
             model="flux-schnell",  # FLUX.1-schnell - fast and high quality
-            width=512,
-            height=512,
+            width=1024,  # ✅ Higher resolution for better quality
+            height=1024,
         )
         
         if result.get("success"):
@@ -799,9 +1212,10 @@ def reply_to_twitter_node(state: AgentState) -> dict:
     logger.info("---REPLYING TO TWITTER POST---")
     twitter_post_id = state.get("twitter_post_id")
 
-    if not twitter_post_id:
-        logger.warning("No Twitter post ID, skipping reply")
-        return {"twitter_reply_status": "Skipped: No post ID"}
+    # Validate Twitter post ID: Must be numeric (Twitter IDs are 1-19 digits)
+    if not twitter_post_id or twitter_post_id == "unknown" or not str(twitter_post_id).isdigit():
+        logger.warning("No valid Twitter post ID (got: %s), skipping reply", twitter_post_id)
+        return {"twitter_reply_status": "Skipped: No valid post ID"}
 
     # Wait 5 seconds before replying
     logger.info("Waiting 5 seconds before replying...")
@@ -815,7 +1229,7 @@ def reply_to_twitter_node(state: AgentState) -> dict:
             "TWITTER_CREATION_OF_A_POST",
             {
                 "text": reply_message,
-                "reply_in_reply_to_tweet_id": twitter_post_id
+                "reply_in_reply_to_tweet_id": str(twitter_post_id)  # Ensure string format
             },
             connected_account_id=os.getenv("TWITTER_ACCOUNT_ID"),
         )
@@ -976,17 +1390,36 @@ def convert_to_telegram_crypto_post(trend_data: str, tweet_text: str) -> str:
 
 #DeFi #Crypto #YieldBot #FinancialFreedom"""
     else:
-        # Fallback when no crypto tokens found
+        # Fallback when no crypto tokens found — try to enrich with live market movers from CoinMarketCap
+        cmc_section = ""
+        try:
+            movers = get_top_gainers(5)
+            if movers:
+                top_lines = []
+                for t in movers:
+                    sym = t.get("symbol") or "?"
+                    pct = t.get("percent_change_24h")
+                    price = t.get("price_usd")
+                    if pct is None:
+                        continue
+                    pct_str = f"{pct:+.2f}%"
+                    price_str = f"${price:,.2f}" if isinstance(price, (int, float)) else ""
+                    top_lines.append(f"{sym} {pct_str} {price_str}")
+                if top_lines:
+                    cmc_section = "\n\nTop gainers (24h): \n" + " | ".join(top_lines) + "\n\nData provided by CoinMarketCap.com"
+        except Exception:
+            cmc_section = ""
+
         telegram_post = f"""🚀 DeFi Market Update
 
-{tweet_text}
+{tweet_text}{cmc_section}
 
 📊 Stay informed about the latest trends in DeFi and crypto.
 
 💡 AI-powered insights for smarter financial decisions.
 
 #DeFi #Crypto #YieldBot #FinancialFreedom"""
-    
+
     # Ensure it's not too long for Telegram (aim for 500-800 chars)
     if len(telegram_post) > 1000:
         telegram_post = telegram_post[:997] + "..."
@@ -1025,20 +1458,27 @@ def post_telegram_node(state: AgentState) -> dict:
     try:
         logger.info("Telegram message (platform-specific): %s", telegram_message[:100])
         
+        # Telegram caption limit is 1024 chars - truncate proactively to prevent API errors
+        TELEGRAM_CAPTION_LIMIT = 1000  # Safe margin under 1024
+        safe_caption = telegram_message
+        if len(telegram_message) > TELEGRAM_CAPTION_LIMIT:
+            safe_caption = telegram_message[:TELEGRAM_CAPTION_LIMIT-3] + "..."
+            logger.info("Truncated Telegram caption from %d to %d chars", len(telegram_message), len(safe_caption))
+        
         # Send to Telegram group
         if image_url:
-            # Try sending with photo
+            # Try sending with photo and truncated caption
             result = telegram_agent.send_photo(
                 chat_id=telegram_agent.TELEGRAM_GROUP_USERNAME or telegram_agent.TELEGRAM_GROUP_CHAT_ID,
                 photo=image_url,
-                caption=telegram_message
+                caption=safe_caption
             )
             if not result.get('success'):
-                # Fallback to text-only if image fails
-                logger.warning("Image send failed, sending text only")
+                # Fallback to text-only if image fails (use full message for text-only)
+                logger.warning("Image send failed, sending text only with full message")
                 result = telegram_agent.send_to_group(telegram_message)
         else:
-            # Send text only
+            # Send text only (no limit for text messages)
             result = telegram_agent.send_to_group(telegram_message)
         
         if result.get('success'):
@@ -1181,9 +1621,9 @@ def post_linkedin_node(state: AgentState) -> dict:
     logger.info("LinkedIn post (platform-specific): %s", linkedin_text[:100])
 
     try:
-        # Hardcoded LinkedIn credentials (same pattern as Twitter/Facebook)
-        linkedin_account_id = "ca_uL1KFpD-8ZfO"
-        author_urn = "urn:li:person:980H7U657m"
+        # Use environment variables for LinkedIn credentials (ACTIVE connection)
+        linkedin_account_id = os.getenv("LINKEDIN_ACCOUNT_ID", "ca_AxYGMiT-jtOU")
+        author_urn = os.getenv("LINKEDIN_AUTHOR_URN", "urn:li:person:980H7U657m")
         
         logger.info("Using LinkedIn account: %s", linkedin_account_id)
         logger.info("Using author URN: %s", author_urn)
@@ -1199,7 +1639,7 @@ def post_linkedin_node(state: AgentState) -> dict:
         linkedin_response = composio_client.tools.execute(
             "LINKEDIN_CREATE_LINKED_IN_POST",
             linkedin_params,
-            connected_account_id=os.getenv("LINKEDIN_ACCOUNT_ID")
+            connected_account_id=linkedin_account_id
         )
 
         logger.info("LinkedIn response: %s", linkedin_response)
@@ -1325,8 +1765,20 @@ def post_social_media_node(state: AgentState) -> dict:
             connected_account_id=os.getenv("TWITTER_ACCOUNT_ID")
         )
         
+        # Extract post ID from nested Composio response structure
         twitter_data = twitter_response.get("data", {})
-        twitter_id = twitter_data.get("id", "unknown")
+        # Try nested structure first (new Composio format): response['data']['data']['id']
+        if isinstance(twitter_data, dict) and "data" in twitter_data:
+            nested_data = twitter_data.get("data", {})
+            twitter_id = nested_data.get("id", "unknown") if isinstance(nested_data, dict) else "unknown"
+        else:
+            # Fallback to direct structure: response['data']['id']
+            twitter_id = twitter_data.get("id", "unknown")
+        
+        # If still unknown, check successful flag and use generic success message
+        if twitter_id == "unknown" and twitter_response.get("successful", False):
+            logger.info("Twitter post succeeded but ID not in expected format. Response keys: %s", list(twitter_data.keys()) if isinstance(twitter_data, dict) else "not dict")
+        
         twitter_url = (
             f"https://twitter.com/user/status/{twitter_id}"
             if twitter_id != "unknown"
@@ -1471,9 +1923,9 @@ workflow.set_entry_point("research_trends")
 workflow.add_edge("research_trends", "generate_content")
 workflow.add_edge("generate_content", "generate_image")
 workflow.add_edge("generate_image", "post_social_media")
-workflow.add_edge("post_social_media", "post_telegram")
+workflow.add_edge("post_social_media", "post_linkedin")  # ✅ LinkedIn ENABLED
+workflow.add_edge("post_linkedin", "post_telegram")
 workflow.add_edge("post_telegram", "post_instagram")
-# workflow.add_edge("post_linkedin", "post_instagram")  # LinkedIn bypassed
 workflow.add_edge("post_instagram", "monitor_instagram_comments")
 workflow.add_edge("monitor_instagram_comments", "reply_to_twitter")
 workflow.add_edge("reply_to_twitter", "comment_on_facebook")

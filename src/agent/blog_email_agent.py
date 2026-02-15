@@ -338,56 +338,16 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
 
 
     try:
-        # LLM-first generation (Google -> Mistral). Honor BLOG_REQUIRE_LLM to forbid template fallbacks.
+        # LLM-first generation using centralized LLM provider. Honor BLOG_REQUIRE_LLM to forbid template fallbacks.
         try:
-            def _get_preferred_llm():
-                # Preferred order: Mistral -> Hugging Face Inference -> Google (last)
-
-                # 1) Mistral (preferred when key present)
-                try:
-                    from langchain_mistralai import ChatMistralAI
-                    mistral_key = os.getenv("MISTRAL_API_KEY")
-                    if mistral_key:
-                        mistral_model = os.getenv("BLOG_LLM_MODEL_MISTRAL", "mistral-large-2512")
-                        mistral_temp = float(os.getenv("BLOG_LLM_TEMPERATURE", "0.25"))
-                        logger.info("Initializing ChatMistralAI for blog generation")
-                        llm = ChatMistralAI(model=mistral_model, temperature=mistral_temp, mistral_api_key=mistral_key)
-                        # Enable structured output mode for guaranteed JSON
-                        return llm.with_structured_output(BlogPost)
-                except Exception as e:
-                    logger.debug("Mistral initialization failed: %s", e)
-
-                # 2) Hugging Face Inference API - DISABLED to save tokens/quota
-                # (User request: Ensure we aren't using HF tokens/API calls)
-                # To re-enable, uncomment the block below.
-                """
-                try:
-                    from huggingface_hub import InferenceClient
-                    hf_token = os.getenv("HF_TOKEN")
-                    if hf_token:
-                        # ... implementation omitted ...
-                except Exception as e:
-                    logger.debug("Hugging Face LLM unavailable: %s", e)
-                """
-
-                # 3) Google as last resort (kept for compatibility)
-                try:
-                    from langchain_google_genai import GoogleGenerativeAI
-                    ga_key = os.getenv("GOOGLE_AI_API_KEY")
-                    if ga_key:
-                        llm_model = os.getenv("BLOG_LLM_MODEL", "gemini-2.0-flash")
-                        llm_temp = float(os.getenv("BLOG_LLM_TEMPERATURE", "0.25"))
-                        logger.info("Initializing GoogleGenerativeAI for blog generation (last-resort)")
-                        return GoogleGenerativeAI(model=llm_model, temperature=llm_temp, google_api_key=ga_key)
-                except Exception as e:
-                    logger.debug("GoogleGenerativeAI unavailable: %s", e)
-
-                return None
-
-            llm = _get_preferred_llm()
+            from src.agent.llm_provider import get_llm
+            
+            # Get LLM with BlogPost structured output support (for Mistral)
+            llm = get_llm(purpose="blog generation", structured_output_schema=BlogPost)
+            
             require_llm = os.getenv("BLOG_REQUIRE_LLM", "false").lower() in ("1", "true", "yes")
             if not llm:
-                msg = "No LLM provider available (Mistral, Hugging Face, or Google) - using template fallback"
+                msg = "No LLM provider available - using template fallback"
                 logger.warning(msg)
                 if require_llm:
                     raise RuntimeError("No LLM provider available and BLOG_REQUIRE_LLM is set to true")
@@ -461,8 +421,15 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
 
             prompt = json.dumps(ctx_payload)
 
+            # Get current year for blog content
+            from datetime import datetime
+            current_year = datetime.now().year
+            current_month = datetime.now().strftime("%B")
+
             generation_prompt = f"""
 You are an expert content strategist and educational copywriter for FDWA (Futurist Digital Wealth Agency).
+
+CURRENT DATE CONTEXT: It is {current_month} {current_year}. Use {current_year} in all examples, not 2025 or older years.
 
 Your mission: Create FULL, DETAILED, EDUCATIONAL blog articles that teach, not just list. Break down topics, explain WHY tools matter, show HOW to apply information, include real data and examples.
 
@@ -487,7 +454,8 @@ Create a comprehensive blog post (1000-1500 words) following this structure:
 2. **CONTEXT & CURRENT EVENTS** (150-300 words):
    - Latest trends and industry data from trend_data
    - Market statistics: "84% of organizations already use [technology]"
-   - Real examples: "One trader grew $1,000 to $24,000 since April 2025"
+   - Real examples: "One trader grew $1,000 to $24,000 since April {current_year}"
+   - Reference current month/year: {current_month} {current_year}
    - Why this matters NOW
 
 3. **MAIN EDUCATIONAL CONTENT** (800-1200 words):
@@ -756,6 +724,20 @@ Return ONLY valid JSON. NO text before or after the JSON object.
                 image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;display:block;" />\n'
             
             blog_html = image_html + html_output
+
+            # Ensure primary site CTA/link is present in the blog HTML. If the LLM omitted
+            # our CTA, append a short call-to-action paragraph so every blog includes the link.
+            primary_site = os.getenv("PRIMARY_SITE", "https://fdwa.site")
+            try:
+                if primary_site and "fdwa.site" not in (blog_html or "").lower():
+                    cta_html = (
+                        f"<p style=\"margin-top:18px;font-weight:600;\">Learn more about AI automation and FDWA services: "
+                        f"<a href=\"{primary_site}\" target=\"_blank\">{primary_site}</a></p>"
+                    )
+                    blog_html = blog_html + "\n" + cta_html
+            except Exception:
+                # non-critical if CTA append fails
+                pass
             logger.info("✅ LLM-generated blog created: %s", title)
             return {
                 "blog_html": blog_html,
@@ -850,9 +832,13 @@ def generate_and_send_blog(trend_data: str = None, image_url: str | None = None,
     
     # Always require trend_data for unique blog content
     if not trend_data or not trend_data.strip():
+        # Get current year for fallback trends
+        from datetime import datetime
+        current_year = datetime.now().year
+        
         fallback_trends = [
             "AI automation trends show 300% increase in small business adoption. Workflow automation saves 15+ hours per week.",
-            "Digital product sales are booming in 2025, with entrepreneurs earning passive income from ebooks and guides.",
+            f"Digital product sales are booming in {current_year}, with entrepreneurs earning passive income from ebooks and guides.",
             "Credit repair with AI is helping thousands improve their scores faster than ever before.",
             "Business automation tools are saving SMBs 20+ hours per week and increasing revenue.",
             "Financial empowerment through tech: more people are using AI to manage money and build wealth.",
