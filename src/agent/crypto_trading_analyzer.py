@@ -1,4 +1,4 @@
-"""AI-Powered Crypto Trading Analyzer for Telegram Posts
+"""AI-Powered Crypto Trading Analyzer for Telegram Posts.
 
 This module analyzes crypto tokens like a professional day trader would:
 - Filters out low-quality/low-volume tokens (pump & dumps)
@@ -11,9 +11,8 @@ Uses CoinMarketCap API + AI analysis to select the BEST tokens to show.
 from __future__ import annotations
 
 import logging
-from typing import List, Dict, Optional
 from dataclasses import dataclass
-from datetime import datetime
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +119,7 @@ class CryptoTradingAnalyzer:
         return best_gainers, best_losers
     
     @staticmethod
-    def _analyze_single_token(token_data: Dict, is_gainer: bool) -> Optional[TokenAnalysis]:
+    def _analyze_single_token(token_data: Dict, is_gainer: bool) -> TokenAnalysis | None:
         """Analyze a single token and assign trading scores.
         
         Returns None if token fails quality checks (pump & dump, low liquidity, etc.)

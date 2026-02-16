@@ -1,9 +1,14 @@
-"""FDWA Autonomous Twitter AI Agent.
+"""FDWA Autonomous Social Media AI Agent — Slim Orchestrator.
 
-This graph defines a three-step autonomous process:
-1. Research trending topics using SERPAPI (primary) with Tavily fallback
-2. Generate strategic FDWA-branded tweet using Google AI
-3. Post the tweet to Twitter using Composio
+Replaces the monolithic 2695-line graph.py.  Each node now delegates to
+a focused sub-agent in  src/agent/agents/.
+
+Workflow:
+  research → generate_content → generate_image →
+  post_twitter → post_facebook → post_linkedin →
+  post_telegram → post_instagram →
+  monitor_ig_comments → reply_twitter → comment_facebook →
+  generate_blog → record_memory → END
 """
 
 from __future__ import annotations
@@ -14,2310 +19,372 @@ import logging
 import os
 import random
 import re
-import time
 from datetime import datetime
 from pathlib import Path
 
-import requests
-from composio import Composio
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph
 from langsmith import traceable
-from langsmith.integrations.otel import configure
-from typing_extensions import TypedDict
 
-from src.agent import telegram_agent
-from src.agent.blog_email_agent import generate_and_send_blog
-from src.agent.duplicate_detector import is_duplicate_post, record_post
-from src.agent.instagram_agent import convert_to_instagram_caption
-from src.agent.instagram_comment_agent import generate_instagram_reply
-from src.agent.linkedin_agent import convert_to_linkedin_post
-from src.agent.llm_provider import get_llm
-from src.agent.ai_decision_engine import get_decision_engine  # ✅ NEW: AI Brain
-from src.agent.memory_store import get_memory_store  # ✅ NEW: Long-term memory
-# CoinMarketCap integration for Telegram crypto market data
-try:
-    from src.agent.cmc_client import get_top_gainers, get_top_losers
-    from src.agent.crypto_trading_analyzer import CryptoTradingAnalyzer
-    CMC_AVAILABLE = True
-except Exception:
-    # Fallback when CoinMarketCap not configured
-    def get_top_gainers(limit: int = 5):
-        return []
-    def get_top_losers(limit: int = 5):
-        return []
-    CMC_AVAILABLE = False
+# ── Core ────────────────────────────────────────────────────────────────
+from src.agent.core.state import AgentState
+from src.agent.core.config import validate_account_ids
 
+# ── Sub-agents ──────────────────────────────────────────────────────────
+from src.agent.agents import research_agent
+from src.agent.agents import content_agent
+from src.agent.agents import twitter_agent
+from src.agent.agents import facebook_agent
+from src.agent.agents import linkedin_agent_v2 as linkedin_agent
+from src.agent.agents import instagram_agent_v2 as instagram_agent
+from src.agent.agents import telegram_agent_v2 as telegram_agent
+from src.agent.agents import blog_agent
+from src.agent.agents import comment_agent
+from src.agent.agents import memory_agent
+
+# ── Existing modules kept as-is ────────────────────────────────────────
+from src.agent.ai_decision_engine import get_decision_engine
 from src.agent.realtime_status import broadcaster
+from src.agent.tools.image_tools import generate_image, upload_image, save_image_locally
 
-# Load environment variables from .env file
+# Load environment
 load_dotenv()
 
-# Configure LangSmith OpenTelemetry integration
-configure(project_name=os.getenv("LANGSMITH_PROJECT", "fdwa-multi-agent"))
+# ── LangSmith OTEL ─────────────────────────────────────────────────────
+try:
+    from langsmith.integrations.otel import configure as ls_configure
+    configured = ls_configure(project_name=os.getenv("LANGSMITH_PROJECT", "fdwa-multi-agent"))
+    if not configured:
+        from langsmith.integrations.otel import OtelSpanProcessor
+        from opentelemetry import trace as _ot_trace
+        try:
+            _ot_trace.get_tracer_provider().add_span_processor(
+                OtelSpanProcessor(project=os.getenv("LANGSMITH_PROJECT", "fdwa-multi-agent"))
+            )
+        except Exception:
+            pass
+except Exception:
+    pass
 
-# Initialize Composio client with env entity_id
-composio_client = Composio(
-    api_key=os.getenv("COMPOSIO_API_KEY"),
-    entity_id=os.getenv("TWITTER_ENTITY_ID")
-)
-
-# Configure logging
 logger = logging.getLogger(__name__)
 
-# Helper function to call async broadcaster from sync code
+# ── Startup validation ──────────────────────────────────────────────────
+_ids = validate_account_ids()
+for name, val in _ids.items():
+    if not val:
+        logger.warning("Missing env var: %s", name)
+
+# ── Broadcast helper ────────────────────────────────────────────────────
+_broadcast_tasks: set = set()
+
+
 def _broadcast_sync(method_name: str, *args, **kwargs):
     """Call async broadcaster method from sync context."""
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            # Create a new task in the running loop
-            asyncio.create_task(getattr(broadcaster, method_name)(*args, **kwargs))
+            task = asyncio.create_task(getattr(broadcaster, method_name)(*args, **kwargs))
+            _broadcast_tasks.add(task)
+            task.add_done_callback(_broadcast_tasks.discard)
         else:
-            # Run in a new event loop  
             asyncio.run(getattr(broadcaster, method_name)(*args, **kwargs))
-    except Exception as e:
-        logger.debug(f"Broadcast error (non-critical): {e}")
-
-class AgentState(TypedDict):
-    """Represents the state of our autonomous agent.
-
-    Attributes:
-        trend_data: Raw trend data from SERPAPI or Tavily search.
-        insight: Extracted insight aligned with FDWA brand.
-        tweet_text: The generated tweet text (Twitter-specific, 280 chars).
-        facebook_text: Facebook-specific post (longer, conversational).
-        linkedin_text: The LinkedIn post text (professional).
-        instagram_caption: Instagram-specific caption (visual, emojis).
-        telegram_message: Telegram-specific message (direct, action).
-        image_url: The URL of the generated image.
-        image_path: The local path of the generated image.
-        twitter_url: The URL of the created Twitter post.
-        facebook_status: The status of the Facebook post.
-        facebook_post_id: The ID of the Facebook post.
-        linkedin_status: The status of the LinkedIn post.
-        comment_status: The status of the Facebook comment.
-        error: To capture any errors that might occur.
-    """
-    trend_data: str
-    insight: str
-    tweet_text: str
-    facebook_text: str
-    linkedin_text: str
-    instagram_caption: str
-    telegram_message: str
-    image_url: str
-    image_path: str
-    twitter_url: str
-    twitter_post_id: str
-    twitter_reply_status: str
-    facebook_status: str
-    facebook_post_id: str
-    linkedin_status: str
-    instagram_status: str
-    instagram_post_id: str
-    instagram_comment_status: str
-    comment_status: str
-    blog_status: str
-    blog_title: str
-    telegram_status: str
-    memory_status: str  # ✅ NEW: Memory recording status
-    error: str
+    except Exception:
+        pass
 
 
-def _download_image_from_url(image_url: str) -> str:
-    """Download image from URL and save locally.
-    
-    Args:
-        image_url: URL of the image to download (https://) or local file path (file://).
-        
-    Returns:
-        Local file path of downloaded image.
-    """
-    try:
-        # Handle local file:// URIs (from Hugging Face local generation)
-        if image_url.startswith("file:///"):
-            local_path = image_url.replace("file:///", "").replace("/", chr(92))
-            if os.path.exists(local_path):
-                logger.info("Using local file: %s", local_path)
-                return local_path
-            else:
-                logger.error("Local file not found: %s", local_path)
-                return None
-        
-        # Download from remote URL
-        response = requests.get(image_url, timeout=30)
-        response.raise_for_status()
-        
-        # Create temp directory if it doesn't exist
-        temp_dir = Path("temp_images")
-        temp_dir.mkdir(exist_ok=True)
-        
-        # Extract filename from URL or generate one
-        filename = image_url.split("/")[-1] or "image.jpg"
-        if not filename.endswith((".jpg", ".jpeg", ".png")):
-            filename += ".jpg"
-        
-        local_path = temp_dir / filename
-        local_path.write_bytes(response.content)
-        
-        logger.info("Downloaded image to: %s", local_path)
-        return str(local_path)
-    except Exception as e:
-        logger.exception("Failed to download image: %s", e)
-        return None
+# ═══════════════════════════════════════════════════════════════════════
+# NODE FUNCTIONS — each one delegates to its sub-agent
+# ═══════════════════════════════════════════════════════════════════════
 
-
-@traceable(name="enhance_image_prompt")
-def _enhance_prompt_for_image(text: str, ai_strategy: dict = None) -> str:
-    """Convert social media text into FDWA-branded visual prompt for image generation.
-    
-    ✅ NEW: Uses AI Decision Engine strategy to create topic-appropriate images.
-
-    Args:
-        text: Social media post text with hashtags and formatting.
-        ai_strategy: Optional AI strategy dict with topic and products info
-
-    Returns:
-        FDWA-branded image prompt optimized for Hugging Face FLUX model.
-    """
-    logger.info("Enhancing image prompt with FDWA branding...")
-
-    # Clean up text: remove hashtags, @ mentions, URLs, special chars
-    clean_text = re.sub(r"#\w+", "", text)  # Remove hashtags
-    clean_text = re.sub(r"@\w+", "", clean_text)  # Remove mentions
-    clean_text = re.sub(r"https?://\S+", "", clean_text)  # Remove URLs
-    clean_text = re.sub(r"[*#@\[\]{}()\'\"\\]", "", clean_text)  # Remove special chars
-    clean_text = re.sub(r"\s+", " ", clean_text).strip()  # Normalize whitespace
-    
-    # Truncate to reasonable length (120 chars)
-    clean_text = clean_text[:120]
-    
-    # Determine visual style based on AI strategy topic
-    topic = ai_strategy.get("topic", "business") if ai_strategy else "business"
-    topic_lower = topic.lower()
-    
-    # Topic-specific visual elements
-    if "ai" in topic_lower or "automation" in topic_lower:
-        style = (
-            "futuristic AI automation workspace, holographic interfaces, "
-            "neural network visualizations, robotic assistants, glowing blue/purple tech, "
-            "modern minimalist office, professional business setting"
-        )
-    elif "credit" in topic_lower or "financial" in topic_lower or "debt" in topic_lower:
-        style = (
-            "professional financial growth concept, credit score dashboard rising, "
-            "banking documents organized, calculator and charts, green upward graphs, "
-            "clean modern business office, wealth building imagery"
-        )
-    elif "real estate" in topic_lower or "property" in topic_lower:
-        style = (
-            "modern real estate investment concept, aerial city view with buildings, "
-            "property blueprints with digital overlays, keys and contracts, "
-            "professional real estate office, clean architecture photography"
-        )
-    elif "crypto" in topic_lower or "bitcoin" in topic_lower:
-        style = (
-            "cryptocurrency trading dashboard, Bitcoin and Ethereum symbols, "
-            "candlestick charts rising, digital blockchain visualization, "
-            "futuristic finance concept, neon blue/gold accents on dark background"
-        )
-    else:
-        # Default business/entrepreneurship style
-        style = (
-            "modern successful entrepreneur workspace, professional business growth, "
-            "laptop with analytics dashboard, clean minimalist office design, "
-            "urban skyline through windows, motivational business imagery"
-        )
-    
-    # Add product visual elements if products are featured
-    product_hint = ""
-    if ai_strategy and ai_strategy.get("products"):
-        products = ai_strategy.get("products", [])
-        # Subtle product hints in visual
-        product_hint = ", course materials visible, digital product showcase"
-    
-    # Create structured prompt for FLUX
-    visual_prompt = (
-        f"Professional high-quality photograph: {clean_text}. "
-        f"{style}{product_hint}. "
-        "Cinematic lighting, ultra realistic, 8K quality, sharp focus, "
-        "proper composition, professional color grading, inspirational mood, "
-        "no text or words in image, photorealistic style"
-    )
-    
-    logger.info("Generated FDWA-branded visual prompt for '%s': %s...", topic, visual_prompt[:80])
-    return visual_prompt
-
-
-def _extract_search_insights(search_data: dict) -> str:
-    """Extract clean, readable text from SERPAPI/Tavily search results.
-    
-    Converts raw API response dict into human-readable insights for content generation.
-    Handles nested response structures from Composio.
-    
-    Args:
-        search_data: Raw search API response dict (may be nested)
-        
-    Returns:
-        Clean text summary of search results
-    """
-    insights = []
-    
-    # DEBUG: Log the response structure to understand what we're getting
-    logger.info("🔍 DEBUG: Search data keys: %s", list(search_data.keys()))
-    logger.info("🔍 DEBUG: Search data type: %s", type(search_data))
-    
-    # Handle multiple possible nested structures from Composio
-    organic_results = None
-    tavily_results = None
-    tavily_answer = None
-    
-    # SERPAPI parsing - try multiple nested paths
-    possible_serpapi_paths = [
-        ["results", "organic_results"],  # search_data.results.organic_results
-        ["organic_results"],             # search_data.organic_results
-        ["data", "organic_results"],     # search_data.data.organic_results
-        ["response", "organic_results"], # search_data.response.organic_results
-    ]
-    
-    for path in possible_serpapi_paths:
-        current = search_data
-        try:
-            for key in path:
-                if isinstance(current, dict) and key in current:
-                    current = current[key]
-                else:
-                    current = None
-                    break
-            
-            if isinstance(current, list) and current:
-                organic_results = current
-                logger.info("🔍 Found SERPAPI results at path: %s (%d items)", " -> ".join(path), len(organic_results))
-                break
-        except Exception:
-            continue
-    
-    # Process SERPAPI results
-    if organic_results:
-        for i, result in enumerate(organic_results[:5]):  # Top 5 results
-            if isinstance(result, dict):
-                title = result.get("title", "")
-                snippet = result.get("snippet", "")
-                
-                if title and len(title) > 10:  # Only meaningful titles
-                    insights.append(f"📰 {title}")
-                if snippet and snippet != title and len(snippet) > 20:
-                    # Clean and truncate snippet
-                    clean_snippet = snippet.replace("...", "").strip()[:150]
-                    insights.append(f"   💡 {clean_snippet}")
-                
-                logger.info("🔍 SERPAPI result %d: title=%s, snippet=%s", i+1, title[:50], snippet[:50])
-    
-    # Tavily parsing - try multiple nested paths
-    possible_tavily_paths = [
-        ["response_data", "results"],    # search_data.response_data.results
-        ["results"],                     # search_data.results
-        ["data", "results"],            # search_data.data.results
-    ]
-    
-    for path in possible_tavily_paths:
-        current = search_data
-        try:
-            for key in path:
-                if isinstance(current, dict) and key in current:
-                    current = current[key]
-                else:
-                    current = None
-                    break
-            
-            if isinstance(current, list) and current:
-                tavily_results = current
-                logger.info("🔍 Found Tavily results at path: %s (%d items)", " -> ".join(path), len(tavily_results))
-                break
-        except Exception:
-            continue
-    
-    # Try to get Tavily answer
-    for answer_path in [["response_data", "answer"], ["answer"], ["data", "answer"]]:
-        current = search_data
-        try:
-            for key in answer_path:
-                if isinstance(current, dict) and key in current:
-                    current = current[key]
-                else:
-                    current = None
-                    break
-            
-            if isinstance(current, str) and len(current) > 10:
-                tavily_answer = current
-                logger.info("🔍 Found Tavily answer at path: %s", " -> ".join(answer_path))
-                break
-        except Exception:
-            continue
-    
-    # Process Tavily results  
-    if tavily_results:
-        for i, result in enumerate(tavily_results[:5]):  # Top 5 results
-            if isinstance(result, dict):
-                title = result.get("title", "")
-                content = result.get("content", "")
-                
-                if title and len(title) > 10:
-                    insights.append(f"🔍 {title}")
-                if content and content != title and len(content) > 20:
-                    # Take first 150 chars of content
-                    clean_content = content[:150].replace("...", "").strip()
-                    insights.append(f"   📝 {clean_content}")
-                
-                logger.info("🔍 Tavily result %d: title=%s, content=%s", i+1, title[:50], content[:50])
-    
-    # Handle Tavily answer (summary)
-    if tavily_answer and len(tavily_answer) > 20:
-        insights.insert(0, f"🎯 {tavily_answer[:200]}")
-    
-    # If no structured results found, try to extract any text content
-    if not insights:
-        logger.warning("🔍 No structured results found, trying to extract any text content...")
-        
-        # Try to find any meaningful text in the response
-        def extract_text_recursive(obj, depth=0):
-            extracted = []
-            if depth > 3:  # Prevent infinite recursion
-                return extracted
-                
-            if isinstance(obj, dict):
-                for key, value in obj.items():
-                    if isinstance(value, str) and len(value) > 30 and key in ["title", "snippet", "content", "description", "text"]:
-                        extracted.append(value[:150])
-                    elif isinstance(value, (dict, list)):
-                        extracted.extend(extract_text_recursive(value, depth + 1))
-            elif isinstance(obj, list):
-                for item in obj[:3]:  # Limit to first 3 items
-                    extracted.extend(extract_text_recursive(item, depth + 1))
-            
-            return extracted
-        
-        fallback_texts = extract_text_recursive(search_data)
-        if fallback_texts:
-            insights.extend([f"📄 {text}" for text in fallback_texts[:3]])
-            logger.info("🔍 Extracted %d fallback text snippets", len(fallback_texts))
-    
-    # Join with newlines and limit total length
-    text = "\n".join(insights)
-    
-    if text and len(text) > 50:
-        logger.info("✅ Successfully extracted %d characters of trend insights", len(text))
-        return text[:1000]  # Increased limit for more comprehensive insights
-    else:
-        logger.warning("❌ No meaningful insights extracted from search data")
-        # Log the raw data structure for debugging
-        logger.info("🔍 Raw search_data structure: %s", str(search_data)[:500])
-        return "No actionable trends found in current search results"
-
-
-# ==================== MARKDOWN CLEANING UTILITY ====================
-
-def _strip_markdown(text: str) -> str:
-    """Remove Markdown formatting from text for social media posts.
-    
-    Social media platforms don't render Markdown, so we need plain text.
-    Converts:
-    - **bold** → bold
-    - *italic* → italic
-    - [text](url) → text (url)
-    - ### Headers → Headers
-    - `code` → code
-    
-    Args:
-        text: Text potentially containing Markdown syntax
-        
-    Returns:
-        Plain text without Markdown formatting
-    """
-    import re
-    
-    # Remove bold: **text** or __text__
-    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-    text = re.sub(r'__(.+?)__', r'\1', text)
-    
-    # Remove italic: *text* or _text_ (but not URLs or email)
-    text = re.sub(r'(?<!\w)\*(.+?)\*(?!\w)', r'\1', text)
-    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'\1', text)
-    
-    # Convert links: [text](url) → text (url) or just text if URL is mentioned
-    text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', lambda m: f"{m.group(1)} ({m.group(2)})" if m.group(1).lower() not in m.group(2).lower() else m.group(1), text)
-    
-    # Remove headers: ### text → text
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    
-    # Remove code blocks: `code` → code
-    text = re.sub(r'`(.+?)`', r'\1', text)
-    
-    # Remove horizontal rules
-    text = re.sub(r'^[-*_]{3,}$', '', text, flags=re.MULTILINE)
-    
-    # Clean up multiple spaces/newlines
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    text = re.sub(r' {2,}', ' ', text)
-    
-    return text.strip()
-
-
-# ==================== PLATFORM-SPECIFIC CONTENT ADAPTERS ====================
-
-def _adapt_for_twitter(base_insights: str) -> str:
-    """Adapt content for Twitter: Short, hashtag-heavy, engaging (280 chars max).
-    
-    Args:
-        base_insights: Research insights from trend data
-        
-    Returns:
-        Twitter-optimized content (280 chars)
-    """
-    # Get current year for context
-    from datetime import datetime
-    current_year = datetime.now().year
-    
-    # Try LLM-first approach with template fallback
-    try:
-        llm = get_llm(purpose="Twitter content adaptation")
-        
-        prompt = f"""Current year: {current_year}. Create a Twitter post (MAX 280 characters) based on this insight:
-
-{base_insights[:300]}
-
-Requirements:
-- MUST be under 280 characters total
-- Plain text only (NO Markdown formatting like **bold** or *italic*)
-- Use {current_year} for any year references (NOT 2025 or older years)
-- Include relevant emojis
-- Mention FDWA AI automation: https://fdwa.site
-- Add hashtags: #YBOT #AIAutomation
-- Be engaging and actionable
-
-Output ONLY the tweet text, nothing else."""
-
-        response = llm.invoke(prompt)
-        tweet = response.content if hasattr(response, 'content') else str(response)
-        tweet = _strip_markdown(tweet.strip())  # Remove Markdown formatting
-        
-        # Ensure under 280 characters
-        if len(tweet) > 280:
-            tweet = tweet[:277] + "..."
-
-        # Ensure our primary site / CTA is always present (post-process)
-        primary_site = os.getenv("PRIMARY_SITE", "https://fdwa.site")
-        try:
-            if primary_site and "fdwa.site" not in tweet.lower():
-                suffix = " " + primary_site
-                if len(tweet) + len(suffix) <= 280:
-                    tweet = tweet + suffix
-                else:
-                    allowed = 280 - len(suffix) - 3
-                    tweet = tweet[:allowed].rstrip() + "..." + suffix
-        except Exception:
-            # non-critical if post-processing fails
-            pass
-
-        logger.info("Generated Twitter content with LLM (%d chars)", len(tweet))
-        return tweet
-        
-    except Exception as e:
-        logger.warning("LLM generation failed for Twitter, using template: %s", e)
-        
-        # Template fallback
-        first_line = base_insights.split('\n')[0][:100]
-        tweet = (
-            f"🚀 {first_line}\n\n"
-            f"Get AI automation tools at https://fdwa.site ✨\n\n"
-            f"#YBOT #AIAutomation #CreditRepair #FinancialFreedom"
-        )
-        
-        if len(tweet) > 280:
-            tweet = tweet[:277] + "..."
-        
-        return tweet
-
-
-def _adapt_for_facebook(base_insights: str) -> str:
-    """Adapt content for Facebook: Longer, conversational, community-focused.
-    
-    Args:
-        base_insights: Research insights from trend data
-        
-    Returns:
-        Facebook-optimized content (500+ chars)
-    """
-    # Try LLM-first approach with template fallback
-    try:
-        llm = get_llm(purpose="Facebook content adaptation")
-        
-        prompt = f"""Create a Facebook post based on this insight:
-
-{base_insights[:500]}
-
-Requirements:
-- Conversational and community-focused tone
-- 400-600 characters
-- Plain text only (NO Markdown formatting: no **bold**, *italic*, or ### headers)
-- Include relevant emojis
-- Mention FDWA services: AI automation, credit repair, digital products
-- Include call-to-action: https://fdwa.site
-- Add hashtags: #AIAutomation #BusinessGrowth #FinancialFreedom
-- Be engaging and value-driven
-
-Output ONLY the Facebook post text, nothing else."""
-
-        response = llm.invoke(prompt)
-        post = response.content if hasattr(response, 'content') else str(response)
-        post = _strip_markdown(post.strip())  # Remove Markdown formatting
-        
-        logger.info("Generated Facebook content with LLM (%d chars)", len(post))
-        return post
-        
-    except Exception as e:
-        logger.warning("LLM generation failed for Facebook, using template: %s", e)
-        
-        # Template fallback
-        first_line = base_insights.split('\n')[0][:150]
-        post = (
-            f"💡 {first_line}\n\n"
-            f"The future of business is here, and it's powered by AI automation. "
-            f"Whether you're building credit, scaling your business, or creating passive income streams, "
-            f"the right tools make all the difference.\n\n"
-            f"🎯 What we're focused on:\n"
-            f"• AI automation for business workflows\n"
-            f"• Credit repair strategies that actually work\n"
-            f"• Digital products and passive income\n"
-            f"• Financial empowerment through technology\n\n"
-            f"Ready to transform your business? Visit https://fdwa.site to learn more.\n\n"
-            f"#AIAutomation #BusinessGrowth #FinancialFreedom #CreditRepair #FDWA"
-        )
-        
-        return post
-
-
-def _adapt_for_linkedin(base_insights: str) -> str:
-    """Adapt content for LinkedIn: Professional, business-focused, value-driven.
-    
-    Args:
-        base_insights: Research insights from trend data
-        
-    Returns:
-        LinkedIn-optimized content (professional tone)
-    """
-    # Try LLM-first approach with template fallback
-    try:
-        llm = get_llm(purpose="LinkedIn content adaptation")
-        
-        prompt = f"""Create a LinkedIn post based on this insight:
-
-{base_insights[:500]}
-
-Requirements:
-- Professional, business-focused tone
-- 500-700 characters
-- Data-driven language (metrics, percentages)
-- Focus on business transformation and ROI
-- Mention FDWA: AI automation, financial optimization, digital products
-- Include call-to-action: https://fdwa.site
-- Add hashtags: #BusinessTransformation #AI #Automation #FinancialStrategy
-- Be authoritative and value-driven
-
-Output ONLY the LinkedIn post text, nothing else."""
-
-        response = llm.invoke(prompt)
-        post = response.content if hasattr(response, 'content') else str(response)
-        post = _strip_markdown(post.strip())  # Remove Markdown formatting
-        
-        logger.info("Generated LinkedIn content with LLM (%d chars)", len(post))
-        return post
-        
-    except Exception as e:
-        logger.warning("LLM generation failed for LinkedIn, using template: %s", e)
-        
-        # Template fallback
-        first_line = base_insights.split('\n')[0][:120]
-        post = (
-            f"📊 {first_line}\n\n"
-            f"In today's rapidly evolving business landscape, organizations that embrace AI automation "
-            f"and data-driven strategies are achieving 3-5x better operational efficiency.\n\n"
-            f"Key areas driving business transformation:\n\n"
-            f"🤖 AI Automation - Streamlining workflows and reducing operational costs\n"
-            f"📈 Financial Optimization - Strategic credit management and wealth building\n"
-            f"💼 Digital Product Development - Creating scalable revenue streams\n"
-            f"🎯 Process Automation - Eliminating manual tasks and human error\n\n"
-            f"At FDWA, we help businesses implement these strategies through custom AI solutions "
-            f"and proven financial frameworks.\n\n"
-            f"Interested in learning more? Connect with us at https://fdwa.site\n\n"
-            f"#BusinessTransformation #AI #Automation #FinancialStrategy #DigitalInnovation"
-        )
-        
-        return post
-
-
-def _adapt_for_telegram(base_insights: str) -> str:
-    """Generate Telegram content using focused crypto agent.
-    
-    🎯 NEW APPROACH: Uses TelegramCryptoAgent for:
-    - CONCISE token data in message (2-3 symbols max)
-    - DETAILED analysis saved to memory + Google Sheets
-    - SERPAPI + Tavily research integration
-    - Focused DeFi messaging for @yieldbotai group
-    
-    Args:
-        base_insights: Base insights from trend research (used as fallback)
-
-    Returns:
-        Concise Telegram message with token highlights only.
-    """
-    from datetime import datetime
-    
-    # Try TelegramCryptoAgent first (NEW focused approach)
-    try:
-        from src.agent.telegram_crypto_agent import TelegramCryptoAgent
-        import asyncio
-        
-        logger.info("🚀 Using TelegramCryptoAgent for focused crypto messaging...")
-        
-        crypto_agent = TelegramCryptoAgent()
-        
-        # Get crypto market data with AI analysis
-        market_data = asyncio.run(crypto_agent.get_crypto_market_data())
-        
-        if market_data.get('success') and market_data.get('tokens'):
-            tokens = market_data['tokens']
-            gainers = tokens.get('gainers', [])
-            losers = tokens.get('losers', [])
-            
-            # Create CONCISE Telegram message
-            message_parts = []
-            message_parts.append("🚀 DeFi Market Update\n")
-            
-            # Top trending tokens (show top 3 symbols)
-            trending = []
-            for token in gainers[:3]:
-                trending.append(token['symbol'])
-            
-            if trending:
-                message_parts.append(f"📊 Trending: {' | '.join(trending)}\n")
-            
-            # Show top pick details
-            if gainers:
-                top_pick = gainers[0]
-                message_parts.append(f"\n💎 Top Pick: {top_pick['symbol']}")
-                message_parts.append(f"   ${top_pick['price']:.6f} (+{top_pick['change_24h']:.2f}%)")
-                message_parts.append(f"   Score: {top_pick['trade_score']:.0f}/100 | {top_pick['signal']}\n")
-            
-            # FDWA product mention
-            message_parts.append("\n📈 Create unique dispute letters with Letters by AI\n")
-            message_parts.append("\n💡 Stay ahead with real-time DeFi insights and AI-powered automation.")
-            message_parts.append("Get YBOT tools at https://fdwa.site\n")
-            message_parts.append("\n#DeFi #Crypto #YieldBot #FinancialFreedom")
-            
-            message = "".join(message_parts)
-            
-            # Save detailed analysis to memory
-            try:
-                from src.agent.memory_store import AgentMemoryStore
-                memory_store = AgentMemoryStore(user_id="fdwa_agent")
-                
-                # Save all analyzed tokens to memory
-                for token in gainers[:5]:
-                    memory_store.record_crypto_insight(
-                        token_symbol=token['symbol'],
-                        insight_type="quality_gainer",
-                        data={
-                            "signal": token['signal'],
-                            "trade_score": token['trade_score'],
-                            "profit_probability": token['profit_probability'],
-                            "risk_level": token['risk_level'],
-                            "reasoning": token['reasoning'][:200],
-                            "price": token['price'],
-                            "change_24h": token['change_24h']
-                        }
-                    )
-                
-                logger.info("💾 Saved %d tokens to memory", len(gainers[:5]))
-            except Exception as mem_err:
-                logger.warning("⚠️ Memory save failed: %s", mem_err)
-            
-            logger.info("✅ TelegramCryptoAgent: Message created with %d gainers, %d losers", len(gainers), len(losers))
-            return message
-        else:
-            logger.warning("⚠️ TelegramCryptoAgent returned no quality tokens")
-            
-    except ImportError:
-        logger.info("📦 TelegramCryptoAgent not available, using legacy crypto analysis...")
-    except Exception as e:
-        logger.warning("⚠️ TelegramCryptoAgent failed: %s", e)
-        import traceback
-        logger.debug(traceback.format_exc())
-    
-    # Fallback: Legacy crypto analysis (CONCISE version)
-    logger.info("🔄 Using legacy crypto analysis with concise output...")
-    
-    try:
-        # Fetch quality tokens by market cap (avoid pump & dumps)
-        from src.agent.cmc_client import get_top_by_market_cap
-        
-        all_tokens = get_top_by_market_cap(limit=200)
-        
-        if not all_tokens:
-            return _telegram_crypto_fallback()
-        
-        # Separate into gainers and losers
-        gainers = []
-        losers = []
-        
-        for token in all_tokens:
-            try:
-                pct_change = token.get('quote', {}).get('USD', {}).get('percent_change_24h', 0)
-                if pct_change > 0:
-                    gainers.append(token)
-                elif pct_change < 0:
-                    losers.append(token)
-            except Exception:
-                continue
-        
-        # Sort and take top 50 of each
-        gainers.sort(key=lambda x: x.get('quote', {}).get('USD', {}).get('percent_change_24h', 0), reverse=True)
-        losers.sort(key=lambda x: x.get('quote', {}).get('USD', {}).get('percent_change_24h', 0))
-        gainers = gainers[:50]
-        losers = losers[:50]
-        
-        logger.info(f"📥 Fetched {len(gainers)} gainers, {len(losers)} losers from quality tokens")
-        
-        # Analyze but only show TOP 2 tokens
-        if CMC_AVAILABLE:
-            best_gainers, best_losers = CryptoTradingAnalyzer.analyze_tokens(
-                gainers=gainers, losers=losers, top_n=2
-            )
-        else:
-            # Simple fallback - just get top 2 by volume
-            best_gainers = sorted(gainers, key=lambda x: x.get('quote', {}).get('USD', {}).get('volume_24h', 0), reverse=True)[:2]
-            best_losers = sorted(losers, key=lambda x: x.get('quote', {}).get('USD', {}).get('volume_24h', 0), reverse=True)[:2]
-        
-        # Create CONCISE message
-        message_parts = []
-        message_parts.append("🚀 DeFi Market Update\n")
-        
-        # Show only TOP 2 symbols
-        trending_symbols = []
-        if best_gainers:
-            for token in best_gainers[:2]:
-                symbol = token.symbol if hasattr(token, 'symbol') else token.get('symbol', 'N/A')
-                trending_symbols.append(symbol.upper())
-        
-        if trending_symbols:
-            message_parts.append(f"📊 Trending: {' | '.join(trending_symbols)}\n")
-        
-        message_parts.append("\n📈 Create unique dispute letters with Letters by AI\n")
-        message_parts.append("\n💡 Stay ahead with real-time DeFi insights and AI-powered automation.")
-        message_parts.append("Get YBOT tools at https://fdwa.site\n")
-        message_parts.append("\n#DeFi #Crypto #YieldBot #FinancialFreedom")
-        
-        message = "".join(message_parts)
-        
-        # Save detailed analysis to memory (if available)
-        try:
-            from src.agent.memory_store import AgentMemoryStore
-            memory_store = AgentMemoryStore(user_id="fdwa_agent")
-            
-            # Save detailed token data to memory
-            for token in (best_gainers + best_losers)[:5]:
-                symbol = token.symbol if hasattr(token, 'symbol') else token.get('symbol', 'N/A')
-                price = getattr(token, 'price', token.get('price', 0))
-                change = getattr(token, 'percent_change_24h', token.get('percent_change_24h', 0))
-                
-                insight = f"{symbol} - Price: ${price}, Change: {change}%"
-                asyncio.run(memory_store.record_crypto_insight(insight, {
-                    "symbol": symbol,
-                    "price": price,
-                    "change_24h": change,
-                    "analysis_date": datetime.now().isoformat()
-                }))
-            
-            logger.info("✅ Detailed crypto analysis saved to memory")
-        
-        except Exception as e:
-            logger.warning("⚠️ Failed to save to memory: %s", e)
-        
-        logger.info(f"✅ Generated concise Telegram crypto message ({len(message)} chars)")
-        return message
-        
-    except Exception as e:
-        logger.error(f"❌ Legacy crypto analysis failed: {e}")
-        return _telegram_crypto_fallback()
-
-
-def _telegram_crypto_fallback() -> str:
-    """Fallback message when CoinMarketCap API or trading analyzer is unavailable."""
-    from datetime import datetime
-    return f"""🎯 CRYPTO TRADING OPPORTUNITIES
-📅 {datetime.now().strftime('%b %d, %Y')}
-
-⚠️ AI trading analysis temporarily unavailable
-
-💡 Trading Essentials:
-→ High volume = Better liquidity
-→ Risk management > Entry timing
-→ DYOR before every trade
-→ Never invest more than you can lose
-
-🤖 Automate DeFi: https://fdwa.site
-📅 Strategy call: https://cal.com/bookme-daniel
-
-#CryptoTrading #DeFi #YieldBot
-
-🔧 Admin: Add COINMARKETCAP_API_KEY to .env
-   Get free key: https://pro.coinmarketcap.com/signup"""
-
-
-def _adapt_for_instagram(base_insights: str) -> str:
-    """Adapt content for Instagram: Visual-first, emoji-heavy, lifestyle-focused.
-    
-    Args:
-        base_insights: Research insights from trend data
-        
-    Returns:
-        Instagram-optimized caption (visual, engaging)
-    """
-    # Get current year for context
-    from datetime import datetime
-    current_year = datetime.now().year
-    
-    # Try LLM-first approach with template fallback
-    try:
-        llm = get_llm(purpose="Instagram content adaptation")
-        
-        prompt = f"""Current year: {current_year}. Create an Instagram caption based on this insight:
-
-{base_insights[:400]}
-
-Requirements:
-- Visual-first, lifestyle-focused tone
-- 400-600 characters
-- Plain text only (NO Markdown formatting)
-- Use {current_year} for any year references (NOT 2025)
-- Emoji-heavy (but tasteful)
-- Focus on entrepreneurship, financial freedom, AI automation
-- Mention FDWA services: AI systems, credit repair, digital products
-- Include call-to-action: fdwa.site
-- Add hashtags: #AIAutomation #FinancialFreedom #Entrepreneur #PassiveIncome
-- Be inspiring and aspirational
-
-Output ONLY the Instagram caption text, nothing else."""
-
-        response = llm.invoke(prompt)
-        caption = response.content if hasattr(response, 'content') else str(response)
-        caption = _strip_markdown(caption.strip())  # Remove Markdown formatting
-        
-        logger.info("Generated Instagram content with LLM (%d chars)", len(caption))
-        return caption
-        
-    except Exception as e:
-        logger.warning("LLM generation failed for Instagram, using template: %s", e)
-        
-        # Template fallback
-        first_line = base_insights.split('\n')[0][:80]
-        caption = (
-            f"✨ {first_line}\n\n"
-            f"🤖 AI automation isn't just for tech companies anymore\n"
-            f"💎 It's for entrepreneurs who want freedom\n"
-            f"🚀 It's for businesses ready to scale\n"
-            f"💰 It's for anyone building their financial future\n\n"
-            f"We help you:\n"
-            f"→ Build AI systems that work 24/7\n"
-            f"→ Fix your credit strategically\n"
-            f"→ Create digital products that sell\n"
-            f"→ Automate everything\n\n"
-            f"🔗 Learn more: fdwa.site\n\n"
-            f"#AIAutomation #FinancialFreedom #Entrepreneur #PassiveIncome #CreditRepair "
-            f"#DigitalProducts #BusinessGrowth #YBOT #FutureOfWork #Automation"
-        )
-        
-        return caption
-
-
+@traceable(name="research_trends")
 def research_trends_node(state: AgentState) -> dict:
-    """Research trending topics using SERPAPI with Tavily fallback.
+    """Research trending topics."""
+    logger.info("──── RESEARCH ────")
+    _broadcast_sync("start_step", "research", "Researching trends…")
 
-    Args:
-        state: Current agent state.
+    result = research_agent.research_trends()
+    trend_data = result.get("trend_data", "")
 
-    Returns:
-        Dictionary with trend_data or error.
-    """
-    logger.info("---RESEARCHING TRENDS---")
-    _broadcast_sync("start_step", "research", "Researching trending topics and market insights")
-    _broadcast_sync("update", "Analyzing current trends in credit repair, AI automation, and digital products...")
+    if not trend_data or len(trend_data) < 20:
+        trend_data = (
+            f"AI automation is transforming business operations in {datetime.now().year}. "
+            "Smart entrepreneurs are using AI agents to scale their businesses, "
+            "automate customer service, and build passive income streams."
+        )
 
-    # Get current year for search queries
-    from datetime import datetime
-    current_year = datetime.now().year
-
-    # Diverse search queries for different business topics (use current year)
-    search_queries = [
-        f"credit repair tips {current_year}",
-        "AI automation for credit repair",
-        "digital products for financial freedom",
-        "AI dispute letter generators",
-        "passive income with ebooks",
-        "credit score improvement hacks",
-        "AI tools for business automation",
-        "how to sell digital products online",
-        "financial empowerment strategies",
-        f"credit repair laws and updates {current_year}",
-        "AI credit report analyzers",
-        "building wealth with digital tools",
-        "credit denial solutions",
-        "automate business workflows with AI",
-        "create and sell step-by-step guides",
-        "financial education for entrepreneurs",
-        "credit repair digital products",
-        "AI for passive income streams",
-        f"modern wealth building techniques {current_year}",
-        "credit repair automation tools",
-    ]
-
-    query = random.choice(search_queries)
-    logger.info("Researching: %s", query)
-
-    trend_data = ""
-    today = datetime.now().strftime("%Y-%m-%d")
-    cache_file = "trend_cache.json"
-
-    try:
-        # Primary: Try SERPAPI search first
-        logger.info("Fetching search results with SERPAPI...")
-        try:
-            search_response = composio_client.tools.execute(
-                "SERPAPI_SEARCH",
-                {"query": query},
-                connected_account_id=os.getenv("SERPAPI_ACCOUNT_ID")
-            )
-            # Remove error text if present
-            data = search_response.get('data', {})
-            if isinstance(data, dict) and any(
-                k in str(data).lower() for k in ["account out of searches", "error", "limit"]):
-                raise Exception("SERPAPI out of searches or error")
-            
-            # Extract clean text from search results instead of raw dict
-            trend_data = _extract_search_insights(data)
-            if not trend_data or len(trend_data) < 20:
-                raise Exception("No useful data extracted from SERPAPI")
-                
-            logger.info("SERPAPI search successful: %d characters", len(trend_data))
-            _broadcast_sync("complete_step", "research", {"source": "SERPAPI", "data_length": len(trend_data)})
-            return {"trend_data": trend_data}
-        except Exception as serpapi_error:
-            logger.warning("SERPAPI search failed: %s", serpapi_error)
-            # Fallback: Try Tavily search, but only once per day
-            logger.info("Falling back to Tavily search...")
-            # Check cache
-            if os.path.exists(cache_file):
-                with open(cache_file, encoding="utf-8") as f:
-                    cache = json.load(f)
-                if cache.get("date") == today and cache.get("trend_data"):
-                    logger.info("Using cached Tavily trend data for today.")
-                    _broadcast_sync("complete_step", "research", {"source": "Tavily (cached)"})
-                    return {"trend_data": cache["trend_data"]}
-            # Not cached, do Tavily search
-            search_response = composio_client.tools.execute(
-                "TAVILY_SEARCH",
-                {
-                    "query": query,
-                    "max_results": 10,
-                    "search_depth": "advanced",
-                    "include_answer": True,
-                    "include_raw_content": True,
-                    "exclude_domains": [
-                        "pinterest.com",
-                        "facebook.com", 
-                        "instagram.com",
-                        "twitter.com",
-                        "tiktok.com"
-                    ]
-                },
-                connected_account_id=os.getenv("TAVILY_ACCOUNT_ID")
-            )
-            
-            # Extract clean text from Tavily results
-            search_data = search_response.get('data', {})
-            trend_data = _extract_search_insights(search_data)
-            if not trend_data or len(trend_data) < 20:
-                raise Exception("No useful data extracted from Tavily")
-            
-            # Save to cache
-            with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump({"date": today, "trend_data": trend_data}, f)
-            logger.info("Tavily fallback successful: %d characters", len(trend_data))
-            _broadcast_sync("complete_step", "research", {"source": "Tavily", "data_length": len(trend_data)})
-            return {"trend_data": trend_data}
-    except Exception as e:
-        logger.exception("Both search methods failed: %s", e)
-        _broadcast_sync("error", f"Research failed: {str(e)}")
-        return {"error": str(e), "trend_data": "No trend data available"}
+    _broadcast_sync("complete_step", "research", {"source": result.get("source", "?"), "len": len(trend_data)})
+    return {"trend_data": trend_data}
 
 
-def generate_tweet_node(state: AgentState) -> dict:
-    """Generate platform-specific content for ALL social media platforms using AI DECISION ENGINE.
-    
-    ✅ NEW: Consults ALL data sources via AI Decision Engine:
-    - Google Sheets (recent posts, engagement)
-    - Products Catalog (150+ products)
-    - Knowledge Base (writing guidelines)
-    - Business Profile (offerings, CTAs)
-    - Memory (past performance)
-    
-    Uses base research insights to create tailored content for:
-    - Twitter: Short, hashtag-heavy (280 chars)
-    - Facebook: Longer, conversational
-    - LinkedIn: Professional, business-focused
-    - Instagram: Visual, emoji-heavy
-    - Telegram: Direct, action-oriented
-
-    Args:
-        state: Current agent state with trend_data.
-
-    Returns:
-        Dictionary with platform-specific content for all channels.
-    """
-    logger.info("---GENERATING PLATFORM-SPECIFIC CONTENT WITH AI DECISION ENGINE---")
-    _broadcast_sync("start_step", "generate_content", "🧠 Consulting AI Decision Engine...")
-    _broadcast_sync("update", "Analyzing Google Sheets, products catalog, memory...")
+@traceable(name="generate_content")
+def generate_content_node(state: AgentState) -> dict:
+    """Generate platform-specific content via AI Decision Engine + content agents."""
+    logger.info("──── GENERATE CONTENT ────")
+    _broadcast_sync("start_step", "generate_content", "🧠 Consulting AI Decision Engine…")
 
     trend_data = state.get("trend_data", "")
-    # Remove any error or search system text from trend_data
-    for bad in ["SERPAPI_SEARCH:", "TAVILY_SEARCH:", "Account out of searches", "error", "limit"]:
-        if bad.lower() in trend_data.lower():
-            trend_data = ""
-            break
+    base_insights = trend_data if trend_data and len(trend_data) > 20 else (
+        f"AI automation is transforming business operations in {datetime.now().year}."
+    )
 
-    # Use trend data as base insights, or fallback
-    if trend_data and len(trend_data) > 20:
-        base_insights = trend_data
-    else:
-        # Fallback when no trend data
-        base_insights = (
-            "AI automation is transforming business operations in 2026. "
-            "Smart entrepreneurs are using AI agents to scale their businesses, "
-            "automate customer service, and build passive income streams. "
-            "Financial empowerment through technology is now accessible to everyone."
-        )
-
-    # ========== ✅ NEW: AI DECISION ENGINE INTEGRATION ==========
+    # ── AI Decision Engine ──
+    strategy = None
     try:
-        decision_engine = get_decision_engine()
-        strategy = decision_engine.get_content_strategy(trend_data=base_insights)
-        
-        logger.info("🧠 AI STRATEGY:")
-        logger.info("   Topic: %s", strategy["topic"])
-        logger.info("   Products: %s", [p["name"][:40] for p in strategy.get("products", [])])
-        logger.info("   CTA: %s", strategy["cta"][:60])
-        logger.info("   Memory: %s", strategy.get("memory_insights", "None"))
-        
-        # Broadcast AI thinking process to UI
-        _broadcast_sync("update", f"✅ Topic: {strategy['topic']}")
-        _broadcast_sync("update", f"✅ Products: {', '.join([p['name'][:30] for p in strategy.get('products', [])])}")
-        _broadcast_sync("update", f"✅ Strategy: {strategy.get('memory_insights', 'First time!')[:50]}")
-        
-        # Enhance base insights with product info
+        engine = get_decision_engine()
+        strategy = engine.get_content_strategy(trend_data=base_insights)
+        logger.info("AI strategy: topic=%s, products=%s",
+                     strategy.get("topic"), [p["name"][:30] for p in strategy.get("products", [])])
+        _broadcast_sync("update", f"Topic: {strategy.get('topic')}")
+
+        # Enrich insights with product info
         products = strategy.get("products", [])
         if products:
-            product_context = "\n\nFeatured products to mention:\n"
-            for product in products[:2]:  # Max 2 products
-                product_context += f"- {product['name']} ({product['price']})\n"
-            base_insights = base_insights + product_context
-            
-        # Add CTA to base insights
-        base_insights = base_insights + f"\n\nCall-to-action: {strategy['cta']}"
-        
-        # Store strategy in state for later use
-        state["ai_strategy"] = strategy
-        
+            base_insights += "\n\nFeatured products:\n" + "\n".join(
+                f"- {p['name']} ({p['price']})" for p in products[:2]
+            )
+        base_insights += f"\n\nCTA: {strategy.get('cta', 'https://fdwa.site')}"
     except Exception as e:
-        logger.warning("⚠️ AI Decision Engine failed, using standard approach: %s", e)
-        strategy = None
-    # ========== END AI DECISION ENGINE ==========
+        logger.warning("Decision engine failed: %s", e)
 
-    # --- Append short FDWA context so LLMs reference our profile + recent posts ---
+    # Append FDWA context (recent posts)
     try:
         from src.agent.blog_email_agent import _load_business_profile, _get_recent_posts_for_prompt
         bp = _load_business_profile() or {}
-        kb_about = bp.get("about", "")[:240]
-        recent_json = _get_recent_posts_for_prompt(limit=3)
-        import json as _json
-        recent_posts = []
-        try:
-            recent_posts = _json.loads(recent_json)
-        except Exception:
-            recent_posts = []
-        recent_titles = ", ".join([p.get("title", "") for p in recent_posts[:3]])
-        context_snippet = f"FDWA profile: {kb_about}. Recent posts: {recent_titles}".strip()
-        if context_snippet:
-            # keep context short to avoid overly long LLM prompts
-            base_insights = (base_insights + "\n\n" + context_snippet[:400]).strip()
+        about = bp.get("about", "")[:240]
+        recent = json.loads(_get_recent_posts_for_prompt(limit=3) or "[]")
+        titles = ", ".join(p.get("title", "") for p in recent[:3])
+        base_insights = (base_insights + f"\n\nFDWA: {about}. Recent: {titles}")[:2000]
     except Exception:
-        # non-critical: continue without FDWA context
         pass
 
-    
-    logger.info("Generating content from base insights (%d chars)", len(base_insights))
-    
-    # Generate platform-specific content using adapters
-    twitter_content = _adapt_for_twitter(base_insights)
-    facebook_content = _adapt_for_facebook(base_insights)
-    linkedin_content = _adapt_for_linkedin(base_insights)
-    instagram_content = _adapt_for_instagram(base_insights)
-    telegram_content = _adapt_for_telegram(base_insights)
-    
-    # Check Twitter for duplicates (main check)
-    if is_duplicate_post(twitter_content, "twitter"):
-        logger.warning("⚠️  Duplicate content detected! Adding timestamp variation...")
-        _broadcast_sync("update", "Duplicate detected, creating unique variation...")
-        
-        # Add timestamp to make it unique
-        from datetime import datetime
-        unique_suffix = f"\n\n⏰ {datetime.now().strftime('%I:%M %p')}"
-        twitter_content = twitter_content[:280 - len(unique_suffix)] + unique_suffix
+    # Generate per-platform content (each function calls LLM independently)
+    tweet = content_agent.generate_twitter(base_insights, strategy)
+    fb = content_agent.generate_facebook(base_insights, strategy)
+    li = content_agent.generate_linkedin(base_insights, strategy)
+    ig = content_agent.generate_instagram(base_insights, strategy)
+    tg_result = content_agent.generate_telegram(base_insights, strategy)
 
-    logger.info("✅ Generated Twitter content: %d chars", len(twitter_content))
-    logger.info("✅ Generated Facebook content: %d chars", len(facebook_content))
-    logger.info("✅ Generated LinkedIn content: %d chars", len(linkedin_content))
-    logger.info("✅ Generated Instagram content: %d chars", len(instagram_content))
-    logger.info("✅ Generated Telegram content: %d chars", len(telegram_content))
-    
+    # generate_telegram returns dict {message, crypto_analysis}
+    tg = tg_result.get("message", "") if isinstance(tg_result, dict) else str(tg_result)
+    crypto_analysis = tg_result.get("crypto_analysis", {}) if isinstance(tg_result, dict) else {}
+
+    logger.info("Content generated: TW=%d FB=%d LI=%d IG=%d TG=%d",
+                len(tweet), len(fb), len(li), len(ig), len(tg))
     _broadcast_sync("complete_step", "generate_content", {
-        "twitter_length": len(twitter_content),
-        "facebook_length": len(facebook_content),
-        "linkedin_length": len(linkedin_content),
-        "instagram_length": len(instagram_content),
-        "telegram_length": len(telegram_content)
+        "twitter_length": len(tweet), "facebook_length": len(fb),
+        "linkedin_length": len(li), "instagram_length": len(ig),
+        "telegram_length": len(tg),
     })
 
     return {
-        "tweet_text": twitter_content,
-        "facebook_text": facebook_content,
-        "linkedin_text": linkedin_content,
-        "instagram_caption": instagram_content,
-        "telegram_message": telegram_content
+        "tweet_text": tweet,
+        "facebook_text": fb,
+        "linkedin_text": li,
+        "instagram_caption": ig,
+        "telegram_message": tg,
+        "base_insights": base_insights,
+        "ai_strategy": strategy,
+        "crypto_analysis": crypto_analysis,
     }
 
 
+@traceable(name="generate_image")
 def generate_image_node(state: AgentState) -> dict:
-    """Generate FDWA-branded image using Pollinations.ai (primary) → HuggingFace (fallback).
-    
-    ✅ NEW: Uses Pollinations.ai for best quality, automatically falls back to HF if needed.
-    ✅ Uses AI Decision Engine strategy for topic-appropriate visuals.
+    """Generate FDWA-branded image (Pollinations → HF fallback)."""
+    logger.info("──── IMAGE ────")
+    _broadcast_sync("start_step", "generate_image", "Generating image…")
 
-    Args:
-        state: Current agent state with tweet_text and optional ai_strategy.
-
-    Returns:
-        Dictionary with image_path (local file) and image_url (HTTP) or error.
-    """
-    logger.info("---GENERATING FDWA-BRANDED IMAGE WITH POLLINATIONS.AI---")
-    _broadcast_sync("start_step", "generate_image", "Generating strategic AI image with Pollinations → HF fallback")
-    
     tweet_text = state.get("tweet_text", "")
-    ai_strategy = state.get("ai_strategy")  # ✅ Get AI strategy from state
-
     if not tweet_text:
-        return {"error": "No tweet text for image generation"}
+        return {"image_url": None, "image_path": None}
 
-    # Use enhanced prompt with AI strategy
-    if ai_strategy:
-        topic = ai_strategy.get("topic", "business")
-        _broadcast_sync("update", f"Creating {topic}-themed image with FDWA branding...")
-        logger.info("Using AI strategy for image: topic=%s", topic)
-        visual_prompt = _enhance_prompt_for_image(tweet_text, ai_strategy)
-    else:
-        _broadcast_sync("update", "Creating FDWA-branded business image...")
-        visual_prompt = _enhance_prompt_for_image(tweet_text)
-    
-    logger.info("Enhanced visual prompt: %s", visual_prompt[:150])
-    
+    from src.agent.tools.image_tools import enhance_prompt
+    ai_strategy = state.get("ai_strategy") or {}
+    topic = ai_strategy.get("topic", "business") if isinstance(ai_strategy, dict) else "business"
+    prompt = enhance_prompt(tweet_text, topic)
+
     try:
-        # Import Pollinations image generator (with automatic HF fallback)
         from src.agent.pollinations_image_gen import (
             generate_image_with_fallback,
-            save_image_locally,
+            save_image_locally as save_img,
             upload_to_imgbb,
         )
-        
-        # Generate image with Pollinations → HF fallback (automatic quality selection)
+
         result = generate_image_with_fallback(
-            prompt=visual_prompt,
-            model="flux",  # FLUX Schnell - fast, high quality, FREE (5K images per pollen)
-            width=1024,  # ✅ High resolution for professional quality
-            height=1024,
-            timeout=90  # Generous timeout for quality generation
+            prompt=prompt, model="flux", width=1024, height=1024, timeout=90
         )
-        
+
         if result.get("success"):
-            # Save image locally
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             provider = result.get("provider", "pollinations").lower().replace(" ", "_")
-            filename = f"{provider}_generated_{timestamp}.png"
-            
-            image_path = save_image_locally(
-                result["image_bytes"],
-                filename,
-                provider=result.get("provider", "pollinations")
-            )
-            logger.info("✅ Generated image saved to: %s", image_path)
-            logger.info(f"   Provider: {result.get('provider', 'Unknown')}")
-            logger.info(f"   Model: {result.get('model', 'Unknown')}")
-            
-            # Upload to imgbb for public HTTP URL (needed for Instagram/Blog/Email)
-            logger.info("📤 Uploading to imgbb for public URL...")
-            upload_result = upload_to_imgbb(result["image_bytes"])
-            
-            if upload_result.get("success"):
-                http_url = upload_result["url"]
-                logger.info(f"✅ Image uploaded to imgbb: {http_url}")
-                _broadcast_sync("complete_step", "generate_image", {
-                    "url": http_url,
-                    "path": image_path,
-                    "provider": result.get("provider")
-                })
-                
-                return {
-                    "image_path": image_path,
-                    "image_url": http_url  # HTTP URL works everywhere
-                }
-            else:
-                logger.warning(f"⚠️ Upload to imgbb failed: {upload_result.get('error')}")
-                logger.info("Falling back to local file for Twitter/Facebook")
-                
-                # Return local file path - still works for Twitter/Facebook
-                return {
-                    "image_path": image_path,
-                    "image_url": f"file:///{image_path.replace(chr(92), '/')}"  # Local fallback
-                }
-        else:
-            error_msg = result.get("error", "Unknown error")
-            logger.warning("⚠️ Image generation failed (both Pollinations and HuggingFace): %s", error_msg)
-            _broadcast_sync("warn", f"Image generation failed: {error_msg}")
-            
-            # ✅ Continue without image - agent can still post text content
-            logger.info("📝 Agent will continue WITHOUT image (text-only posts)")
-            return {
-                "image_path": None,
-                "image_url": None,
-                "image_generation_failed": True,
-                "error_details": error_msg
-            }
-            
-    except Exception as e:
-        logger.exception("⚠️ Image generation crashed: %s", e)
-        _broadcast_sync("warn", f"Image generation error: {str(e)}")
-        
-        # ✅ Continue without image - non-fatal error
-        return {
-            "image_path": None,
-            "image_url": None,
-            "image_generation_failed": True,
-            "error_details": str(e)
-        }
+            path = save_img(result["image_bytes"], f"{provider}_{ts}.png",
+                            provider=result.get("provider", "pollinations"))
 
+            upload = upload_to_imgbb(result["image_bytes"])
+            url = upload.get("url") if upload.get("success") else None  # Never use file:// — platforms need public HTTP URL
 
-def monitor_instagram_comments_node(state: AgentState) -> dict:
-    """Monitor Instagram post for comments and reply.
+            _broadcast_sync("complete_step", "generate_image", {"url": url, "path": path})
+            return {"image_path": path, "image_url": url}
 
-    Args:
-        state: Current agent state with instagram_post_id.
-
-    Returns:
-        Dictionary with instagram_comment_status.
-    """
-    logger.info("---MONITORING INSTAGRAM COMMENTS---")
-    instagram_post_id = state.get("instagram_post_id")
-
-    if not instagram_post_id:
-        logger.warning("No Instagram post ID, skipping comment monitoring")
-        return {"instagram_comment_status": "Skipped: No post ID"}
-
-    # Wait 30 seconds for comments to come in
-    logger.info("Waiting 30 seconds for comments...")
-    time.sleep(30)
-
-    try:
-        # Get comments on the post
-        comments_response = composio_client.tools.execute(
-            "INSTAGRAM_GET_POST_COMMENTS",
-            {"ig_post_id": instagram_post_id, "limit": 5},
-            connected_account_id=os.getenv("INSTAGRAM_ACCOUNT_ID"),
-        )
-
-        logger.info("Instagram comments response: %s", comments_response)
-        
-        if not comments_response.get("successful", False):
-            return {"instagram_comment_status": "No comments yet"}
-
-        comments_data = comments_response.get("data", {}).get("data", [])
-        
-        if not comments_data:
-            logger.info("No comments found")
-            return {"instagram_comment_status": "No comments yet"}
-
-        # Reply to first comment
-        first_comment = comments_data[0]
-        comment_id = first_comment.get("id", "")
-        comment_text = first_comment.get("text", "")
-        commenter_username = first_comment.get("username", "user")
-
-        logger.info("Replying to comment from @%s: %s", commenter_username, comment_text)
-
-        # Generate reply
-        reply_text = generate_instagram_reply(comment_text, commenter_username)
-
-        # Post reply
-        reply_response = composio_client.tools.execute(
-            "INSTAGRAM_REPLY_TO_COMMENT",
-            {"ig_comment_id": comment_id, "message": reply_text},
-            connected_account_id=os.getenv("INSTAGRAM_ACCOUNT_ID"),
-        )
-
-        if reply_response.get("successful", False):
-            logger.info("Instagram reply posted successfully!")
-            return {"instagram_comment_status": f"Replied to @{commenter_username}"}
-        else:
-            error_msg = reply_response.get("error", "Reply failed")
-            logger.error("Instagram reply failed: %s", error_msg)
-            return {"instagram_comment_status": f"Failed: {error_msg}"}
+        logger.warning("Image gen failed — continuing text-only")
+        return {"image_path": None, "image_url": None}
 
     except Exception as e:
-        logger.exception("Instagram comment monitoring failed: %s", e)
-        return {"instagram_comment_status": f"Failed: {e!s}"}
+        logger.exception("Image error: %s", e)
+        return {"image_path": None, "image_url": None}
 
 
-def reply_to_twitter_node(state: AgentState) -> dict:
-    """Reply to own Twitter post with FWDA link.
+# ── Platform posting nodes ──────────────────────────────────────────────
 
-    Args:
-        state: Current agent state with twitter_post_id.
-
-    Returns:
-        Dictionary with twitter_reply_status.
-    """
-    logger.info("---REPLYING TO TWITTER POST---")
-    twitter_post_id = state.get("twitter_post_id")
-
-    # Validate Twitter post ID: Must be numeric (Twitter IDs are 1-19 digits)
-    if not twitter_post_id or twitter_post_id == "unknown" or not str(twitter_post_id).isdigit():
-        logger.warning("No valid Twitter post ID (got: %s), skipping reply", twitter_post_id)
-        return {"twitter_reply_status": "Skipped: No valid post ID"}
-
-    # Wait 5 seconds before replying
-    logger.info("Waiting 5 seconds before replying...")
-    time.sleep(5)
-    logger.info("Proceeding with reply")
-
-    reply_message = "Learn more about AI Consulting and Development for your business: https://fdwa.site 🚀"
-
-    try:
-        reply_response = composio_client.tools.execute(
-            "TWITTER_CREATION_OF_A_POST",
-            {
-                "text": reply_message,
-                "reply_in_reply_to_tweet_id": str(twitter_post_id)  # Ensure string format
-            },
-            connected_account_id=os.getenv("TWITTER_ACCOUNT_ID"),
-        )
-
-        reply_data = reply_response.get("data", {})
-        reply_id = reply_data.get("id", "replied")
-        logger.info("Twitter reply posted successfully!")
-        logger.info("Reply ID: %s", reply_id)
-        return {"twitter_reply_status": f"Replied: {reply_id}"}
-
-    except Exception as e:
-        logger.exception("Twitter reply failed: %s", e)
-        return {"twitter_reply_status": f"Failed: {e!s}"}
+@traceable(name="post_twitter")
+def post_twitter_node(state: AgentState) -> dict:
+    logger.info("──── POST: TWITTER ────")
+    _broadcast_sync("start_step", "post_social", "Publishing to Twitter…")
+    result = twitter_agent.run(state)
+    _broadcast_sync("update", f"Twitter: {result.get('twitter_url', '?')[:60]}")
+    return result
 
 
-def comment_on_facebook_node(state: AgentState) -> dict:
-    """Comment on the Facebook post with company URL.
-
-    Args:
-        state: Current agent state with facebook_post_id.
-
-    Returns:
-        Dictionary with comment_status.
-    """
-    logger.info("---COMMENTING ON FACEBOOK POST---")
-    facebook_post_id = state.get("facebook_post_id")
-
-    if not facebook_post_id:
-        logger.warning("No Facebook post ID, skipping comment")
-        return {"comment_status": "Skipped: No post ID"}
-
-    # Wait 10 seconds for Facebook to process the post
-    logger.info("Waiting 10 seconds for post to be processed...")
-    time.sleep(10)
-    logger.info("Proceeding with comment")
-
-    comment_message = "Learn more at https://fdwa.site 🚀"
-
-    try:
-        comment_response = composio_client.tools.execute(
-            "FACEBOOK_CREATE_COMMENT",
-            {
-                "message": comment_message,
-                "object_id": facebook_post_id,
-            },
-            connected_account_id="ca_ztimDVH28syB",
-        )
-
-        comment_data = comment_response.get("data", {})
-        comment_id = comment_data.get("id", "commented")
-        logger.info("Facebook comment posted successfully!")
-        logger.info("Comment ID: %s", comment_id)
-        return {"comment_status": f"Commented: {comment_id}"}
-
-    except Exception as e:
-        logger.exception("Facebook comment failed: %s", e)
-        return {"comment_status": f"Failed: {e!s}"}
+@traceable(name="post_facebook")
+def post_facebook_node(state: AgentState) -> dict:
+    logger.info("──── POST: FACEBOOK ────")
+    _broadcast_sync("update", "Publishing to Facebook…")
+    result = facebook_agent.run(state)
+    _broadcast_sync("update", f"Facebook: {result.get('facebook_status', '?')[:60]}")
+    _broadcast_sync("complete_step", "post_social", result)
+    return result
 
 
-def generate_blog_email_node(state: AgentState) -> dict:
-    """Generate blog content and send via email with image URL in body.
-
-    Args:
-        state: Current agent state with trend_data and image_url.
-
-    Returns:
-        Dictionary with blog_status and blog_title.
-    """
-    logger.info("---GENERATING AND SENDING BLOG EMAIL---")
-    trend_data = state.get("trend_data", "")
-    
-    # Get the generated image URL from state
-    image_url = state.get("image_url")
-    
-    if image_url:
-        logger.info("Blog email will include image URL: %s", image_url[:60] if image_url else "None")
-        # Set environment variable so blog_email_agent can access it
-        os.environ["BLOG_IMAGE_URL"] = image_url
-    else:
-        logger.warning("No image URL available for blog email")
-    
-    try:
-        # Pass richer context from the main agent to the blog sub-agent so the LLM
-        # can reuse insights, tweet text and any platform-specific content.
-        ctx = {
-            "tweet_text": state.get("tweet_text"),
-            "insight": state.get("insight"),
-            "platforms": {
-                "twitter": state.get("tweet_text"),
-                "facebook": state.get("facebook_text"),
-                "linkedin": state.get("linkedin_text")
-            }
-        }
-
-        blog_result = generate_and_send_blog(trend_data, image_url=image_url, context=ctx)
-
-        if "error" in blog_result:
-            logger.error("Blog generation failed: %s", blog_result["error"])
-            return {"blog_status": f"Failed: {blog_result['error']}", "blog_title": ""}
-        
-        logger.info("Blog email process completed successfully!")
-        logger.info("Blog title: %s", blog_result["blog_title"])
-        logger.info("Email status: %s", blog_result["email_status"])
-        logger.info("Image included: %s", blog_result.get("has_image", False))
-        
-        return {
-            "blog_status": blog_result["email_status"],
-            "blog_title": blog_result["blog_title"]
-        }
-        
-    except Exception as e:
-        logger.exception("Blog email node failed: %s", e)
-        return {"blog_status": f"Failed: {str(e)}", "blog_title": ""}
-
-
-def convert_to_telegram_crypto_post(trend_data: str, tweet_text: str) -> str:
-    """Parse trend data and convert to Telegram crypto market update.
-    
-    This sub-agent extracts crypto/token data from the research and structures
-    it into a Telegram-ready format with trends, top tokens, and market data.
-    No additional SERP/Tavily calls - reuses existing research.
-    No AI needed - uses template-based parsing.
-    
-    Args:
-        trend_data: Raw research data from SERPAPI/Tavily
-        tweet_text: Generated tweet for context
-        
-    Returns:
-        Formatted Telegram message with crypto data
-    """
-    logger.info("---CONVERTING TO TELEGRAM CRYPTO POST---")
-    
-    # Template-based crypto post (no AI needed)
-    # Extract potential crypto tokens from trend data
-    crypto_keywords = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "LINK", "UNI", 
-                       "AAVE", "CRV", "bitcoin", "ethereum", "defi", "crypto", "token"]
-    
-    found_tokens = []
-    trend_lower = trend_data.lower()
-    
-    for keyword in crypto_keywords[:10]:  # Check first 10
-        if keyword.lower() in trend_lower:
-            found_tokens.append(keyword.upper())
-    
-    # Remove duplicates and limit to 5
-    found_tokens = list(set(found_tokens))[:5]
-    
-    # Build structured Telegram post
-    if found_tokens:
-        tokens_list = " | ".join(found_tokens)
-        telegram_post = f"""🚀 DeFi Market Update
-
-📊 Trending: {tokens_list}
-
-📈 {tweet_text.split('#')[0].strip()}
-
-💡 Stay ahead with real-time DeFi insights and AI-powered automation.
-
-#DeFi #Crypto #YieldBot #FinancialFreedom"""
-    else:
-        # Fallback when no crypto tokens found — try to enrich with live market movers from CoinMarketCap
-        cmc_section = ""
-        try:
-            movers = get_top_gainers(5)
-            if movers:
-                top_lines = []
-                for t in movers:
-                    sym = t.get("symbol") or "?"
-                    pct = t.get("percent_change_24h")
-                    price = t.get("price_usd")
-                    if pct is None:
-                        continue
-                    pct_str = f"{pct:+.2f}%"
-                    price_str = f"${price:,.2f}" if isinstance(price, (int, float)) else ""
-                    top_lines.append(f"{sym} {pct_str} {price_str}")
-                if top_lines:
-                    cmc_section = "\n\nTop gainers (24h): \n" + " | ".join(top_lines) + "\n\nData provided by CoinMarketCap.com"
-        except Exception:
-            cmc_section = ""
-
-        telegram_post = f"""🚀 DeFi Market Update
-
-{tweet_text}{cmc_section}
-
-📊 Stay informed about the latest trends in DeFi and crypto.
-
-💡 AI-powered insights for smarter financial decisions.
-
-#DeFi #Crypto #YieldBot #FinancialFreedom"""
-
-    # Ensure it's not too long for Telegram (aim for 500-800 chars)
-    if len(telegram_post) > 1000:
-        telegram_post = telegram_post[:997] + "..."
-    
-    logger.info("Telegram post generated: %d chars", len(telegram_post))
-    return telegram_post
-
-
-def record_memory_outcomes_node(state: AgentState) -> dict:
-    """Record post outcomes to long-term memory for learning and improvement.
-    
-    This node runs at the END of the workflow to save:
-    - Content performance (engagement, success/failure per platform)
-    - Product mentions and their effectiveness
-    - Crypto insights from trading analysis
-    - Topic performance for future decision making
-    
-    Args:
-        state: Final agent state with all post results
-        
-    Returns:
-        Dictionary with memory_status
-    """
-    logger.info("---RECORDING OUTCOMES TO MEMORY---")
-    
-    try:
-        # Get memory store
-        memory = get_memory_store(user_id="fdwa_agent")
-        
-        # Extract AI strategy (if used)
-        ai_strategy = state.get("ai_strategy", {})
-        topic = ai_strategy.get("topic", "general")
-        products = [p.get("name") for p in ai_strategy.get("products", [])]
-        
-        # Determine success per platform based on status
-        platforms_success = {
-            "twitter": "Posted" in str(state.get("twitter_url", "")),
-            "facebook": "Posted" in str(state.get("facebook_status", "")),
-            "linkedin": "Posted" in str(state.get("linkedin_status", "")),
-            "instagram": "Posted" in str(state.get("instagram_status", "")),
-            "telegram": "Posted" in str(state.get("telegram_status", ""))
-        }
-        
-        # Calculate overall success (at least 3 platforms posted)
-        successful_posts = sum(platforms_success.values())
-        overall_success = successful_posts >= 3
-        
-        # Estimate engagement (would need API calls to get real engagement)
-        # For now, use a placeholder - you can enhance this with actual metrics
-        estimated_engagement = successful_posts * 10  # Rough estimate
-        
-        logger.info("📊 Post Performance:")
-        logger.info("   Topic: %s", topic)
-        logger.info("   Products: %s", products)
-        logger.info("   Platforms succeeded: %d/5", successful_posts)
-        logger.info("   Overall success: %s", overall_success)
-        
-        # Record performance for each platform
-        for platform, success in platforms_success.items():
-            if success:
-                memory.record_post_performance(
-                    topic=topic,
-                    platform=platform,
-                    engagement=estimated_engagement,
-                    success=True,
-                    metadata={
-                        "products": products,
-                        "tweet_text": state.get("tweet_text", "")[:100],
-                        "has_image": bool(state.get("image_url")),
-                        "blog_posted": bool(state.get("blog_title"))
-                    }
-                )
-                logger.info("   ✅ Recorded %s success", platform)
-        
-        # Record product mentions
-        for product_name in products:
-            for platform, success in platforms_success.items():
-                if success:
-                    memory.record_product_mention(
-                        product_name=product_name,
-                        platform=platform,
-                        engagement=estimated_engagement,
-                        conversion=False  # Would need conversion tracking
-                    )
-        
-        if products:
-            logger.info("   ✅ Recorded %d product mentions", len(products))
-        
-        # Record crypto insights if Telegram was used
-        if platforms_success.get("telegram") and "crypto" in topic.lower():
-            try:
-                # Get the actual analyzed tokens from state (only the TOP quality tokens)
-                crypto_analysis = state.get("crypto_analysis", {})
-                gainers = crypto_analysis.get("best_gainers", [])
-                losers = crypto_analysis.get("best_losers", [])
-                
-                # Save ONLY the picked tokens (not all analyzed tokens)
-                for token in gainers:
-                    if hasattr(token, 'symbol'):
-                        memory.record_crypto_insight(
-                            token_symbol=token.symbol,
-                            insight_type="gainer_pick",
-                            data={
-                                "topic": topic,
-                                "platform": "telegram",
-                                "price": token.price_usd,
-                                "percent_change_24h": token.percent_change_24h,
-                                "trade_score": token.trade_score,
-                                "profit_probability": token.profit_probability,
-                                "trading_signal": token.trading_signal,
-                                "timestamp": str(datetime.now())
-                            }
-                        )
-                        logger.debug(f"   💾 Saved gainer: {token.symbol}")
-                
-                for token in losers:
-                    if hasattr(token, 'symbol'):
-                        memory.record_crypto_insight(
-                            token_symbol=token.symbol,
-                            insight_type="loser_pick",
-                            data={
-                                "topic": topic,
-                                "platform": "telegram",
-                                "price": token.price_usd,
-                                "percent_change_24h": token.percent_change_24h,
-                                "trade_score": token.trade_score,
-                                "profit_probability": token.profit_probability,
-                                "trading_signal": token.trading_signal,
-                                "timestamp": str(datetime.now())
-                            }
-                        )
-                        logger.debug(f"   💾 Saved loser: {token.symbol}")
-                
-                if gainers or losers:
-                    logger.info("   ✅ Recorded %d crypto tokens (quality picks only)", len(gainers) + len(losers))
-            except Exception as e:
-                logger.debug("Crypto insight recording skipped: %s", e)
-        
-        # Use AI Decision Engine to record outcome
-        try:
-            decision_engine = get_decision_engine()
-            decision_engine.record_post_outcome(
-                topic=topic,
-                products=products,
-                platform="multi",  # Cross-platform post
-                engagement=estimated_engagement,
-                success=overall_success
-            )
-            logger.info("   ✅ Recorded outcome in AI Decision Engine")
-        except Exception as e:
-            logger.warning("AI Decision Engine recording failed: %s", e)
-        
-        logger.info("💾 Memory recording complete!")
-        logger.info("   Agent will learn from this post for future content decisions")
-        
-        return {
-            "memory_status": f"Recorded: {successful_posts} platforms, topic={topic}, success={overall_success}"
-        }
-        
-    except Exception as e:
-        logger.error("Memory recording failed: %s", e)
-        return {"memory_status": f"Failed: {str(e)}"}
-
-
-def post_telegram_node(state: AgentState) -> dict:
-    """Post to Telegram group using platform-specific content.
-    
-    Args:
-        state: Current agent state with telegram_message and image_url.
-        
-    Returns:
-        Dictionary with telegram_status and telegram_message.
-    """
-    logger.info("---POSTING TO TELEGRAM---")
-    
-    # Use platform-specific Telegram content generated earlier
-    telegram_message = state.get("telegram_message", "")
-    trend_data = state.get("trend_data", "")
-    tweet_text = state.get("tweet_text", "")
-    image_url = state.get("image_url", "")
-    
-    # Fallback to crypto conversion if no telegram_message (backward compatibility)
-    if not telegram_message:
-        if not tweet_text:
-            logger.warning("No content available for Telegram, skipping post")
-            return {
-                "telegram_status": "Skipped: No content",
-                "telegram_message": ""
-            }
-        telegram_message = convert_to_telegram_crypto_post(trend_data, tweet_text)
-    
-    try:
-        logger.info("Telegram message (platform-specific): %s", telegram_message[:100])
-        
-        # Telegram caption limit is 1024 chars - truncate proactively to prevent API errors
-        TELEGRAM_CAPTION_LIMIT = 1000  # Safe margin under 1024
-        safe_caption = telegram_message
-        if len(telegram_message) > TELEGRAM_CAPTION_LIMIT:
-            safe_caption = telegram_message[:TELEGRAM_CAPTION_LIMIT-3] + "..."
-            logger.info("Truncated Telegram caption from %d to %d chars", len(telegram_message), len(safe_caption))
-        
-        # Send to Telegram group
-        if image_url:
-            # Try sending with photo and truncated caption
-            result = telegram_agent.send_photo(
-                chat_id=telegram_agent.TELEGRAM_GROUP_USERNAME or telegram_agent.TELEGRAM_GROUP_CHAT_ID,
-                photo=image_url,
-                caption=safe_caption
-            )
-            if not result.get('success'):
-                # Fallback to text-only if image fails (use full message for text-only)
-                logger.warning("Image send failed, sending text only with full message")
-                result = telegram_agent.send_to_group(telegram_message)
-        else:
-            # Send text only (no limit for text messages)
-            result = telegram_agent.send_to_group(telegram_message)
-        
-        if result.get('success'):
-            msg_data = result.get('data', {}).get('result', {})
-            message_id = msg_data.get('message_id', 'N/A')
-            logger.info("✅ Telegram post successful: message_id=%s", message_id)
-            
-            # Record post to prevent duplicates
-            record_post(telegram_message, "telegram", post_id=str(message_id))
-            
-            return {
-                "telegram_status": f"Posted: message_id={message_id}",
-                "telegram_message": telegram_message
-            }
-        else:
-            error_msg = result.get('error', 'Unknown error')
-            logger.error("❌ Telegram post failed: %s", error_msg)
-            return {
-                "telegram_status": f"Failed: {error_msg}",
-                "telegram_message": telegram_message
-            }
-            
-    except Exception as e:
-        logger.exception("Telegram post error: %s", e)
-        return {
-            "telegram_status": f"Error: {str(e)}",
-            "telegram_message": ""
-        }
-
-
-def post_instagram_node(state: AgentState) -> dict:
-    """Post to Instagram with image and platform-specific caption.
-
-    Args:
-        state: Current agent state with instagram_caption and image_url.
-
-    Returns:
-        Dictionary with instagram_status.
-    """
-    logger.info("---POSTING TO INSTAGRAM---")
-    
-    # Use platform-specific Instagram caption generated earlier
-    instagram_caption = state.get("instagram_caption", "")
-    tweet_text = state.get("tweet_text", "")
-    image_url = state.get("image_url")
-
-    # Fallback to conversion if no instagram_caption (backward compatibility)
-    if not instagram_caption:
-        if not tweet_text or not image_url:
-            return {"instagram_status": "Skipped: No content or image"}
-        instagram_caption = convert_to_instagram_caption(tweet_text)
-    
-    if not image_url:
-        return {"instagram_status": "Skipped: No image"}
-    
-    logger.info("Instagram caption (platform-specific): %s", instagram_caption[:100])
-
-    try:
-        # Get Instagram user ID from environment
-        ig_user_id = os.getenv("INSTAGRAM_USER_ID")
-        
-        if not ig_user_id:
-            logger.error("Instagram user ID not configured")
-            return {"instagram_status": "Failed: No user ID", "instagram_caption": instagram_caption}
-
-        # Create media container
-        container_params = {
-            "ig_user_id": ig_user_id,
-            "image_url": image_url,
-            "caption": instagram_caption,
-            "content_type": "photo"
-        }
-
-        container_response = composio_client.tools.execute(
-            "INSTAGRAM_CREATE_MEDIA_CONTAINER",
-            container_params,
-            connected_account_id=os.getenv("INSTAGRAM_ACCOUNT_ID")
-        )
-
-        logger.info("Instagram container response: %s", container_response)
-        
-        if container_response.get("successful", False):
-            container_id = container_response.get("data", {}).get("id", "")
-            
-            # Wait for Instagram to process the media (required by Instagram API)
-            logger.info("Waiting 10 seconds for Instagram to process media...")
-            time.sleep(10)
-            
-            # Publish the container
-            publish_response = composio_client.tools.execute(
-                "INSTAGRAM_CREATE_POST",
-                {"ig_user_id": ig_user_id, "creation_id": container_id},
-                connected_account_id=os.getenv("INSTAGRAM_ACCOUNT_ID")
-            )
-            
-            if publish_response.get("successful", False):
-                post_id = publish_response.get("data", {}).get("id", "")
-                logger.info("Instagram posted successfully! Post ID: %s", post_id)
-                
-                # Record post to prevent duplicates
-                record_post(instagram_caption, "instagram", post_id=post_id, image_url=image_url)
-                
-                return {"instagram_status": "Posted", "instagram_caption": instagram_caption, "instagram_post_id": post_id}
-            else:
-                error_msg = publish_response.get("error", "Publish failed")
-                logger.error("Instagram publish failed: %s", error_msg)
-                return {"instagram_status": f"Failed: {error_msg}", "instagram_caption": instagram_caption}
-        else:
-            error_msg = container_response.get("error", "Container creation failed")
-            logger.error("Instagram container failed: %s", error_msg)
-            return {"instagram_status": f"Failed: {error_msg}", "instagram_caption": instagram_caption}
-
-    except Exception as e:
-        logger.exception("Instagram posting failed: %s", e)
-        return {"instagram_status": f"Failed: {e!s}", "instagram_caption": instagram_caption}
-
-
+@traceable(name="post_linkedin")
 def post_linkedin_node(state: AgentState) -> dict:
-    """Post to LinkedIn using platform-specific professional content.
-
-    Args:
-        state: Current agent state with linkedin_text and image_url.
-
-    Returns:
-        Dictionary with linkedin_status.
-    """
-    logger.info("---POSTING TO LINKEDIN---")
-    
-    # Use platform-specific LinkedIn content generated earlier
-    linkedin_text = state.get("linkedin_text", "")
-    tweet_text = state.get("tweet_text", "")
-    state.get("image_url")
-
-    # Fallback to conversion if no linkedin_text (backward compatibility)
-    if not linkedin_text:
-        if not tweet_text:
-            return {"linkedin_status": "Skipped: No content"}
-        linkedin_text = convert_to_linkedin_post(tweet_text)
-    
-    logger.info("LinkedIn post (platform-specific): %s", linkedin_text[:100])
-
-    try:
-        # Use environment variables for LinkedIn credentials (ACTIVE connection)
-        linkedin_account_id = os.getenv("LINKEDIN_ACCOUNT_ID", "ca_AxYGMiT-jtOU")
-        author_urn = os.getenv("LINKEDIN_AUTHOR_URN", "urn:li:person:980H7U657m")
-        
-        logger.info("Using LinkedIn account: %s", linkedin_account_id)
-        logger.info("Using author URN: %s", author_urn)
-
-        linkedin_params = {
-            "author": author_urn,
-            "commentary": linkedin_text,
-            "visibility": "PUBLIC"
-        }
-        
-        # Note: LinkedIn text posts only - image support requires different API endpoints
-
-        linkedin_response = composio_client.tools.execute(
-            "LINKEDIN_CREATE_LINKED_IN_POST",
-            linkedin_params,
-            connected_account_id=linkedin_account_id
-        )
-
-        logger.info("LinkedIn response: %s", linkedin_response)
-        
-        if linkedin_response.get("successful", False):
-            logger.info("LinkedIn posted successfully!")
-            
-            # Record post to prevent duplicates
-            record_post(linkedin_text, "linkedin")
-            
-            return {"linkedin_status": "Posted", "linkedin_text": linkedin_text}
-        else:
-            error_msg = linkedin_response.get("error", "Unknown error")
-            logger.error("LinkedIn post failed: %s", error_msg)
-            return {"linkedin_status": f"Failed: {error_msg}", "linkedin_text": linkedin_text}
-
-    except Exception as e:
-        logger.exception("LinkedIn posting failed: %s", e)
-        return {"linkedin_status": f"Failed: {e!s}", "linkedin_text": linkedin_text}
+    logger.info("──── POST: LINKEDIN ────")
+    _broadcast_sync("start_step", "post_linkedin", "Publishing to LinkedIn…")
+    result = linkedin_agent.run(state)
+    _broadcast_sync("complete_step", "post_linkedin", result)
+    return result
 
 
-def post_social_media_node(state: AgentState) -> dict:
-    """Post the generated content to both Twitter and Facebook using Composio.
-
-    Args:
-        state: Current agent state with tweet_text and image_url.
-
-    Returns:
-        Dictionary with twitter_url and facebook_status.
-    """
-    logger.info("---POSTING TO SOCIAL MEDIA---")
-    _broadcast_sync("start_step", "post_social", "Publishing content to Twitter and Facebook")
-    
-    tweet_text = state.get("tweet_text")
-    twitter_text = tweet_text
-    image_url = state.get("image_url")
-    image_path = state.get("image_path")
-
-    if not tweet_text:
-        _broadcast_sync("error", "Tweet text is empty, skipping post")
-        return {"error": "Tweet text is empty, skipping post."}
-
-    if image_url:
-        logger.info("Image URL: %s", image_url)
-    else:
-        logger.info("No image generated")
-
-    if image_path:
-        logger.info("Image Path: %s", image_path)
-    else:
-        logger.info("No image file")
-
-    # Ensure tweet is within 280 character limit for Twitter
-    if not twitter_text:
-        twitter_text = tweet_text or ""
-    if len(twitter_text) > 280:
-        twitter_text = twitter_text[:277] + "..."
-        logger.info("Twitter text truncated to 280 characters")
-
-    results = {}
-
-    # Post to Twitter with image support
-    logger.info("Posting to Twitter: %s", twitter_text)
-    _broadcast_sync("update", "Publishing to Twitter...")
-    try:
-        twitter_params = {"text": twitter_text}
-        
-        # Upload media if image is available
-        if image_url:
-            logger.info("Uploading image to Twitter: %s", image_url)
-            try:
-                # Download image locally first
-                local_image_path = _download_image_from_url(image_url)
-                
-                if local_image_path:
-                    # Make sure path is absolute
-                    local_image_path = os.path.abspath(local_image_path)
-                    logger.warning("Local image path: %s", local_image_path)
-                    logger.warning("File exists: %s", os.path.exists(local_image_path))
-                    
-                    media_upload_response = composio_client.tools.execute(
-                        "TWITTER_UPLOAD_MEDIA",
-                        {
-                            "media": local_image_path,
-                            "media_category": "tweet_image"
-                        },
-                        connected_account_id=os.getenv("TWITTER_ACCOUNT_ID")
-                    )
-                    
-                    logger.warning("Twitter media upload response: %s", media_upload_response)
-                    
-                    if media_upload_response.get("successful", False):
-                        logger.warning("Full media upload response: %s", media_upload_response)
-                        # Always extract the media ID from the correct nested field
-                        nested_data = media_upload_response.get("data", {})
-                        if isinstance(nested_data, dict):
-                            media_data = nested_data.get("data", {})
-                        else:
-                            media_data = {}
-                        logger.warning("media_data: %s", media_data)
-                        logger.warning("media_data keys: %s", list(media_data.keys()) if isinstance(media_data, dict) else "not dict")
-                        media_id = media_data.get("id")
-                        logger.warning("Extracted media_id from nested response: %s", media_id)
-                        if media_id and str(media_id) not in ["{}", "None", ""]:
-                            twitter_params["media_media_ids"] = [str(media_id)]
-                            logger.warning("Twitter media uploaded successfully, ID: %s", media_id)
-                            logger.warning("Twitter params now include media: %s", twitter_params)
-                        else:
-                            logger.warning("No media ID returned from Twitter upload. media_id: %s, str(media_id): %s", media_id, str(media_id))
-                    else:
-                        logger.error("Twitter media upload failed: %s", media_upload_response.get("error"))
-                else:
-                    logger.error("Failed to download image from URL: %s", image_url)
-                    
-            except Exception as media_e:
-                logger.exception("Twitter media upload error: %s", media_e)
-                # Continue with text-only post if media upload fails
-        
-        # Create the post (with or without media)
-        twitter_response = composio_client.tools.execute(
-            "TWITTER_CREATION_OF_A_POST",
-            twitter_params,
-            connected_account_id=os.getenv("TWITTER_ACCOUNT_ID")
-        )
-        
-        # Extract post ID from nested Composio response structure
-        twitter_data = twitter_response.get("data", {})
-        # Try nested structure first (new Composio format): response['data']['data']['id']
-        if isinstance(twitter_data, dict) and "data" in twitter_data:
-            nested_data = twitter_data.get("data", {})
-            twitter_id = nested_data.get("id", "unknown") if isinstance(nested_data, dict) else "unknown"
-        else:
-            # Fallback to direct structure: response['data']['id']
-            twitter_id = twitter_data.get("id", "unknown")
-        
-        # If still unknown, check successful flag and use generic success message
-        if twitter_id == "unknown" and twitter_response.get("successful", False):
-            logger.info("Twitter post succeeded but ID not in expected format. Response keys: %s", list(twitter_data.keys()) if isinstance(twitter_data, dict) else "not dict")
-        
-        twitter_url = (
-            f"https://twitter.com/user/status/{twitter_id}"
-            if twitter_id != "unknown"
-            else "Twitter posted successfully"
-        )
-        results["twitter_url"] = twitter_url
-        results["twitter_post_id"] = twitter_id
-        logger.info("Twitter posted successfully! URL: %s", twitter_url)
-        logger.info("Twitter Post ID: %s", twitter_id)
-        _broadcast_sync("update", f"✓ Twitter posted: {twitter_url}")
-        
-        # Record post to prevent duplicates
-        record_post(twitter_text, "twitter", post_id=twitter_id, image_url=image_url)
-        
-    except Exception as e:
-        error_msg = str(e)
-        # Check for expired account
-        if "EXPIRED state" in error_msg or "410" in error_msg:
-            logger.error("⚠️  Twitter account expired! Reconnect at: https://app.composio.dev/")
-            _broadcast_sync("error", "Twitter account expired - needs reconnection at https://app.composio.dev/")
-            results["twitter_url"] = "Twitter failed: Account expired - reconnect at https://app.composio.dev/"
-        else:
-            logger.exception("Twitter posting failed: %s", e)
-            _broadcast_sync("error", f"Twitter error: {error_msg}")
-            results["twitter_url"] = f"Twitter failed: {e!s}"
-    
-    # Post to Facebook (use Facebook-specific content)
-    facebook_text = state.get("facebook_text") or tweet_text  # Fall back to tweet if not set
-    logger.info("Posting to Facebook")
-    logger.info("Message: %s", facebook_text[:100])
-    logger.info("Page ID: %s", os.getenv("FACEBOOK_PAGE_ID"))
-    logger.info("Image File: %s", image_path if image_path else "None")
-    logger.info("Published: True")
-    try:
-        facebook_params = {
-            "page_id": os.getenv("FACEBOOK_PAGE_ID"),
-            "message": facebook_text,
-            "published": True,
-        }
-
-        # Add photo by downloading from URL or using local path
-        if image_url and image_url.strip():
-            if image_url.startswith("file:///"):
-                # Local file from Hugging Face
-                local_image_path = image_url.replace("file:///", "").replace("/", chr(92))
-                if os.path.exists(local_image_path):
-                    facebook_params["photo"] = local_image_path
-                    logger.info("Facebook photo attached using HF local path: %s", local_image_path)
-                    facebook_tool = "FACEBOOK_CREATE_PHOTO_POST"
-                else:
-                    logger.error("Local image file not found: %s", local_image_path)
-                    facebook_tool = "FACEBOOK_CREATE_POST"
-            elif image_url.startswith("https://"):
-                # Remote URL (legacy Gemini)
-                local_image_path = _download_image_from_url(image_url)
-                if local_image_path:
-                    facebook_params["photo"] = local_image_path
-                    logger.info("Facebook photo attached using downloaded path: %s", local_image_path)
-                    facebook_tool = "FACEBOOK_CREATE_PHOTO_POST"
-                else:
-                    logger.error("Failed to download image from URL: %s", image_url)
-                    facebook_tool = "FACEBOOK_CREATE_POST"
-            else:
-                logger.info("Unknown image URL format, posting text-only to Facebook")
-                facebook_tool = "FACEBOOK_CREATE_POST"
-        else:
-            logger.info("No valid image URL available, posting text-only to Facebook")
-            facebook_tool = "FACEBOOK_CREATE_POST"
-
-        facebook_response = composio_client.tools.execute(
-            facebook_tool,
-            facebook_params,
-            connected_account_id="ca_ztimDVH28syB"
-        )
-
-        # Composio response structure: {"data": {...}, "successful": bool, "error": null}
-        logger.info("Facebook response: %s", facebook_response)
-        
-        # Check if post was successful
-        if not facebook_response.get("successful", False):
-            error_msg = facebook_response.get("error", "Unknown error")
-            logger.error("Facebook post failed: %s", error_msg)
-            results["facebook_status"] = f"Failed: {error_msg}"
-            results["facebook_post_id"] = ""
-            return results
-        
-        # Extract data from Composio response
-        # Structure: {"data": {"response_data": {"id": "...", "post_id": "..."}}}
-        facebook_data = facebook_response.get("data", {})
-        response_data = facebook_data.get("response_data", {})
-        
-        # Use post_id (full format: PAGE_ID_POST_ID) for commenting
-        facebook_post_id = response_data.get("post_id", "")
-        
-        logger.info("Facebook posted successfully!")
-        logger.info("Post ID: %s", facebook_post_id)
-        _broadcast_sync("update", f"✓ Facebook posted: {facebook_post_id}")
-        
-        results["facebook_status"] = f"Posted: {facebook_post_id}"
-        results["facebook_post_id"] = facebook_post_id
-        
-        # Record post to prevent duplicates (use Facebook-specific content)
-        record_post(facebook_text, "facebook", post_id=facebook_post_id, image_url=image_url)
-        
-    except Exception as e:
-        error_msg = str(e)
-        # Check for expired account
-        if "EXPIRED state" in error_msg or "410" in error_msg:
-            logger.error("⚠️  Facebook account expired! Reconnect at: https://app.composio.dev/")
-            _broadcast_sync("error", "Facebook account expired - needs reconnection at https://app.composio.dev/")
-            results["facebook_status"] = "Failed: Account expired - reconnect at https://app.composio.dev/"
-        else:
-            logger.exception("Facebook posting failed: %s", e)
-            _broadcast_sync("error", f"Facebook error: {error_msg}")
-            results["facebook_status"] = f"Failed: {e!s}"
-    
-    # Complete social media posting step
-    _broadcast_sync("complete_step", "post_social", results)
-    return results
+@traceable(name="post_telegram")
+def post_telegram_node(state: AgentState) -> dict:
+    """Post to Telegram — text-only crypto data, no images."""
+    logger.info("──── POST: TELEGRAM ────")
+    _broadcast_sync("start_step", "post_telegram", "Publishing to Telegram…")
+    result = telegram_agent.run(state)
+    _broadcast_sync("complete_step", "post_telegram", result)
+    return result
 
 
-# Define the autonomous graph structure
+@traceable(name="post_instagram")
+def post_instagram_node(state: AgentState) -> dict:
+    logger.info("──── POST: INSTAGRAM ────")
+    _broadcast_sync("start_step", "post_instagram", "Publishing to Instagram…")
+    result = instagram_agent.run(state)
+    _broadcast_sync("complete_step", "post_instagram", result)
+    return result
+
+
+# ── Engagement nodes ────────────────────────────────────────────────────
+
+@traceable(name="monitor_instagram_comments")
+def monitor_ig_comments_node(state: AgentState) -> dict:
+    logger.info("──── IG COMMENTS ────")
+    return comment_agent.monitor_instagram(state)
+
+
+@traceable(name="reply_twitter")
+def reply_twitter_node(state: AgentState) -> dict:
+    logger.info("──── TWITTER REPLY ────")
+    return twitter_agent.reply_to_own_tweet(state)
+
+
+@traceable(name="comment_facebook")
+def comment_facebook_node(state: AgentState) -> dict:
+    logger.info("──── FB COMMENT ────")
+    return facebook_agent.comment_on_post(state)
+
+
+# ── Blog + Memory ──────────────────────────────────────────────────────
+
+@traceable(name="generate_blog")
+def generate_blog_node(state: AgentState) -> dict:
+    logger.info("──── BLOG ────")
+    _broadcast_sync("start_step", "generate_blog", "Generating blog email…")
+    result = blog_agent.run(state)
+    _broadcast_sync("complete_step", "generate_blog", result)
+    return result
+
+
+@traceable(name="record_memory")
+def record_memory_node(state: AgentState) -> dict:
+    logger.info("──── MEMORY ────")
+    return memory_agent.run(state)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# GRAPH DEFINITION
+# ═══════════════════════════════════════════════════════════════════════
+
 workflow = StateGraph(AgentState)
 
-# Add the nodes
+# Nodes
 workflow.add_node("research_trends", research_trends_node)
-workflow.add_node("generate_content", generate_tweet_node)
+workflow.add_node("generate_content", generate_content_node)
 workflow.add_node("generate_image", generate_image_node)
-workflow.add_node("post_social_media", post_social_media_node)
+workflow.add_node("post_twitter", post_twitter_node)
+workflow.add_node("post_facebook", post_facebook_node)
 workflow.add_node("post_linkedin", post_linkedin_node)
-workflow.add_node("post_instagram", post_instagram_node)
 workflow.add_node("post_telegram", post_telegram_node)
-workflow.add_node("monitor_instagram_comments", monitor_instagram_comments_node)
-workflow.add_node("reply_to_twitter", reply_to_twitter_node)
-workflow.add_node("comment_on_facebook", comment_on_facebook_node)
-workflow.add_node("generate_blog_email", generate_blog_email_node)
-workflow.add_node("record_memory", record_memory_outcomes_node)  # ✅ NEW: Memory recording
+workflow.add_node("post_instagram", post_instagram_node)
+workflow.add_node("monitor_ig_comments", monitor_ig_comments_node)
+workflow.add_node("reply_twitter", reply_twitter_node)
+workflow.add_node("comment_facebook", comment_facebook_node)
+workflow.add_node("generate_blog", generate_blog_node)
+workflow.add_node("record_memory", record_memory_node)
 
-# Set the entrypoint
+# Entry point
 workflow.set_entry_point("research_trends")
 
-# Add edges to define the autonomous flow
+# Edges — sequential flow
 workflow.add_edge("research_trends", "generate_content")
 workflow.add_edge("generate_content", "generate_image")
-workflow.add_edge("generate_image", "post_social_media")
-workflow.add_edge("post_social_media", "post_linkedin")  # ✅ LinkedIn ENABLED
+workflow.add_edge("generate_image", "post_twitter")
+workflow.add_edge("post_twitter", "post_facebook")
+workflow.add_edge("post_facebook", "post_linkedin")
 workflow.add_edge("post_linkedin", "post_telegram")
 workflow.add_edge("post_telegram", "post_instagram")
-workflow.add_edge("post_instagram", "monitor_instagram_comments")
-workflow.add_edge("monitor_instagram_comments", "reply_to_twitter")
-workflow.add_edge("reply_to_twitter", "comment_on_facebook")
-workflow.add_edge("comment_on_facebook", "generate_blog_email")
-workflow.add_edge("generate_blog_email", "record_memory")  # ✅ NEW: Record memory
-workflow.add_edge("record_memory", "__end__")  # ✅ NEW: Memory → End
+workflow.add_edge("post_instagram", "monitor_ig_comments")
+workflow.add_edge("monitor_ig_comments", "reply_twitter")
+workflow.add_edge("reply_twitter", "comment_facebook")
+workflow.add_edge("comment_facebook", "generate_blog")
+workflow.add_edge("generate_blog", "record_memory")
+workflow.add_edge("record_memory", "__end__")
 
-# Compile the graph
+# Compile
 graph = workflow.compile()
 
 
-# Autonomous execution
+# ═══════════════════════════════════════════════════════════════════════
+# CLI
+# ═══════════════════════════════════════════════════════════════════════
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    logger.info("Starting FDWA Autonomous Social Media AI Agent...")
-
-    # No manual input needed - fully autonomous
-    inputs = {}
+    logger.info("Starting FDWA Autonomous Social Media AI Agent (v2 — restructured)…")
 
     try:
-        final_state = graph.invoke(inputs)
+        final = graph.invoke({})
 
-        logger.info("\nAUTONOMOUS EXECUTION COMPLETE")
-        logger.info("Tweet: %s", final_state.get("tweet_text", "N/A"))
-        logger.info("Image: %s", final_state.get("image_url", "N/A"))
-        logger.info("Twitter: %s", final_state.get("twitter_url", "N/A"))
-        logger.info("Facebook: %s", final_state.get("facebook_status", "N/A"))
-        logger.info("LinkedIn: %s", final_state.get("linkedin_status", "N/A"))
-        logger.info("Instagram: %s", final_state.get("instagram_status", "N/A"))
-        logger.info("Instagram Comments: %s", final_state.get("instagram_comment_status", "N/A"))
-        logger.info("Telegram: %s", final_state.get("telegram_status", "N/A"))
-        logger.info("Twitter Reply: %s", final_state.get("twitter_reply_status", "N/A"))
-        logger.info("Facebook Comment: %s", final_state.get("comment_status", "N/A"))
-        logger.info("Blog Email: %s", final_state.get("blog_status", "N/A"))
-        logger.info("Blog Title: %s", final_state.get("blog_title", "N/A"))
-        logger.info("Memory: %s", final_state.get("memory_status", "N/A"))  # ✅ NEW: Memory status
+        logger.info("\n════ EXECUTION COMPLETE ════")
+        for key in [
+            "tweet_text", "image_url", "twitter_url", "facebook_status",
+            "linkedin_status", "instagram_status", "telegram_status",
+            "instagram_comment_status", "twitter_reply_status", "comment_status",
+            "blog_status", "blog_title", "memory_status",
+        ]:
+            logger.info("  %s: %s", key, str(final.get(key, "N/A"))[:120])
 
-        if final_state.get("error"):
-            logger.error("Error: %s", final_state.get("error"))
+        if final.get("error"):
+            logger.error("  Error: %s", final["error"])
 
     except Exception:
         logger.exception("Agent execution failed")

@@ -24,65 +24,36 @@
             <nav>
                 <div class="nav-section">
                     <div class="nav-title">Main</div>
-                    <div class="nav-item active" onclick="showSection('dashboard')">
+                    <div class="nav-item active" data-section="dashboard">
                         <span class="nav-icon">📊</span>
                         <span>Dashboard</span>
                         <span class="status-indicator status-active"></span>
                     </div>
-                    <div class="nav-item" onclick="showSection('agents')">
+                    <div class="nav-item" data-section="agents">
                         <span class="nav-icon">🤖</span>
                         <span>AI Agents</span>
                     </div>
-                    <div class="nav-item" onclick="showSection('terminal')">
+                    <div class="nav-item" data-section="chat">
+                        <span class="nav-icon">💬</span>
+                        <span>Chat</span>
+                    </div>
+                    <div class="nav-item" data-section="terminal">
                         <span class="nav-icon">💻</span>
                         <span>Terminal</span>
                     </div>
-                    <div class="nav-item" onclick="showSection('connections')">
-                        <span class="nav-icon">🔌</span>
-                        <span>Connections</span>
-                    </div>
                 </div>
 
                 <div class="nav-section">
-                    <div class="nav-title">Social Platforms</div>
-                    <div class="nav-item">
-                        <span class="nav-icon">🐦</span>
-                        <span>Twitter</span>
-                        <span class="status-indicator status-active"></span>
+                    <div class="nav-title">Control</div>
+                    <div class="nav-item" data-section="scheduler">
+                        <span class="nav-icon">⏰</span>
+                        <span>Scheduler</span>
                     </div>
-                    <div class="nav-item">
-                        <span class="nav-icon">📘</span>
-                        <span>Facebook</span>
-                        <span class="status-indicator status-active"></span>
+                    <div class="nav-item" data-section="memory">
+                        <span class="nav-icon">🧠</span>
+                        <span>Memory / DB</span>
                     </div>
-                    <div class="nav-item">
-                        <span class="nav-icon">💼</span>
-                        <span>LinkedIn</span>
-                        <span class="status-indicator status-active"></span>
-                    </div>
-                    <div class="nav-item">
-                        <span class="nav-icon">📸</span>
-                        <span>Instagram</span>
-                        <span class="status-indicator status-active"></span>
-                    </div>
-                    <div class="nav-item">
-                        <span class="nav-icon">💬</span>
-                        <span>Telegram</span>
-                        <span class="status-indicator status-active"></span>
-                    </div>
-                </div>
-
-                <div class="nav-section">
-                    <div class="nav-title">Tools</div>
-                    <div class="nav-item">
-                        <span class="nav-icon">📧</span>
-                        <span>Blog/Email</span>
-                    </div>
-                    <div class="nav-item">
-                        <span class="nav-icon">🎨</span>
-                        <span>Image Gen</span>
-                    </div>
-                    <div class="nav-item">
+                    <div class="nav-item" data-section="settings">
                         <span class="nav-icon">⚙️</span>
                         <span>Settings</span>
                     </div>
@@ -97,201 +68,175 @@
                 <div>
                     <h1 class="header-title">> FDWA_AI_AGENT_SYSTEM_</h1>
                     <p style="color: var(--text-muted); font-size: 14px; margin-top: 4px;">
-                        Autonomous Social Media Automation • <span id="systemTime">00:00:00</span>
+                        Autonomous Social Media Automation &bull; <span id="systemTime">00:00:00</span>
                     </p>
                 </div>
                 <div class="header-controls">
                     <button class="btn btn-secondary" onclick="loadStatus()">
-                        <span>🔄</span>
-                        <span>Refresh</span>
+                        <span>🔄</span> <span>Refresh</span>
                     </button>
                     <button class="btn btn-primary" id="runBtn" onclick="runAgent()">
-                        <span>▶️</span>
-                        <span>Run Agent</span>
+                        <span>▶️</span> <span>Run All Agents</span>
                     </button>
                 </div>
             </header>
 
-            <!-- Dashboard Section -->
+            <!-- ============== DASHBOARD ============== -->
             <section id="section-dashboard">
-                <!-- Stats Grid -->
                 <div class="dashboard-grid">
+                    <!-- System Status -->
                     <div class="card">
                         <div class="card-header">
-                            <div class="card-title">
-                                <span class="card-icon">⚡</span>
-                                <span>System Status</span>
-                            </div>
+                            <div class="card-title"><span class="card-icon">⚡</span><span>System Status</span></div>
                             <span class="card-badge badge-success" id="systemStatus">ONLINE</span>
                         </div>
                         <div class="card-content">
-                            <div class="stat-row">
-                                <span class="stat-label">Last Run</span>
-                                <span class="stat-value" id="lastRun">Never</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">Next Scheduled</span>
-                                <span class="stat-value" id="nextRun">In 6 hours</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">Total Posts</span>
-                                <span class="stat-value" id="totalPosts">0</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">Success Rate</span>
-                                <span class="stat-value" id="successRate">100%</span>
-                            </div>
+                            <div class="stat-row"><span class="stat-label">Last Run</span><span class="stat-value" id="lastRun">Never</span></div>
+                            <div class="stat-row"><span class="stat-label">Next Scheduled</span><span class="stat-value" id="nextRun">&mdash;</span></div>
+                            <div class="stat-row"><span class="stat-label">Scheduler</span><span class="stat-value" id="schedulerBadge">&mdash;</span></div>
                         </div>
                     </div>
-
+                    <!-- Active Agents -->
                     <div class="card">
                         <div class="card-header">
-                            <div class="card-title">
-                                <span class="card-icon">🎯</span>
-                                <span>Active Agents</span>
-                            </div>
-                            <span class="card-badge badge-success">6 RUNNING</span>
+                            <div class="card-title"><span class="card-icon">🎯</span><span>Active Agents</span></div>
+                            <span class="card-badge badge-success" id="agentCountBadge">6 READY</span>
                         </div>
-                        <div class="card-content">
-                            <div class="stat-row">
-                                <span class="stat-label">🐦 Twitter Agent</span>
-                                <span class="stat-value" style="color: var(--success);">●</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">📘 Facebook Agent</span>
-                                <span class="stat-value" style="color: var(--success);">●</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">💼 LinkedIn Agent</span>
-                                <span class="stat-value" style="color: var(--success);">●</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">📸 Instagram Agent</span>
-                                <span class="stat-value" style="color: var(--success);">●</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">💬 Telegram Agent</span>
-                                <span class="stat-value" style="color: var(--success);">●</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">📧 Blog/Email Agent</span>
-                                <span class="stat-value" style="color: var(--success);">●</span>
-                            </div>
-                        </div>
+                        <div class="card-content" id="agentStatusList"></div>
                     </div>
-
+                    <!-- Integrations -->
                     <div class="card">
                         <div class="card-header">
-                            <div class="card-title">
-                                <span class="card-icon">🔌</span>
-                                <span>Integrations</span>
-                            </div>
+                            <div class="card-title"><span class="card-icon">🔌</span><span>Integrations</span></div>
                             <span class="card-badge badge-success">CONNECTED</span>
                         </div>
-                        <div class="card-content">
-                            <div class="stat-row">
-                                <span class="stat-label">LangChain</span>
-                                <span class="stat-value" style="color: var(--success);">✓</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">Composio API</span>
-                                <span class="stat-value" style="color: var(--success);">✓</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">Hugging Face</span>
-                                <span class="stat-value" style="color: var(--success);">✓</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">LangSmith</span>
-                                <span class="stat-value" style="color: var(--success);">✓</span>
-                            </div>
-                            <div class="stat-row">
-                                <span class="stat-label">SERPAPI</span>
-                                <span class="stat-value" style="color: var(--success);">✓</span>
-                            </div>
+                        <div class="card-content" id="integrationsCard">
+                            <div class="stat-row"><span class="stat-label">LangChain</span><span class="stat-value" style="color:var(--success);">✓</span></div>
+                            <div class="stat-row"><span class="stat-label">Composio API</span><span class="stat-value" style="color:var(--success);">✓</span></div>
+                            <div class="stat-row"><span class="stat-label">Astra DB</span><span class="stat-value" id="astraIntBadge" style="color:var(--text-muted);">…</span></div>
                         </div>
                     </div>
                 </div>
 
-                <!-- AI Agents Grid -->
-                <h2 style="font-size: 20px; margin-bottom: 20px; color: var(--text-primary);">
-                    <span style="color: var(--terminal-green);">></span> AI Agent Collection
+                <!-- Agent Grid -->
+                <h2 style="font-size:20px;margin-bottom:20px;color:var(--text-primary);">
+                    <span style="color:var(--terminal-green);">></span> AI Agent Collection
                 </h2>
-                <div class="agent-grid" id="agentGrid">
-                    <!-- Agents will be populated by JavaScript -->
-                </div>
+                <div class="agent-grid" id="agentGrid"></div>
 
                 <!-- Latest Run Results -->
-                <div class="card" id="resultsCard" style="display: none; margin-top: 24px;">
+                <div class="card" id="resultsCard" style="display:none;margin-top:24px;">
                     <div class="card-header">
-                        <div class="card-title">
-                            <span class="card-icon">📊</span>
-                            <span>Latest Run Results</span>
-                        </div>
+                        <div class="card-title"><span class="card-icon">📊</span><span>Latest Run Results</span></div>
                         <span class="card-badge badge-success">COMPLETED</span>
                     </div>
                     <div class="card-content">
-                        <div style="margin-bottom: 20px;">
-                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">GENERATED IMAGE</div>
-                            <img id="generatedImage" style="width: 100%; border-radius: 12px; display: none;" />
+                        <div style="margin-bottom:20px;">
+                            <div style="color:var(--text-muted);margin-bottom:8px;font-size:12px;">GENERATED IMAGE</div>
+                            <img id="generatedImage" style="width:100%;border-radius:12px;display:none;" />
                         </div>
-                        <div style="margin-bottom: 16px;">
-                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">🐦 TWITTER POST</div>
-                            <div id="twitterPost" style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; color: var(--text-primary); line-height: 1.6;"></div>
-                        </div>
-                        <div style="margin-bottom: 16px;">
-                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">� FACEBOOK POST</div>
-                            <div id="facebookPost" style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; color: var(--text-primary); line-height: 1.6;"></div>
-                        </div>
-                        <div style="margin-bottom: 16px;">
-                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">💼 LINKEDIN POST</div>
-                            <div id="linkedinPost" style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; color: var(--text-primary); line-height: 1.6;"></div>
-                        </div>
-                        <div style="margin-bottom: 16px;">
-                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">💬 TELEGRAM POST</div>
-                            <div id="telegramPost" style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; color: var(--text-primary); line-height: 1.6;"></div>
-                        </div>
-                        <div>
-                            <div style="color: var(--text-muted); margin-bottom: 8px; font-size: 12px;">📸 INSTAGRAM CAPTION</div>
-                            <div id="instagramPost" style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; color: var(--text-primary); line-height: 1.6;"></div>
-                        </div>
+                        <div class="result-block"><div class="result-label">🐦 TWITTER POST</div><div id="twitterPost" class="result-text"></div></div>
+                        <div class="result-block"><div class="result-label">📘 FACEBOOK POST</div><div id="facebookPost" class="result-text"></div></div>
+                        <div class="result-block"><div class="result-label">💼 LINKEDIN POST</div><div id="linkedinPost" class="result-text"></div></div>
+                        <div class="result-block"><div class="result-label">💬 TELEGRAM POST</div><div id="telegramPost" class="result-text"></div></div>
+                        <div class="result-block"><div class="result-label">📸 INSTAGRAM CAPTION</div><div id="instagramPost" class="result-text"></div></div>
                     </div>
                 </div>
             </section>
 
-            <!-- Terminal Section -->
-            <section id="section-terminal" style="display: none;">
+            <!-- ============== AGENTS ============== -->
+            <section id="section-agents" style="display:none;">
+                <h2 class="section-heading"><span style="color:var(--terminal-green);">></span> Individual Agent Controls</h2>
+                <p style="color:var(--text-secondary);margin-bottom:24px;">Run any agent independently. Research must run first to provide insights for other agents.</p>
+                <div class="agent-controls-grid" id="agentControlsGrid"></div>
+                <div class="card" id="singleAgentResult" style="display:none;margin-top:24px;">
+                    <div class="card-header">
+                        <div class="card-title"><span class="card-icon">📋</span><span>Agent Output</span></div>
+                    </div>
+                    <div class="card-content"><pre id="singleAgentOutput" style="white-space:pre-wrap;color:var(--text-primary);font-size:13px;max-height:400px;overflow-y:auto;"></pre></div>
+                </div>
+            </section>
+
+            <!-- ============== CHAT ============== -->
+            <section id="section-chat" style="display:none;">
+                <div class="card chat-card">
+                    <div class="card-header">
+                        <div class="card-title"><span class="card-icon">💬</span><span>Chat with FDWA AI</span></div>
+                    </div>
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="chat-msg chat-msg-system">Ask me anything about FDWA, crypto trends, social media strategy, or AI automation.</div>
+                    </div>
+                    <div class="chat-input-row">
+                        <input type="text" id="chatInput" class="chat-input" placeholder="Type a message…" autocomplete="off" />
+                        <button class="btn btn-primary chat-send-btn" id="chatSendBtn" onclick="sendChat()">Send</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============== TERMINAL ============== -->
+            <section id="section-terminal" style="display:none;">
                 <div class="card">
                     <div class="card-header">
-                        <div class="card-title">
-                            <span class="card-icon">💻</span>
-                            <span>System Terminal</span>
-                        </div>
-                        <button class="btn btn-secondary" onclick="clearTerminal()" style="padding: 8px 16px; font-size: 12px;">
-                            Clear
-                        </button>
+                        <div class="card-title"><span class="card-icon">💻</span><span>System Terminal</span></div>
+                        <button class="btn btn-secondary" onclick="clearTerminal()" style="padding:8px 16px;font-size:12px;">Clear</button>
                     </div>
                     <div class="terminal">
                         <div class="terminal-header">
                             <span class="terminal-dot dot-red"></span>
                             <span class="terminal-dot dot-yellow"></span>
                             <span class="terminal-dot dot-green"></span>
-                            <span style="color: var(--terminal-green); margin-left: 12px; font-size: 12px;">FDWA_AGENT_TERMINAL v2.0</span>
+                            <span style="color:var(--terminal-green);margin-left:12px;font-size:12px;">FDWA_AGENT_TERMINAL v2.0</span>
                         </div>
                         <div id="terminalOutput">
-                            <div class="terminal-line">
-                                <span class="terminal-prompt">$</span>
-                                <span class="terminal-text">System initialized...</span>
-                            </div>
-                            <div class="terminal-line">
-                                <span class="terminal-prompt">$</span>
-                                <span class="terminal-text terminal-success">All agents loaded successfully</span>
-                            </div>
-                            <div class="terminal-line">
-                                <span class="terminal-prompt">$</span>
-                                <span class="terminal-text">Waiting for commands...</span>
-                            </div>
+                            <div class="terminal-line"><span class="terminal-prompt">$</span><span class="terminal-text">System initialized…</span></div>
+                            <div class="terminal-line"><span class="terminal-prompt">$</span><span class="terminal-text terminal-success">All agents loaded successfully</span></div>
+                            <div class="terminal-line"><span class="terminal-prompt">$</span><span class="terminal-text">Waiting for commands…</span></div>
                         </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============== SCHEDULER ============== -->
+            <section id="section-scheduler" style="display:none;">
+                <h2 class="section-heading"><span style="color:var(--terminal-green);">></span> Scheduler Control</h2>
+                <div class="card" style="max-width:600px;">
+                    <div class="card-header">
+                        <div class="card-title"><span class="card-icon">⏰</span><span>Auto-Scheduler</span></div>
+                        <span class="card-badge" id="schedulerStatusBadge">&mdash;</span>
+                    </div>
+                    <div class="card-content">
+                        <div class="stat-row"><span class="stat-label">Status</span><span class="stat-value" id="schedRunning">&mdash;</span></div>
+                        <div class="stat-row"><span class="stat-label">Interval</span><span class="stat-value" id="schedInterval">&mdash;</span></div>
+                        <div class="stat-row"><span class="stat-label">Next Run</span><span class="stat-value" id="schedNextRun">&mdash;</span></div>
+                        <div style="margin-top:20px;">
+                            <button class="btn btn-primary" id="schedToggleBtn" onclick="toggleScheduler()">Toggle Scheduler</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============== MEMORY ============== -->
+            <section id="section-memory" style="display:none;">
+                <h2 class="section-heading"><span style="color:var(--terminal-green);">></span> Memory / Astra DB</h2>
+                <div class="card" style="max-width:600px;">
+                    <div class="card-header">
+                        <div class="card-title"><span class="card-icon">🧠</span><span>Astra DB Status</span></div>
+                    </div>
+                    <div class="card-content" id="memoryStatusContent">
+                        <p style="color:var(--text-muted);">Loading…</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============== SETTINGS ============== -->
+            <section id="section-settings" style="display:none;">
+                <h2 class="section-heading"><span style="color:var(--terminal-green);">></span> Settings</h2>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title"><span class="card-icon">⚙️</span><span>Environment Variables</span></div>
+                    </div>
+                    <div class="card-content" id="settingsContent">
+                        <p style="color:var(--text-muted);">Loading…</p>
                     </div>
                 </div>
             </section>
@@ -299,7 +244,7 @@
             <!-- Loading Spinner -->
             <div class="loading" id="loading">
                 <div class="spinner"></div>
-                <p style="color: var(--text-secondary);">Agent is running... This may take 30-60 seconds</p>
+                <p style="color:var(--text-secondary);">Agent is running… This may take 30-60 seconds</p>
             </div>
         </main>
     </div>

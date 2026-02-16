@@ -16,11 +16,11 @@ The engine decides:
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from src.agent.memory_store import AgentMemoryStore, get_memory_store
+from src.agent.memory_store import get_memory_store
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class AIDecisionEngine:
     def _load_business_profile(self) -> Dict:
         """Load business profile with products, links, CTAs."""
         try:
-            with open(BUSINESS_PROFILE_PATH, 'r', encoding='utf-8') as f:
+            with open(BUSINESS_PROFILE_PATH, encoding='utf-8') as f:
                 profile = json.load(f)
                 logger.info("✅ Loaded business profile: %d products", len(profile.get("products", [])))
                 return profile
@@ -68,7 +68,7 @@ class AIDecisionEngine:
     def _load_products_catalog(self) -> Dict:
         """Load full products catalog (150+ products)."""
         try:
-            with open(PRODUCTS_CATALOG_PATH, 'r', encoding='utf-8') as f:
+            with open(PRODUCTS_CATALOG_PATH, encoding='utf-8') as f:
                 content = f.read()
                 # Parse markdown into structured data
                 products = self._parse_products_markdown(content)
@@ -106,7 +106,7 @@ class AIDecisionEngine:
     def _load_knowledge_base(self) -> str:
         """Load FDWA knowledge base with writing guidelines."""
         try:
-            with open(KNOWLEDGE_BASE_PATH, 'r', encoding='utf-8') as f:
+            with open(KNOWLEDGE_BASE_PATH, encoding='utf-8') as f:
                 content = f.read()
                 logger.info("✅ Loaded knowledge base: %d chars", len(content))
                 return content
@@ -117,7 +117,7 @@ class AIDecisionEngine:
     def _load_memory(self) -> Dict:
         """Load agent memory (successful posts, engagement, lessons learned)."""
         try:
-            with open(MEMORY_PATH, 'r', encoding='utf-8') as f:
+            with open(MEMORY_PATH, encoding='utf-8') as f:
                 memory = json.load(f)
                 logger.info("✅ Loaded memory: %d entries", len(memory.get("successful_posts", [])))
                 return memory
@@ -158,7 +158,7 @@ class AIDecisionEngine:
             logger.warning("Could not fetch from Google Sheets: %s", e)
             return []
     
-    def select_relevant_products(self, topic: str, category: Optional[str] = None, limit: int = 2) -> List[Dict]:
+    def select_relevant_products(self, topic: str, category: str | None = None, limit: int = 2) -> List[Dict]:
         """Select most relevant products based on topic/category.
         
         Args:
@@ -203,7 +203,8 @@ class AIDecisionEngine:
                     price_nums = [int(s) for s in product["price"].split() if s.isdigit()]
                     if price_nums and max(price_nums) > 100:
                         score += 3
-                except:
+                except Exception as e:
+                    logger.warning(f"Error parsing price for product {product.get('name', 'unknown')}: {e}")
                     pass
             
             # Check past performance in memory
@@ -273,6 +274,38 @@ class AIDecisionEngine:
         
         # 6. Memory insights
         memory_insights = self._get_memory_insights(primary_topic)
+
+        # 7. Memory examples (top historical posts + semantic matches) to surface for LLM prompts
+        memory_examples = []
+        try:
+            if self.use_memory_store:
+                # Top posts by engagement
+                memory_examples = self.memory_store.get_top_posts(limit=3)
+
+                # Add semantic matches (RAG-style) from memory_vectors for the current trend/topic
+                try:
+                    semantic_matches = self.memory_store.search_memory(query=trend_data, limit=3)
+                    # prefer semantic matches first
+                    if semantic_matches:
+                        # convert results to same shape as get_top_posts returns
+                        mem_sem = []
+                        for m in semantic_matches:
+                            v = m.get("value")
+                            # value may already be dict-like
+                            if isinstance(v, dict):
+                                mem_sem.append(v)
+                            else:
+                                mem_sem.append({"topic": primary_topic, "platform": "memory", "engagement": 0, "meta": v})
+                        # prepend semantic matches
+                        memory_examples = mem_sem + memory_examples
+                        memory_examples = memory_examples[:3]
+                except Exception:
+                    pass
+            else:
+                # Legacy JSON: attempt to extract high_engagement_posts
+                memory_examples = self.memory.get("high_engagement_posts", [])[:3]
+        except Exception:
+            memory_examples = []
         
         strategy = {
             "topic": primary_topic,
@@ -280,6 +313,7 @@ class AIDecisionEngine:
             "cta": cta,
             "platform_guidance": platform_guidance,
             "memory_insights": memory_insights,
+            "memory_examples": memory_examples,
             "recent_topics": recent_topics,
             "decision_timestamp": datetime.now().isoformat()
         }
@@ -327,6 +361,23 @@ class AIDecisionEngine:
         if "real estate" in trend_lower or "property" in trend_lower:
             possible_topics.append("real estate")
         
+        # === MEMORY BIAS: prefer historically successful topics when appropriate ===
+        try:
+            if self.use_memory_store:
+                mem_topics = self.memory_store.get_successful_topics(limit=10)
+            else:
+                mem_topics = self.memory.get("successful_topics", [])
+
+            for mem_topic in mem_topics:
+                for candidate in possible_topics:
+                    if mem_topic and candidate and mem_topic.lower() == candidate.lower():
+                        # Prefer memory-backed candidate if it hasn't been over-used recently
+                        if recent_topics.count(candidate) < 2:
+                            return candidate
+        except Exception:
+            # If memory check fails, continue with standard logic
+            pass
+
         # Avoid recently used topics
         for topic in possible_topics:
             if recent_topics.count(topic) < 2:  # Max 2 uses in last 7 days
@@ -410,7 +461,7 @@ class AIDecisionEngine:
         return " | ".join(insights) if insights else "No historical data yet"
     
     def record_post_outcome(self, topic: str, products: List[str], platform: str, 
-                           engagement: Optional[int] = None, success: bool = True):
+                           engagement: int | None = None, success: bool = True):
         """Record post outcome to improve future decisions."""
         try:
             if self.use_memory_store:

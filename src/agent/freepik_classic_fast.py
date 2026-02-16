@@ -1,5 +1,5 @@
-"""
-Freepik Classic Fast API Image Generator
+"""Freepik Classic Fast API Image Generator.
+
 Budget-friendly fallback when Pollinations fails/rate-limits.
 
 API: Classic Fast Text-to-Image ($0.005/image)
@@ -7,11 +7,12 @@ Free: $5 credits on signup = 1000 free images!
 Docs: https://docs.freepik.com/api/#tag/text-to-image/operation/create_image_from_text_classic
 """
 
-import os
-import logging
 import base64
-import requests
+import logging
+import os
 from typing import Dict
+
+import requests
 
 logger = logging.getLogger(__name__)
 

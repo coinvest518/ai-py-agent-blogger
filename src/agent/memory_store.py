@@ -10,9 +10,11 @@ This module provides persistent memory storage across agent runs:
 
 import json
 import logging
+import os
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
@@ -27,19 +29,53 @@ NAMESPACE_PLATFORMS = ("platforms", "insights")
 NAMESPACE_CRYPTO = ("crypto", "insights")
 NAMESPACE_GENERAL = ("agent", "general")
 
+# Single Astra collection name — all document types go here with a `_type` field
+ASTRA_COLLECTION = os.getenv("ASTRA_COLLECTION_NAME", "ai_auto")
+
 
 class AgentMemoryStore:
-    """Manages long-term memory for the AI agent using LangGraph store."""
+    """Manages long-term memory for the AI agent using LangGraph store.
+
+    Optional: when Astra DB environment variables are present, memory will also be
+    persisted to an Astra DB Serverless (vector/collection) database using the
+    DataStax `astrapy` client. The Astra integration is best-effort and falls
+    back to the in-memory LangGraph store if unavailable.
+    """
     
-    def __init__(self, store: Optional[BaseStore] = None, user_id: str = "fdwa_agent"):
+    def __init__(self, store: BaseStore | None = None, user_id: str = "fdwa_agent"):
         """Initialize memory store.
         
         Args:
             store: LangGraph store instance (InMemoryStore or DB-backed)
             user_id: Identifier for this agent instance
         """
+        import os
+
         self.user_id = user_id
         self.store = store or InMemoryStore()
+        self._astra_db = None
+        self._astra_collection_ready = False
+        self._astra_collection_failed_until: float = 0
+
+        # Detect Astra configuration via environment variables (best-effort)
+        astra_endpoint = os.getenv("ASTRA_DB_ENDPOINT")
+        astra_token = os.getenv("ASTRA_APPLICATION_TOKEN")
+        astra_keyspace = os.getenv("ASTRA_KEYSPACE", "default_keyspace")
+
+        if astra_endpoint and astra_token:
+            try:
+                from astrapy import DataAPIClient
+
+                client = DataAPIClient()
+                self._astra_db = client.get_database(astra_endpoint, token=astra_token)
+                self._astra_keyspace = astra_keyspace
+                logger.info("✅ Connected to Astra DB (endpoint detected)")
+            except Exception as e:
+                self._astra_db = None
+                logger.warning("⚠️ Astra DB init failed (will continue without Astra): %s", e)
+        else:
+            logger.debug("Astra DB not configured (no ASTRA_* env vars)")
+
         logger.info(f"✅ Initialized AgentMemoryStore for user: {user_id}")
     
     # ================ USER PREFERENCES ================
@@ -79,7 +115,7 @@ class AgentMemoryStore:
         platform: str,
         engagement: int = 0,
         success: bool = True,
-        metadata: Optional[Dict] = None
+        metadata: Dict | None = None
     ) -> None:
         """Record post performance for learning.
         
@@ -104,9 +140,47 @@ class AgentMemoryStore:
         
         self.store.put(namespace, post_id, data)
         logger.info(f"📊 Recorded post performance: {topic} on {platform} (success={success})")
+
+        # Persist to Astra DB (best-effort)
+        try:
+            astra_doc = {
+                "_id": post_id,
+                "_type": "content_performance",
+                "user_id": self.user_id,
+                **data
+            }
+            self._astra_insert(astra_doc)
+        except Exception:
+            pass
     
-    def get_successful_topics(self, platform: Optional[str] = None, limit: int = 10) -> List[str]:
-        """Get list of successful topics."""
+    def get_successful_topics(self, platform: str | None = None, limit: int = 10) -> List[str]:
+        """Get list of successful topics.
+
+        Prefer reading from Astra if configured, otherwise use LangGraph store.
+        """
+        # Use Astra if available for durable insights
+        if self._astra_db:
+            try:
+                query = {"_type": "content_performance", "success": True}
+                if platform:
+                    query["platform"] = platform
+                rows = self._astra_find(filter_dict=query, limit=limit * 5)
+                # Sort and dedupe by engagement
+                rows.sort(key=lambda r: r.get("engagement", 0), reverse=True)
+                unique_topics = []
+                seen = set()
+                for r in rows:
+                    t = r.get("topic")
+                    if t and t not in seen:
+                        unique_topics.append(t)
+                        seen.add(t)
+                    if len(unique_topics) >= limit:
+                        break
+                return unique_topics
+            except Exception:
+                # fallback to local store on error
+                pass
+
         if platform:
             namespace = (*NAMESPACE_CONTENT_PERF, self.user_id, platform)
         else:
@@ -212,9 +286,33 @@ class AgentMemoryStore:
         data["last_mentioned"] = datetime.now().isoformat()
         self.store.put(namespace, product_name, data)
         logger.info(f"📦 Recorded product mention: {product_name} on {platform}")
+
+        # Persist to Astra DB (best-effort)
+        try:
+            astra_doc = {
+                "_id": product_name,
+                "_type": "products",
+                "user_id": self.user_id,
+                **data
+            }
+            self._astra_insert(astra_doc)
+        except Exception:
+            pass
     
     def get_top_products(self, limit: int = 5) -> List[Dict]:
-        """Get top performing products by engagement."""
+        """Get top performing products by engagement.
+
+        Prefer durable Astra collection when available.
+        """
+        if self._astra_db:
+            try:
+                rows = self._astra_find(filter_dict={"_type": "products"}, limit=limit * 5)
+                products = [r for r in rows if r]
+                products.sort(key=lambda x: x.get("total_engagement", 0), reverse=True)
+                return products[:limit]
+            except Exception:
+                pass
+
         namespace = (*NAMESPACE_PRODUCTS, self.user_id)
         items = self.store.search(namespace)
         
@@ -226,6 +324,124 @@ class AgentMemoryStore:
         # Sort by total engagement
         products.sort(key=lambda x: x.get("total_engagement", 0), reverse=True)
         return products[:limit]
+    def get_top_posts(self, platform: str | None = None, limit: int = 5) -> List[Dict]:
+        """Return top posts recorded in memory, optionally filtered by platform.
+
+        Returns a list of post dictionaries (topic, platform, engagement, timestamp, metadata)
+        sorted by engagement (descending). Will query Astra if configured.
+        """
+        # If Astra is configured, prefer durable store
+        if self._astra_db:
+            try:
+                coll = self._astra_db.get_collection(ASTRA_COLLECTION)
+                query = {"_type": "content_performance", "success": True}
+                if platform:
+                    query["platform"] = platform
+                rows = coll.find(filter=query, limit=limit * 5)
+                posts = [r for r in rows]
+                posts.sort(key=lambda p: (p.get("engagement", 0), p.get("timestamp", "")), reverse=True)
+                # dedupe by topic and return top `limit`
+                seen = set()
+                out = []
+                for p in posts:
+                    topic = p.get("topic")
+                    if topic and topic not in seen:
+                        seen.add(topic)
+                        out.append(p)
+                    if len(out) >= limit:
+                        break
+                return out
+            except Exception:
+                # fallback to in-memory store if Astra query fails
+                pass
+
+        if platform:
+            namespace = (*NAMESPACE_CONTENT_PERF, self.user_id, platform)
+        else:
+            namespace = (*NAMESPACE_CONTENT_PERF, self.user_id)
+
+        items = self.store.search(namespace)
+        posts = [item.value for item in items if item.value]
+
+        # Sort by engagement, fallback to timestamp if engagement missing
+        def _sort_key(p):
+            return (p.get("engagement", 0), p.get("timestamp", ""))
+
+        posts.sort(key=_sort_key, reverse=True)
+        return posts[:limit]
+
+    # ------------------ Astra helpers (best-effort persistence) ------------------
+    # All data goes into the SINGLE existing collection (default: ai_auto).
+    # Documents are distinguished by a `_type` field.
+
+    def _astra_ensure_collection(self) -> bool:
+        """Ensure the Astra collection is accessible (best-effort).
+
+        We do NOT try to create the collection — it must already exist in
+        the database (e.g. 'ai_auto'). This avoids COLLECTION_NOT_EXIST errors
+        by checking once and caching the result with cooldown on failure.
+        """
+        if not self._astra_db:
+            return False
+
+        if self._astra_collection_ready:
+            return True
+
+        if self._astra_collection_failed_until > time.time():
+            return False
+
+        try:
+            coll = self._astra_db.get_collection(ASTRA_COLLECTION)
+            # Quick probe — just list 1 doc to verify it exists
+            coll.find_one({})
+            self._astra_collection_ready = True
+            logger.info("✅ Astra collection '%s' verified", ASTRA_COLLECTION)
+            return True
+        except Exception as e:
+            cooldown_secs = int(os.getenv("ASTRA_COLLECTION_RETRY_COOLDOWN_SECS", "300"))
+            self._astra_collection_failed_until = time.time() + cooldown_secs
+            logger.debug("Astra collection '%s' not available (cooldown %ds): %s", ASTRA_COLLECTION, cooldown_secs, e)
+            return False
+
+    def _astra_insert(self, doc: Dict) -> bool:
+        """Insert a document into the Astra collection (non-blocking best-effort)."""
+        if not self._astra_db:
+            return False
+
+        if not self._astra_collection_ready and not self._astra_ensure_collection():
+            return False
+
+        try:
+            coll = self._astra_db.get_collection(ASTRA_COLLECTION)
+            coll.insert_one(doc)
+            return True
+        except Exception as e:
+            logger.debug("Astra insert failed: %s", e)
+            return False
+
+    def _astra_find(self, filter_dict: Dict | None = None, limit: int = 10, vector_query: str | None = None) -> List[Dict]:
+        """Find documents in the Astra collection (best-effort).
+
+        All queries go to the single ASTRA_COLLECTION. Callers should include
+        `_type` in filter_dict to scope results (e.g. {"_type": "content_performance"}).
+        """
+        if not self._astra_db:
+            return []
+
+        if not self._astra_collection_ready and not self._astra_ensure_collection():
+            return []
+
+        try:
+            coll = self._astra_db.get_collection(ASTRA_COLLECTION)
+
+            if vector_query:
+                rows = coll.find(filter=filter_dict or {}, sort={"$vectorize": vector_query}, limit=limit)
+            else:
+                rows = coll.find(filter=filter_dict or {}, limit=limit)
+            return [r for r in rows]
+        except Exception as e:
+            logger.debug("Astra find failed: %s", e)
+            return []
     
     # ================ CRYPTO INSIGHTS ================
     
@@ -248,9 +464,36 @@ class AgentMemoryStore:
         
         self.store.put(namespace, insight_id, insight_data)
         logger.info(f"💰 Recorded crypto insight: {token_symbol} - {insight_type}")
+
+        # Persist to Astra DB (best-effort)
+        try:
+            astra_doc = {
+                "_id": insight_id,
+                "_type": "crypto_insights",
+                "user_id": self.user_id,
+                "token": token_symbol,
+                **insight_data
+            }
+            self._astra_insert(astra_doc)
+        except Exception:
+            pass
     
-    def get_crypto_insights(self, token_symbol: Optional[str] = None, limit: int = 10) -> List[Dict]:
-        """Get crypto insights, optionally filtered by token."""
+    def get_crypto_insights(self, token_symbol: str | None = None, limit: int = 10) -> List[Dict]:
+        """Get crypto insights, optionally filtered by token.
+
+        Prefer Astra if configured.
+        """
+        if self._astra_db:
+            try:
+                query = {"_type": "crypto_insights"}
+                if token_symbol:
+                    query["token"] = token_symbol
+                rows = self._astra_find(filter_dict=query, limit=limit)
+                rows.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+                return rows[:limit]
+            except Exception:
+                pass
+
         if token_symbol:
             namespace = (*NAMESPACE_CRYPTO, self.user_id, token_symbol)
         else:
@@ -259,11 +502,10 @@ class AgentMemoryStore:
         items = self.store.search(namespace)
         insights = [item.value for item in items if item.value]
         insights.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-        return insights[:limit]
-    
+        return insights[:limit]    
     # ================ GENERAL MEMORY ================
     
-    def save_memory(self, key: str, value: Any, namespace: Optional[Tuple[str, ...]] = None) -> None:
+    def save_memory(self, key: str, value: Any, namespace: Tuple[str, ...] | None = None) -> None:
         """Save arbitrary memory with optional custom namespace."""
         ns = namespace or (*NAMESPACE_GENERAL, self.user_id)
         self.store.put(ns, key, {
@@ -271,8 +513,23 @@ class AgentMemoryStore:
             "timestamp": datetime.now().isoformat()
         })
         logger.info(f"💾 Saved memory: {key}")
+
+        # Persist general memory to Astra (best-effort)
+        try:
+            astra_doc = {
+                "_id": f"{key}_{int(time.time())}",
+                "_type": "general_memory",
+                "user_id": self.user_id,
+                "namespace": list(ns),
+                "key": key,
+                "value": value,
+                "timestamp": datetime.now().isoformat()
+            }
+            self._astra_insert(astra_doc)
+        except Exception:
+            pass
     
-    def get_memory(self, key: str, namespace: Optional[Tuple[str, ...]] = None, default: Any = None) -> Any:
+    def get_memory(self, key: str, namespace: Tuple[str, ...] | None = None, default: Any = None) -> Any:
         """Get memory by key."""
         ns = namespace or (*NAMESPACE_GENERAL, self.user_id)
         item = self.store.get(ns, key)
@@ -282,17 +539,58 @@ class AgentMemoryStore:
     
     def search_memory(
         self,
-        query: Optional[str] = None,
-        filter_dict: Optional[Dict] = None,
-        namespace: Optional[Tuple[str, ...]] = None,
+        query: str | None = None,
+        filter_dict: Dict | None = None,
+        namespace: Tuple[str, ...] | None = None,
         limit: int = 10
     ) -> List[Dict]:
-        """Search memory with optional semantic query and filters."""
+        """Search memory with optional semantic query and filters.
+
+        If `query` is provided and Astra is configured, use Astra's vector search
+        (server-side vectorize) against the `memory_vectors` collection as a
+        semantic fallback. Otherwise, fall back to the LangGraph store search.
+        """
         ns = namespace or (*NAMESPACE_GENERAL, self.user_id)
-        
+
+        # If a semantic query and Astra available, use vector search
+        if query and self._astra_db:
+            try:
+                filt = {"_type": "general_memory"}
+                if filter_dict:
+                    filt.update(filter_dict)
+                rows = self._astra_find(filter_dict=filt, limit=limit, vector_query=query)
+                results = []
+                for r in rows:
+                    results.append({
+                        "key": r.get("key"),
+                        "value": r.get("meta") or r.get("content") or r.get("value"),
+                        "namespace": tuple(r.get("namespace", []))
+                    })
+                return results
+            except Exception:
+                pass
+
+        # If Astra is configured and no semantic query, try general_memory type
+        if self._astra_db and not query:
+            try:
+                filt = {"_type": "general_memory"}
+                if filter_dict:
+                    filt.update(filter_dict)
+                rows = self._astra_find(filter_dict=filt, limit=limit)
+                results = []
+                for r in rows:
+                    results.append({
+                        "key": r.get("key"),
+                        "value": r.get("value"),
+                        "namespace": tuple(r.get("namespace", []))
+                    })
+                return results
+            except Exception:
+                pass
+
         # LangGraph store.search supports both query (semantic) and filter (exact match)
         items = self.store.search(ns, query=query, filter=filter_dict)
-        
+
         results = []
         for item in items:
             if item.value:
@@ -311,7 +609,7 @@ class AgentMemoryStore:
     def migrate_from_json(self, json_path: Path) -> None:
         """Migrate data from old agent_memory.json file."""
         try:
-            with open(json_path, 'r', encoding='utf-8') as f:
+            with open(json_path, encoding='utf-8') as f:
                 old_memory = json.load(f)
             
             logger.info("🔄 Migrating memory from JSON file...")
@@ -356,9 +654,54 @@ class AgentMemoryStore:
         except Exception as e:
             logger.error(f"Migration failed: {e}")
 
+    def migrate_to_astra(self) -> bool:
+        """Copy in-memory/LangGraph memory into the single Astra collection (best-effort).
+
+        All documents go into ASTRA_COLLECTION with a `_type` discriminator field.
+        Returns True if the migration was attempted; raises/logs on failure.
+        """
+        if not self._astra_db:
+            logger.warning("Astra DB not configured — cannot migrate to Astra")
+            return False
+        try:
+            logger.info("🔁 Migrating LangGraph memory into Astra collection '%s'...", ASTRA_COLLECTION)
+
+            # Migrate content performance
+            items = self.store.search((*NAMESPACE_CONTENT_PERF, self.user_id))
+            for item in items:
+                if item and item.value:
+                    doc = {"_id": item.key, "_type": "content_performance", "user_id": self.user_id, **item.value}
+                    self._astra_insert(doc)
+
+            # Migrate products
+            items = self.store.search((*NAMESPACE_PRODUCTS, self.user_id))
+            for item in items:
+                if item and item.value:
+                    doc = {"_id": item.key, "_type": "products", "user_id": self.user_id, **item.value}
+                    self._astra_insert(doc)
+
+            # Migrate crypto insights
+            items = self.store.search((*NAMESPACE_CRYPTO, self.user_id))
+            for item in items:
+                if item and item.value:
+                    doc = {"_id": item.key, "_type": "crypto_insights", "user_id": self.user_id, **item.value}
+                    self._astra_insert(doc)
+
+            # Migrate general memories
+            items = self.store.search((*NAMESPACE_GENERAL, self.user_id))
+            for item in items:
+                if item and item.value:
+                    doc = {"_id": item.key, "_type": "general_memory", "user_id": self.user_id, **item.value}
+                    self._astra_insert(doc)
+
+            logger.info("✅ Migration to Astra complete")
+            return True
+        except Exception as e:
+            logger.error("Migration to Astra failed: %s", e)
+            return False
 
 # Singleton instance
-_memory_store: Optional[AgentMemoryStore] = None
+_memory_store: AgentMemoryStore | None = None
 
 
 def get_memory_store(user_id: str = "fdwa_agent") -> AgentMemoryStore:
@@ -374,3 +717,13 @@ def initialize_memory_store(store: BaseStore, user_id: str = "fdwa_agent") -> Ag
     global _memory_store
     _memory_store = AgentMemoryStore(store=store, user_id=user_id)
     return _memory_store
+
+
+def get_astra_status() -> dict:
+    """Return a summary of Astra DB health (for the dashboard)."""
+    return {
+        "astra": "configured" if ASTRA_DB_TOKEN and ASTRA_DB_ENDPOINT else "not_configured",
+        "collection": ASTRA_COLLECTION,
+        "collection_ready": _astra_collection_ready,
+        "endpoint": ASTRA_DB_ENDPOINT[:40] + "…" if ASTRA_DB_ENDPOINT and len(ASTRA_DB_ENDPOINT) > 40 else ASTRA_DB_ENDPOINT,
+    }

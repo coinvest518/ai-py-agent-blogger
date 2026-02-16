@@ -322,7 +322,7 @@ class GoogleSheetsAgent:
                     
                     # Check if cell limit error
                     if attempt == 0 and self._is_cell_limit_error(error_msg):
-                        logger.warning(f"⚠️ Posts sheet hit cell limit, creating new sheet...")
+                        logger.warning("⚠️ Posts sheet hit cell limit, creating new sheet...")
                         new_sheet_id = self._create_new_posts_sheet_and_update_env()
                         if new_sheet_id:
                             logger.info("🔄 Retrying save with new sheet...")
@@ -336,7 +336,7 @@ class GoogleSheetsAgent:
                 
                 # Check if cell limit error in exception
                 if attempt == 0 and self._is_cell_limit_error(error_msg):
-                    logger.warning(f"⚠️ Posts sheet hit cell limit (exception), creating new sheet...")
+                    logger.warning("⚠️ Posts sheet hit cell limit (exception), creating new sheet...")
                     new_sheet_id = self._create_new_posts_sheet_and_update_env()
                     if new_sheet_id:
                         logger.info("🔄 Retrying save with new sheet...")
@@ -449,7 +449,7 @@ class GoogleSheetsAgent:
                     
                     # Check if cell limit error
                     if attempt == 0 and self._is_cell_limit_error(error_msg):
-                        logger.warning(f"⚠️ Tokens sheet hit cell limit, creating new sheet...")
+                        logger.warning("⚠️ Tokens sheet hit cell limit, creating new sheet...")
                         new_sheet_id = self._create_new_tokens_sheet_and_update_env()
                         if new_sheet_id:
                             logger.info("🔄 Retrying save with new sheet...")
@@ -463,7 +463,7 @@ class GoogleSheetsAgent:
                 
                 # Check if cell limit error in exception
                 if attempt == 0 and self._is_cell_limit_error(error_msg):
-                    logger.warning(f"⚠️ Tokens sheet hit cell limit (exception), creating new sheet...")
+                    logger.warning("⚠️ Tokens sheet hit cell limit (exception), creating new sheet...")
                     new_sheet_id = self._create_new_tokens_sheet_and_update_env()
                     if new_sheet_id:
                         logger.info("🔄 Retrying save with new sheet...")
@@ -474,6 +474,66 @@ class GoogleSheetsAgent:
         
         return False
     
+    def save_crypto_tokens_batch(self, tokens: list[dict]) -> int:
+        """Save multiple crypto tokens to Google Sheets in a single API call.
+
+        Each token dict should have keys matching save_crypto_token() params:
+        symbol, name, price, percent_change_24h, volume_24h, market_cap,
+        trade_score, profit_probability, risk_level, trading_signal,
+        momentum, liquidity, source, reasoning, notes.
+
+        Returns:
+            Number of tokens saved (0 if any error).
+        """
+        if not self.tokens_sheet_id or not tokens:
+            return 0
+
+        timestamp = datetime.now().isoformat()
+        rows = []
+        for t in tokens:
+            rows.append([
+                timestamp,
+                str(t.get("symbol", "?")).upper(),
+                str(t.get("name", "")),
+                str(t.get("price", "")),
+                str(t.get("percent_change_24h", "")),
+                str(t.get("volume_24h", "")),
+                str(t.get("market_cap", "")),
+                str(t.get("trade_score", "")),
+                str(t.get("profit_probability", "")),
+                str(t.get("risk_level", "")),
+                str(t.get("trading_signal", "")),
+                str(t.get("momentum", "")),
+                str(t.get("liquidity", "")),
+                str(t.get("source", "ai_analysis")),
+                str(t.get("reasoning", "")),
+                str(t.get("notes", "")),
+            ])
+
+        for sheet_name in ("Token Tracking", "AI Agent Memory", "Sheet1"):
+            try:
+                response = self._execute_tool(
+                    "GOOGLESHEETS_BATCH_UPDATE",
+                    {
+                        "spreadsheet_id": self.tokens_sheet_id,
+                        "sheet_name": sheet_name,
+                        "values": rows,
+                    },
+                )
+                if response.get("successful"):
+                    logger.info("✓ Batch-saved %d tokens to sheet '%s'", len(rows), sheet_name)
+                    return len(rows)
+                if "not found" not in str(response.get("error", "")).lower():
+                    logger.error("Batch token save failed: %s", response.get("error"))
+                    return 0
+            except Exception as e:
+                if "not found" not in str(e).lower():
+                    logger.exception("Batch token save error: %s", e)
+                    return 0
+
+        logger.error("Could not find any valid sheet tab for batch token save")
+        return 0
+
     def search_posts(self, platform: str | None = None, 
                     days_back: int = 30, limit: int = 100) -> List[Dict]:
         """Search recent posts from Google Sheets.
@@ -922,6 +982,11 @@ def save_post_to_sheets(platform: str, content: str, post_id: str = "",
 def save_token_to_sheets(symbol: str, **kwargs) -> bool:
     """Save crypto token to Google Sheets."""
     return sheets_agent.save_crypto_token(symbol, **kwargs)
+
+
+def save_tokens_to_sheets_batch(tokens: list[dict]) -> int:
+    """Save multiple crypto tokens to Google Sheets in one API call."""
+    return sheets_agent.save_crypto_tokens_batch(tokens)
 
 
 def search_posts_in_sheets(platform: str | None = None, days_back: int = 30) -> List[Dict]:

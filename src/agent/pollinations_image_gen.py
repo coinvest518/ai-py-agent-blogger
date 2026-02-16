@@ -8,16 +8,15 @@ Free tier: 1 pollen/day (5000 images/day) - more than enough!
 """
 
 import base64
-import io
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
-import time
+from typing import Any, Dict
+from urllib.parse import quote
 
 import requests
-from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +37,8 @@ POLLINATIONS_MODELS = {
     "seedream-pro": "seedream-pro",  # Seedream 4.5 Pro - 0.04 pollen/img (25 images per pollen)
 }
 
-# API Base URL
-POLLINATIONS_API_BASE = "https://api.pollinations.ai"
+# API Base URL (updated June 2025 — gen.pollinations.ai, prompt in URL path)
+POLLINATIONS_API_BASE = "https://gen.pollinations.ai"
 
 
 def generate_image_pollinations(
@@ -47,7 +46,7 @@ def generate_image_pollinations(
     model: str = "flux",
     width: int = 1024,
     height: int = 1024,
-    seed: Optional[int] = None,
+    seed: int | None = None,
     nologo: bool = True,
     enhance: bool = False,
     timeout: int = 90
@@ -82,13 +81,13 @@ def generate_image_pollinations(
     logger.info(f"   Size: {width}x{height}, Nologo: {nologo}, Enhance: {enhance}")
     
     try:
-        # Build request URL (Pollinations uses GET with query params)
-        url = f"{POLLINATIONS_API_BASE}/v1/image"
+        # Build request URL — prompt goes in the URL path (URL-encoded)
+        encoded_prompt = quote(prompt, safe="")
+        url = f"{POLLINATIONS_API_BASE}/image/{encoded_prompt}"
         
-        # Build request parameters
+        # Build query parameters (prompt is already in the path)
         params = {
             "model": model_id,
-            "prompt": prompt,
             "width": width,
             "height": height,
             "nologo": str(nologo).lower(),
@@ -99,23 +98,64 @@ def generate_image_pollinations(
         if seed is not None:
             params["seed"] = seed
         
-        # Build headers
-        headers = {}
+        # Add API key as query param if header auth not used
         if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+            params["key"] = api_key
         
-        # Make request
-        logger.info(f"📡 Requesting image from Pollinations.ai...")
+        headers = {}
+
+        # Make request with retries for transient server errors (5xx / network timeouts)
+        logger.info("📡 Requesting image from Pollinations.ai (with retries if needed)...")
         start_time = time.time()
-        
-        response = requests.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=timeout
-        )
-        
-        response.raise_for_status()
+
+        max_attempts = 3
+        backoff = 1.0
+        last_exc = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = requests.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=timeout
+                )
+
+                # If server returned 5xx, raise to trigger retry handling below
+                if 500 <= response.status_code < 600:
+                    response.raise_for_status()
+
+                response.raise_for_status()
+                # success — break out of retry loop
+                break
+
+            except requests.exceptions.Timeout as te:
+                last_exc = te
+                logger.warning("Pollinations timeout on attempt %d/%d: %s — retrying in %.1fs", attempt, max_attempts, te, backoff)
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            except requests.exceptions.HTTPError as he:
+                status = he.response.status_code if he.response is not None else None
+                # Do not retry for client errors (4xx) — fail fast
+                if status and 400 <= status < 500:
+                    raise
+                # Retry for server errors
+                last_exc = he
+                logger.warning("Pollinations HTTP error on attempt %d/%d: %s — retrying in %.1fs", attempt, max_attempts, he, backoff)
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            except requests.exceptions.RequestException as rexc:
+                last_exc = rexc
+                logger.warning("Pollinations request exception on attempt %d/%d: %s — retrying in %.1fs", attempt, max_attempts, rexc, backoff)
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+        else:
+            # Exhausted retries
+            if last_exc:
+                raise last_exc
+            raise RuntimeError("Pollinations request failed after retries")
         
         # Check if response is JSON error
         content_type = response.headers.get('Content-Type', '')
@@ -163,7 +203,8 @@ def generate_image_pollinations(
         try:
             error_data = e.response.json()
             error_msg = error_data.get('error', error_msg)
-        except:
+        except Exception as json_error:
+            logger.debug(f"Could not parse error response as JSON: {json_error}")
             pass
         
         logger.error(f"❌ Pollinations API HTTP error: {error_msg}")
@@ -401,12 +442,9 @@ def upload_to_imgbb(image_bytes: bytes, timeout: int = 30) -> Dict[str, Any]:
 # Test function
 def test_pollinations_image_gen():
     """Test Pollinations.ai image generation."""
-    print("🧪 Testing Pollinations.ai Image Generation\n")
-    
     # Test prompt
     test_prompt = "A futuristic AI robot analyzing crypto trading charts, digital art style, vibrant colors, professional"
     
-    print(f"Prompt: {test_prompt}\n")
     
     # Test with fallback
     result = generate_image_with_fallback(
@@ -418,29 +456,24 @@ def test_pollinations_image_gen():
     )
     
     if result["success"]:
-        print(f"✅ SUCCESS!")
-        print(f"   Provider: {result.get('provider', 'Unknown')}")
-        print(f"   Model: {result.get('model', 'Unknown')}")
-        print(f"   Size: {len(result['image_bytes']):,} bytes")
         if result.get('seed'):
-            print(f"   Seed: {result['seed']}")
+            pass
         
         # Save locally
-        filepath = save_image_locally(
+        save_image_locally(
             result["image_bytes"],
             provider=result.get('provider', 'pollinations')
         )
-        print(f"   Saved to: {filepath}")
         
         # Upload to imgbb (if key available)
         upload_result = upload_to_imgbb(result["image_bytes"])
         if upload_result["success"]:
-            print(f"   Public URL: {upload_result['url']}")
+            pass
         else:
-            print(f"   ImgBB upload skipped: {upload_result.get('error')}")
+            pass
             
     else:
-        print(f"❌ FAILURE: {result.get('error')}")
+        pass
 
 
 if __name__ == "__main__":

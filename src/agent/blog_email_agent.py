@@ -15,12 +15,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
-import time
 
 import requests
 from composio import Composio
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
 
 # Load environment variables
 load_dotenv()
@@ -32,18 +30,6 @@ composio_client = Composio(
         "gmail": os.getenv("COMPOSIO_TOOLKIT_VERSION_GMAIL")
     }
 )
-
-# Pydantic model for structured blog output
-class BlogPost(BaseModel):
-    """Structured blog post output from LLM."""
-    title: str = Field(description="Engaging title with data or specific benefit")
-    html: str = Field(description="1000-1500 word detailed HTML article")
-    excerpt: str = Field(description="Compelling 1-2 sentence hook")
-    rationale: List[str] = Field(default_factory=list, description="Why this approach")
-    products_mentioned: List[str] = Field(default_factory=list, description="FDWA products used")
-    affiliate_tools_used: List[str] = Field(default_factory=list, description="Affiliate tools mentioned")
-    consultation_type: str = Field(default="general", description="ai, credit, or general")
-    word_count: int = Field(default=1200, description="Approximate word count")
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -100,8 +86,15 @@ def _get_content_hash(title: str, content: str) -> str:
     return hashlib.md5(combined.encode()).hexdigest()
 
 
-def _is_duplicate_post(title: str, content: str, topic: str) -> bool:
-    """Check if this post has already been sent recently."""
+def _is_duplicate_post(title: str, content: str, topic: str, check_topic: bool = True) -> bool:
+    """Check if this post has already been sent recently.
+    
+    Args:
+        title: Post title to check
+        content: Post content to check
+        topic: Post topic to check
+        check_topic: If False, skip topic recency check (used on final retry)
+    """
     sent_data = _load_sent_posts()
     content_hash = _get_content_hash(title, content)
     
@@ -115,8 +108,8 @@ def _is_duplicate_post(title: str, content: str, topic: str) -> bool:
         logger.warning("Duplicate title detected: %s", title)
         return True
     
-    # Check if same topic was used in last 3 posts (force rotation)
-    if topic in sent_data.get("last_topics", [])[-3:]:
+    # Check if same topic was used in last 3 posts (force rotation) - can be disabled on final retry
+    if check_topic and topic in sent_data.get("last_topics", [])[-3:]:
         logger.warning("Topic used too recently: %s", topic)
         return True
     
@@ -338,12 +331,14 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
 
 
     try:
-        # LLM-first generation using centralized LLM provider. Honor BLOG_REQUIRE_LLM to forbid template fallbacks.
+        # LLM-first generation using centralized LLM provider
         try:
             from src.agent.llm_provider import get_llm
             
-            # Get LLM with BlogPost structured output support (for Mistral)
-            llm = get_llm(purpose="blog generation", structured_output_schema=BlogPost)
+            # Do NOT use structured_output_schema — it forces function-calling which
+            # fails when the HTML content is large.  Plain text + delimiter parsing is
+            # far more reliable for long-form HTML.
+            llm = get_llm(purpose="blog generation")
             
             require_llm = os.getenv("BLOG_REQUIRE_LLM", "false").lower() in ("1", "true", "yes")
             if not llm:
@@ -351,43 +346,21 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
                 logger.warning(msg)
                 if require_llm:
                     raise RuntimeError("No LLM provider available and BLOG_REQUIRE_LLM is set to true")
-                # Trigger template fallback by raising
                 raise RuntimeError(msg)
 
-            # --- Pre-generation: propose 3 candidate titles and reject duplicates early ---
-            title_candidates = []
-            try:
-                title_prompt = (
-                    "Given the INPUT DATA JSON and FDWA style guide, propose 3 engaging, non-generic blog titles that contain data or a clear benefit. "
-                    "Return ONLY valid JSON: {\"titles\": [title1, title2, title3]}."
-                    f"\n\nINPUT: {json.dumps({'topic': topic,'trend_data': trend_data})}"
-                )
-                try:
-                    t_resp = llm.invoke(title_prompt)
-                    t_text = t_resp.content if hasattr(t_resp, 'content') else str(t_resp)
-                    json_match = re.search(r"\{.*\}", t_text, re.DOTALL)
-                    if json_match:
-                        t_text = json_match.group(0)
-                    parsed_titles = json.loads(t_text)
-                    title_candidates = parsed_titles.get('titles', []) if isinstance(parsed_titles, dict) else []
-                except Exception:
-                    # best-effort title generation failed — continue to full generation
-                    title_candidates = []
-
-                # Filter out duplicates using sent posts
-                filtered = []
-                for t in title_candidates:
-                    if not _is_duplicate_post(t, t, topic):
-                        filtered.append(t)
-                title_candidates = filtered
-            except Exception:
-                title_candidates = []
+            # Skip separate title pre-generation — saves 1 LLM call.
+            # The main generation prompt handles title creation.
 
             past_posts_json = _get_recent_posts_for_prompt(limit=6)
 
             business_profile = _load_business_profile()
             knowledge_base = _load_knowledge_base()
             products_catalog = _load_products_catalog()
+            
+            # Load recent topics to force rotation and avoid duplicates
+            sent_data = _load_sent_posts()
+            recent_topics = sent_data.get("last_topics", [])[-3:]  # Last 3 topics used
+            logger.info("Recent topics to avoid: %s", recent_topics)
             
             # Load blog writing style guide
             style_guide = ""
@@ -400,23 +373,19 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
             except Exception as e:
                 logger.warning("Could not load style guide: %s", e)
 
-            # Include richer context (if provided by graph) and make affiliate + resources requirements explicit
+            # Build context payload
             ctx_payload = {
                 "topic": topic,
                 "trend_data": (trend_data or ""),
                 "affiliate_links": {k: v for k, v in AFFILIATE_LINKS.items()},
                 "our_recent_posts": json.loads(past_posts_json),
+                "recent_topics_to_avoid": recent_topics,
                 "business_profile": business_profile,
-                "knowledge_base_summary": knowledge_base[:3000] if knowledge_base else "No knowledge base loaded",
-                "products_catalog_summary": products_catalog[:2000] if products_catalog else "No products catalog loaded",
+                "knowledge_base_summary": knowledge_base[:3000] if knowledge_base else "",
+                "products_catalog_summary": products_catalog[:2000] if products_catalog else "",
             }
 
-            # If pre-generated non-duplicate title candidates exist, pass them to the LLM as preferred titles
-            if title_candidates:
-                ctx_payload["suggested_titles"] = title_candidates
-
             if context and isinstance(context, dict):
-                # merge caller-provided context (tweet text, insight, platform drafts)
                 ctx_payload["caller_context"] = context
 
             prompt = json.dumps(ctx_payload)
@@ -425,314 +394,150 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
             from datetime import datetime
             current_year = datetime.now().year
             current_month = datetime.now().strftime("%B")
+            
+            # Add note about recent topics if we have them
+            avoid_topics_note = ""
+            if recent_topics:
+                avoid_topics_note = f"\n\nIMPORTANT: We recently posted about these topics: {', '.join(recent_topics)}. Choose a DIFFERENT topic category (marketing, AI/tech, crypto, automation, etc.) to ensure content variety."
 
-            generation_prompt = f"""
-You are an expert content strategist and educational copywriter for FDWA (Futurist Digital Wealth Agency).
+            generation_prompt = f"""You are an expert content strategist for FDWA (Futurist Digital Wealth Agency).
+It is {current_month} {current_year}.{avoid_topics_note}
 
-CURRENT DATE CONTEXT: It is {current_month} {current_year}. Use {current_year} in all examples, not 2025 or older years.
+Create a 1000-1500 word educational blog post. Embed at least 3 affiliate links, include a Resources section, and mention 2-3 FDWA products.
 
-Your mission: Create FULL, DETAILED, EDUCATIONAL blog articles that teach, not just list. Break down topics, explain WHY tools matter, show HOW to apply information, include real data and examples.
-
-MANDATORY: Embed at least 3 affiliate links from `affiliate_links`, include a clear `Resources & Links` section, and mention 2–3 FDWA products. Return ONLY valid JSON matching the output schema.
-
-=== INPUT DATA (JSON) ===
+=== INPUT DATA ===
 {prompt}
 
-=== BLOG WRITING STYLE GUIDE ===
-{style_guide[:8000] if style_guide else "Write detailed, educational content with real examples and data."}
+=== STYLE ===
+{style_guide[:4000] if style_guide else "Write detailed, educational content."}
 
-=== YOUR TASK ===
+=== STRUCTURE ===
+1. Opening hook with data/stats (100-200 words)
+2. Context & trends (150-300 words)
+3. Main educational content with <h2>/<h3> headers (800-1200 words)
+4. Reality check — be honest about challenges
+5. Resources section (FDWA products, community links, consultation booking)
+6. Disclaimer if applicable
 
-Create a comprehensive blog post (1000-1500 words) following this structure:
+=== AFFILIATE LINKS (use 3-5) ===
+- n8n: https://n8n.partnerlinks.io/pxw8nlb4iwfh
+- Hostinger: https://hostinger.com/horizons?REFERRALCODE=VMKMILDHI76M
+- ElevenLabs: https://try.elevenlabs.io/2dh4kqbqw25i
+- ManyChat: https://manychat.partnerlinks.io/gal0gascf0ml
+- Lovable: https://lovable.dev/?via=daniel-wray
+- VEED: https://veed.cello.so/Y4hEgduDP5L
+- BrightData: https://get.brightdata.com/xafa5cizt3zw
 
-1. **OPENING HOOK** (100-200 words):
-   - Start with real data/statistics from trend_data
-   - Include specific numbers, growth rates, or compelling facts
-   - Example: "Weather trading bots are generating thousands in monthly profits" with proof links
-   - Set clear expectations for what readers will learn
+=== FDWA LINKS ===
+- Community: https://whop.com/futuristicwealth/
+- Newsletter: https://futuristic-wealth.beehiiv.com/
+- Website: https://fdwa.site
+- AI consultation: https://cal.com/bookme-daniel/ai-consultation-smb
+- Credit consultation: https://cal.com/bookme-daniel/credit-consultation
 
-2. **CONTEXT & CURRENT EVENTS** (150-300 words):
-   - Latest trends and industry data from trend_data
-   - Market statistics: "84% of organizations already use [technology]"
-   - Real examples: "One trader grew $1,000 to $24,000 since April {current_year}"
-   - Reference current month/year: {current_month} {current_year}
-   - Why this matters NOW
+=== OUTPUT FORMAT ===
+Use these EXACT delimiters (not JSON). Do NOT wrap in code blocks or quotes.
 
-3. **MAIN EDUCATIONAL CONTENT** (800-1200 words):
-   
-   **For Tool Guides:**
-   - Organize by category (AI Automation, Business Banking, Content Creation, etc.)
-   - Each tool gets: What it does + WHY you need it + Benefit/discount + Link
-   - Example format:
-     ```
-     **n8n** – Build advanced automations without paying Zapier prices:
-     https://n8n.partnerlinks.io/pxw8nlb4iwfh
-     
-     **Emergent** – Transform ideas into fully functional websites and mobile apps:
-     https://get.emergent.sh/y62pekmn0zfq
-     ```
-   
-   **For How-To/Tutorial:**
-   - Step-by-step breakdown with numbered steps
-   - Explain WHY each step matters, not just WHAT to do
-   - Include actual commands/code if applicable
-   - Troubleshooting tips
-   - Optimization advice
-   
-   **For Concept/Strategy:**
-   - Break down the meaning and implications
-   - Multiple perspectives or approaches
-   - Real-world application to FDWA's niches (credit, automation, business, finance)
-   - Actionable tips readers can implement immediately
-
-4. **THE REALITY CHECK** (100-200 words):
-   - Be honest: "I read the manuals — it's a maze of contracts and forms"
-   - Address real pain points and challenges
-   - Show how FDWA's approach cuts through complexity
-   - Build trust through transparency
-
-5. **RESOURCES & LINKS SECTION**:
-   - Relevant FDWA products (2-3 matched to topic)
-   - Community: https://whop.com/futuristicwealth/
-   - Newsletter: https://futuristic-wealth.beehiiv.com/
-   - BuyMeACoffee: https://buymeacoffee.com/coinvest
-   - LinkTree: https://linktr.ee/omniai
-   - Consultation booking (pick appropriate type based on topic)
-   - Website: https://fdwa.site
-
-6. **DISCLAIMER** (if applicable):
-   - Trading/investing: "Involves risk of loss. Use funds you can afford to lose."
-   - Credit/legal: "We provide guidance, not legal advice."
-   - Results: "Results vary; past performance not indicative of future."
-
-=== AFFILIATE LINK INTEGRATION RULES ===
-
-❌ WRONG: "Check out ElevenLabs for AI voice"
-
-✅ RIGHT: "**ElevenLabs** – AI voice, narration, and audio content (10% discount):
-https://try.elevenlabs.io/2dh4kqbqw25i"
-
-Integrate 3-5 affiliate links naturally:
-- From affiliate_links provided
-- Match to content topic
-- Include benefit/discount
-- Explain WHY reader needs it
-
-=== FDWA PRODUCT RECOMMENDATIONS ===
-
-Match to topic keywords from trend_data:
-- **AI/automation** → AI Vibe Coding Bootcamp, Social Media Game Plan, n8n, Blackbox AI
-- **Credit/finance** → 72 Hour Credit Hack, Ultimate Credit Vault, AVA Finance, NAV
-- **Business/marketing** → 50 Business Ideas, Digital products, ManyChat, Beehiiv
-
-=== CONSULTATION BOOKING LINKS ===
-
-Pick ONE based on primary topic:
-- **AI/automation focus** → https://cal.com/bookme-daniel/ai-consultation-smb
-- **Credit/finance focus** → https://cal.com/bookme-daniel/credit-consultation
-- **General business** → https://cal.com/bookme-daniel/30min
-
-=== WRITING TONE ===
-
-✅ DO:
-- Conversational but authoritative: "We're back with more valuable information"
-- Data-driven: Back every claim with numbers
-- Honest: "Trust me — I run up a serious bill with AI tools"
-- Educational: Teach, don't just pitch
-- Action-oriented: Tell readers exactly what to do
-
-❌ DON'T:
-- Generic fluff: "In today's digital age..."
-- Weak CTAs: "Click here to learn more"
-- Just listing without explaining WHY/HOW
-- Overly salesy without education first
-
-=== OUTPUT FORMAT (VALID JSON ONLY) ===
-
-{{
-  "title": "engaging title with data or specific benefit (not generic)",
-  "html": "1000-1500 word detailed HTML article with:
-    - Opening hook with statistics (100-200 words)
-    - Context & trends section (150-300 words)
-    - Main educational content (800-1200 words) with <h2>/<h3> headers
-    - Real examples with specific numbers
-    - 3-5 affiliate links embedded naturally with benefits explained
-    - 2-3 FDWA products mentioned contextually
-    - Reality check section (honest about challenges)
-    - Resources section with all FDWA links
-    - Disclaimer if needed
-    - Appropriate consultation CTA",
-  "excerpt": "compelling 1-2 sentence hook mentioning data or specific outcome",
-  "rationale": ["how this improves on past posts", "unique angle taken", "specific value provided"],
-  "products_mentioned": ["FDWA product 1", "FDWA product 2"],
-  "affiliate_tools_used": ["tool 1", "tool 2", "tool 3"],
-  "consultation_type": "ai" or "credit" or "general",
-  "word_count": 1200
-}}
-
-Return ONLY valid JSON. NO text before or after the JSON object.
+===TITLE===
+Your engaging blog title here
+===EXCERPT===
+A compelling 1-2 sentence hook
+===HTML===
+<h1>Your title</h1>
+<p>Full HTML article here...</p>
 """
 
-            # Retry LLM invocation (configurable via env)
-            # Reduced default retries to prevent "stuck" behavior
-            max_retries = int(os.getenv("BLOG_LLM_MAX_RETRIES", "1"))
-            backoff = float(os.getenv("BLOG_LLM_RETRY_BACKOFF", "1.0"))
-            
-            # --- Content-quality validation function ---
-            def _quality_check(html_text: str) -> tuple[bool, str]:
-                plain = re.sub(r"<[^>]+>", "", html_text or "")
-                wc = len(plain.split())
-                if wc < 900:
-                    return False, "too_short"
+            # Single LLM call — no retries for content quality, just reliability retry
+            max_retries = int(os.getenv("BLOG_LLM_MAX_RETRIES", "2"))
+            backoff = float(os.getenv("BLOG_LLM_RETRY_BACKOFF", "2.0"))
 
-                found_aff = 0
-                for link in AFFILIATE_LINKS.values():
-                    if link in (html_text or ""):
-                        found_aff += 1
-                if found_aff < 3:
-                    return False, "missing_affiliates"
+            response = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    response = llm.invoke(generation_prompt)
+                    break
+                except Exception as e:
+                    logger.warning("LLM attempt %d/%d failed: %s", attempt, max_retries, str(e)[:200])
+                    if attempt == max_retries:
+                        raise
+                    time.sleep(backoff * attempt)
 
-                if not re.search(r"resources|resources and links|resources & links", html_text or "", re.I):
-                    return False, "missing_resources_section"
+            # Parse the delimiter-based response
+            response_text = response.content if hasattr(response, 'content') else str(response)
+            response_text = response_text.strip()
 
-                return True, "ok"
+            if not response_text:
+                raise ValueError("Empty LLM response")
 
-            # Global uniqueness loop
-            max_unique_attempts = 2  # Reduced from 3 to 2
-            unique_attempts_done = 0
-            avoid_titles = []
-            
-            while unique_attempts_done < max_unique_attempts:
-                unique_attempts_done += 1
-                
-                current_prompt = generation_prompt
-                if avoid_titles:
-                     current_prompt += f"\n\nIMPORTANT: Do NOT use the following titles as they are duplicates: {json.dumps(avoid_titles)}. Create a fresh, unique title."
+            # Extract using delimiters
+            title = ""
+            excerpt = ""
+            html_output = ""
 
-                # Inner loop: API reliability retries
-                response = None
-                last_exc = None
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        response = llm.invoke(current_prompt)
-                        break
-                    except Exception as e:
-                        last_exc = e
-                        logger.warning("LLM attempt %d/%d failed: %s", attempt, max_retries, str(e)[:200])
-                        if attempt == max_retries:
-                            logger.error("LLM generation failed after %d attempts", max_retries)
-                            raise
-                        sleep_for = backoff * (2 ** (attempt - 1))
-                        time.sleep(sleep_for)
+            if "===TITLE===" in response_text:
+                # Delimiter format (preferred)
+                parts = response_text.split("===TITLE===")
+                after_title = parts[-1] if len(parts) > 1 else response_text
 
-                # Handle structured output (Pydantic BlogPost) or text response
-                if isinstance(response, BlogPost):
-                    # Structured output from Mistral with_structured_output()
-                    logger.info("Received structured BlogPost from LLM")
-                    title = response.title
-                    html_output = response.html
-                    excerpt = response.excerpt
-                else:
-                    # Text response from HuggingFace or fallback - parse JSON
-                    response_text = response.content if hasattr(response, 'content') else str(response)
-                    response_text = response_text.strip()
-                    
-                    # Check if response is empty
-                    if not response_text:
-                        logger.warning("LLM returned empty response")
-                        if unique_attempts_done == max_unique_attempts:
-                             raise ValueError("Empty LLM response")
-                        continue
-                    
-                    # Extract JSON from response (handle wrapped JSON)
-                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-                    if json_match:
-                        response_text = json_match.group(0)
-                    
-                    try:
-                        parsed = json.loads(response_text)
-                        title = parsed.get("title")
-                        html_output = parsed.get("html")
-                        excerpt = parsed.get("excerpt", "")
-                    except json.JSONDecodeError as e:
-                        logger.error("Failed to parse LLM JSON: %s", e)
-                        if unique_attempts_done == max_unique_attempts:
-                            raise ValueError(f"Invalid JSON from LLM: {e}")
-                        continue
-
-                # Content-quality validation + optional content-level retries
-                content_retries = int(os.getenv("BLOG_LLM_CONTENT_RETRIES", "1"))
-                content_attempt = 0
-                quality_ok, quality_reason = _quality_check(html_output)
-                while not quality_ok and content_attempt < content_retries:
-                    content_attempt += 1
-                    logger.warning("LLM content-quality check failed (%s). Content retry %d/%d", quality_reason, content_attempt, content_retries)
-                    regen_note = (
-                        "\n\nIMPORTANT: previous output missed: %s. Regenerate the blog and ensure it contains at least 1000 words, includes 3-5 affiliate links, a 'Resources' section, and mentions FDWA products. Return ONLY valid JSON." % quality_reason
-                    )
-                    try:
-                        response = llm.invoke(current_prompt + regen_note)
-                    except Exception as e:
-                        logger.warning("Content retry invoke failed: %s", e)
-                        break
-
-                    # parse regenerated response
-                    if isinstance(response, BlogPost):
-                        title = response.title
-                        html_output = response.html
-                        excerpt = response.excerpt
+                if "===EXCERPT===" in after_title:
+                    title_part, rest = after_title.split("===EXCERPT===", 1)
+                    title = title_part.strip()
+                    if "===HTML===" in rest:
+                        excerpt_part, html_part = rest.split("===HTML===", 1)
+                        excerpt = excerpt_part.strip()
+                        html_output = html_part.strip()
                     else:
-                        response_text = response.content if hasattr(response, 'content') else str(response)
-                        response_text = response_text.strip()
-                        
-                        # Handle empty response
-                        if not response_text:
-                            logger.warning("LLM returned empty response")
-                            continue
-                        
-                        # Try to extract JSON
-                        json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
-                        if json_match:
-                            response_text = json_match.group(0)
-                        else:
-                            logger.warning("No JSON found in LLM response: %s", response_text[:200])
-                            continue
-                        
-                        # Parse JSON with error handling
-                        try:
-                            parsed = json.loads(response_text)
-                        except json.JSONDecodeError as e:
-                            logger.warning("JSON parse failed: %s. Response: %s", e, response_text[:200])
-                            continue
-                        
-                        title = parsed.get("title")
-                        html_output = parsed.get("html")
+                        excerpt = rest.strip()
+                elif "===HTML===" in after_title:
+                    title_part, html_part = after_title.split("===HTML===", 1)
+                    title = title_part.strip()
+                    html_output = html_part.strip()
+                else:
+                    title = after_title[:200].strip()
+                    html_output = after_title.strip()
+            else:
+                # Fallback: try JSON parsing with fixing
+                logger.info("Delimiter format not found, trying JSON fallback")
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if json_match:
+                    json_text = json_match.group(0)
+                    # Fix common LLM JSON escape issues
+                    json_text = re.sub(r'(?<!\\)\\(?!["\\/bfnrtu])', r'\\\\', json_text)
+                    try:
+                        parsed = json.loads(json_text)
+                        title = parsed.get("title", "")
+                        html_output = parsed.get("html", "")
                         excerpt = parsed.get("excerpt", "")
+                    except json.JSONDecodeError:
+                        # Last resort: treat entire response as HTML
+                        logger.warning("JSON parse failed, using response as raw HTML")
+                        html_output = response_text
+                        # Try to extract title from HTML
+                        h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', response_text, re.I | re.DOTALL)
+                        title = h1_match.group(1).strip() if h1_match else f"FDWA Blog: {topic.title()} Insights"
+                        excerpt = ""
+                else:
+                    # Treat as raw HTML
+                    html_output = response_text
+                    h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', response_text, re.I | re.DOTALL)
+                    title = h1_match.group(1).strip() if h1_match else f"FDWA Blog: {topic.title()} Insights"
 
-                    quality_ok, quality_reason = _quality_check(html_output)
-                    if quality_ok:
-                        logger.info("Content retry succeeded on attempt %d", content_attempt)
-                        break
-                    time.sleep(0.5 * content_attempt)
+            # Validate we got something
+            if not title:
+                title = f"FDWA: {topic.title()} in {current_month} {current_year}"
+            if not html_output:
+                raise ValueError("LLM produced no HTML content")
 
-                
-                # Validate required fields
-                if not title or not html_output:
-                    logger.warning("LLM response missing title or html")
-                    if unique_attempts_done == max_unique_attempts:
-                        raise ValueError("Missing required fields in LLM response")
-                    continue
-                
-                # Check for duplicates
-                if _is_duplicate_post(title, excerpt or html_output[:200], topic):
-                    logger.warning("LLM generated duplicate content: %s. Retrying...", title)
-                    avoid_titles.append(title)
-                    if unique_attempts_done == max_unique_attempts:
-                        raise ValueError("Duplicate content detected after multiple attempts")
-                    continue
-                
-                # If unique and valid, break the loop
-                break
+            # Strip any markdown code fences the LLM may have wrapped around HTML
+            html_output = re.sub(r'^```html?\s*\n?', '', html_output)
+            html_output = re.sub(r'\n?```\s*$', '', html_output)
+
+            logger.info("Blog parsed: title=%s, html=%d chars", title[:60], len(html_output))
+
+            # Check for duplicates
+            if _is_duplicate_post(title, excerpt or html_output[:200], topic, check_topic=False):
+                logger.warning("Blog title is duplicate, appending timestamp")
+                title = f"{title} ({current_month} {current_year})"
             
             # Add image to blog HTML
             image_html = ""

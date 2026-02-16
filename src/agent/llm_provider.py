@@ -13,7 +13,7 @@ Priority Order:
 
 import logging
 import os
-from typing import Optional, Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,12 @@ class CascadingLLMWrapper:
     """Wrapper that automatically cascades through all available LLM providers on failure."""
     
     def __init__(self, purpose: str = "general", structured_output_schema=None):
+        """Initialize the cascading LLM wrapper.
+        
+        Args:
+            purpose: Purpose of the LLM usage (affects token limits)
+            structured_output_schema: Optional schema for structured outputs
+        """
         self.purpose = purpose
         self.structured_output_schema = structured_output_schema
         self.last_working_provider = None
@@ -43,7 +49,8 @@ class CascadingLLMWrapper:
         if os.getenv("APIFREELLM_API_KEY"):
             providers.append(("APIFreeLLM", self._init_apifreellm))
             
-        # 4. Hugging Face (if enabled)
+        # 4. Hugging Face (disabled by default - no credits)
+        # Set HF_ENABLE=true to enable if you have credits
         if os.getenv("HF_ENABLE", "false").lower() in ("1", "true", "yes") and os.getenv("HF_TOKEN"):
             providers.append(("HuggingFace", self._init_huggingface))
             
@@ -232,18 +239,15 @@ class CascadingLLMWrapper:
         for provider_name, init_func in providers:
             try:
                 logger.info(f"🔹 Trying provider: {provider_name}")
-                print(f"🔹 Trying provider: {provider_name}")  # Console output for visibility
                 llm = init_func()
                 response = llm.invoke(prompt)
                 logger.info(f"✅ Success with {provider_name}")
-                print(f"✅ Success with {provider_name}")  # Console output for visibility
                 self.last_working_provider = provider_name
                 return response
             except Exception as e:
                 error_short = str(e)[:150]
                 logger.warning(f"❌ {provider_name} failed: {error_short}")
                 # Print full error for debugging
-                print(f"   DEBUG - Full error: {type(e).__name__}: {str(e)}")
                 last_error = e
                 continue
         
@@ -283,7 +287,7 @@ def get_llm(purpose: str = "general", structured_output_schema=None):
     providers = wrapper._get_all_providers()
     if not providers:
         logger.error("❌ No LLM providers configured")
-        raise RuntimeError(f"No LLM providers configured. Set at least one API key: MISTRAL_API_KEY, OPENROUTER_API_KEY, APIFREELLM_API_KEY, GOOGLE_AI_API_KEY")
+        raise RuntimeError("No LLM providers configured. Set at least one API key: MISTRAL_API_KEY, OPENROUTER_API_KEY, APIFREELLM_API_KEY, GOOGLE_AI_API_KEY")
     
     logger.info(f"✓ Cascading LLM initialized for {purpose} with {len(providers)} providers: {', '.join([p[0] for p in providers])}")
     return wrapper

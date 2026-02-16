@@ -17,6 +17,7 @@ dependencies = [
     "langsmith>=0.2.0",
     "langchain>=0.3.0",
     "langchain-core>=0.3.0",
+    "langchain-mistralai>=1.0.1",
 ]
 
 
