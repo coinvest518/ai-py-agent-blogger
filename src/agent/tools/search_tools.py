@@ -96,7 +96,23 @@ def search_trends() -> dict:
         except Exception as e:
             logger.warning("Tavily failed: %s", e)
 
-    # 3) Fallback
+    # 3) Firecrawl web search (new fallback before static text)
+    try:
+        from src.agent.tools.web_tools import search_web as firecrawl_search
+        results = firecrawl_search(query, limit=5)
+        if results:
+            text = "\n".join(
+                f"🔍 {r['title']}\n   📝 {r.get('description', '')[:150]}"
+                for r in results if r.get("title")
+            )
+            if text and len(text) > 30:
+                logger.info("Firecrawl search success: %d chars", len(text))
+                _save_cache({"date": today, "trend_data": text})
+                return {"trend_data": text, "source": "Firecrawl"}
+    except Exception as e:
+        logger.warning("Firecrawl search failed: %s", e)
+
+    # 4) Static fallback
     fallback = (
         "AI automation is transforming business operations. "
         "Smart entrepreneurs are using AI agents to scale their businesses, "

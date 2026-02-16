@@ -1,8 +1,11 @@
 """FastAPI application for running the FDWA agent."""
 
 import asyncio
+import json
 import logging
 import os
+import re
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -173,25 +176,139 @@ async def generate_blog():
 
 
 # ---------------------------------------------------------------------------
-# Chat  (simple — uses the cascading LLM directly)
+# Chat  (full-featured — knowledge base, memory, tools, URL scraping)
 # ---------------------------------------------------------------------------
+
+# In-memory conversation history per session (keyed by session_id)
+_chat_sessions: dict[str, list[dict]] = {}
+_MAX_HISTORY = 20  # keep last N turns per session
+
+
+# Use the shared knowledge module (same identity for graph + chat)
+from src.agent.core.knowledge import load_knowledge_context, build_system_prompt
+
 
 @app.post("/chat")
 async def chat(request: Request):
-    """Simple chat endpoint — sends user message to cascading LLM."""
+    """Full-featured chat endpoint with knowledge base, memory, URL scraping, and history."""
     try:
         body = await request.json()
         user_msg = body.get("message", "").strip()
+        session_id = body.get("session_id", "default")
+
         if not user_msg:
             return JSONResponse({"error": "Empty message"}, status_code=400)
 
-        from src.agent.llm_provider import get_llm
-        llm = get_llm()
-        response = llm.invoke(
-            f"You are the FDWA AI assistant. Answer concisely and helpfully.\n\nUser: {user_msg}"
+        # --- URL detection & auto-scrape ---
+        extra_context = ""
+        from src.agent.tools.web_tools import extract_urls, scrape_url
+
+        urls = extract_urls(user_msg)
+        if urls:
+            scraped_parts = []
+            for url in urls[:3]:  # max 3 URLs per message
+                result = scrape_url(url)
+                if "error" not in result:
+                    title = result.get("title", "")
+                    md = result.get("markdown", "")
+                    scraped_parts.append(
+                        f"[Scraped from {url}]\nTitle: {title}\nContent:\n{md}"
+                    )
+                else:
+                    scraped_parts.append(f"[Could not scrape {url}: {result['error']}]")
+            extra_context = "\n\n".join(scraped_parts)
+
+        # --- Check if user wants a web search ---
+        search_triggers = ["search for", "look up", "find info", "google", "what is the latest"]
+        if any(t in user_msg.lower() for t in search_triggers) and not urls:
+            from src.agent.tools.web_tools import search_web
+            results = search_web(user_msg, limit=5)
+            if results:
+                search_text = "\n".join(
+                    f"- {r['title']}: {r['description']} ({r['url']})"
+                    for r in results
+                )
+                extra_context += f"\n\nWeb search results:\n{search_text}"
+
+        # --- Memory recall ---
+        memory_context = ""
+        try:
+            from src.agent.memory_store import get_memory_store
+            store = get_memory_store()
+            memories = store.search_memory(query=user_msg, limit=3)
+            if memories:
+                memory_parts = []
+                for m in memories:
+                    val = m.get("value", "")
+                    if isinstance(val, dict):
+                        val = json.dumps(val)[:300]
+                    elif isinstance(val, str):
+                        val = val[:300]
+                    memory_parts.append(f"- {m.get('key', '?')}: {val}")
+                if memory_parts:
+                    memory_context = "\nRelevant memories:\n" + "\n".join(memory_parts)
+        except Exception as e:
+            logger.debug("Memory recall skipped: %s", e)
+
+        # --- Build conversation history ---
+        if session_id not in _chat_sessions:
+            _chat_sessions[session_id] = []
+        history = _chat_sessions[session_id]
+
+        # System prompt (shared module — same identity as main graph agent)
+        system_prompt = build_system_prompt(
+            purpose="chat", extra_context=extra_context + memory_context
         )
-        text = response.content if hasattr(response, "content") else str(response)
-        return {"reply": text}
+
+        # Build messages list for LLM
+        from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+
+        messages = [SystemMessage(content=system_prompt)]
+
+        # Add conversation history (last N turns)
+        for turn in history[-_MAX_HISTORY:]:
+            if turn["role"] == "user":
+                messages.append(HumanMessage(content=turn["content"]))
+            else:
+                messages.append(AIMessage(content=turn["content"]))
+
+        # Add current message
+        messages.append(HumanMessage(content=user_msg))
+
+        # --- Call LLM ---
+        from src.agent.llm_provider import get_llm
+        llm = get_llm(purpose="chat assistant")
+        response = llm.invoke(messages)
+        reply_text = response.content if hasattr(response, "content") else str(response)
+
+        # --- Strip markdown from response ---
+        from src.agent.agents.content_agent import strip_markdown
+        reply_text = strip_markdown(reply_text)
+
+        # --- Save to conversation history ---
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply_text})
+
+        # Trim history
+        if len(history) > _MAX_HISTORY * 2:
+            _chat_sessions[session_id] = history[-_MAX_HISTORY * 2:]
+
+        # --- Persist important interactions to memory ---
+        try:
+            if len(user_msg) > 20:  # non-trivial messages
+                store = get_memory_store()
+                store.save_memory(
+                    f"chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    {"user": user_msg[:500], "assistant": reply_text[:500], "session": session_id},
+                )
+        except Exception:
+            pass  # non-critical
+
+        return {
+            "reply": reply_text,
+            "session_id": session_id,
+            "urls_scraped": len(urls),
+        }
     except Exception as e:
         logger.exception("Chat error")
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -238,8 +355,9 @@ async def scheduler_toggle():
 _SETTING_KEYS = [
     "COMPOSIO_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY",
     "COINMARKETCAP_API_KEY", "SERPAPI_KEY", "IMGBB_API_KEY",
-    "LANGSMITH_API_KEY", "ASTRA_DB_APPLICATION_TOKEN",
-    "ASTRA_DB_API_ENDPOINT", "ASTRA_COLLECTION_NAME",
+    "FIRECRAWL_API_KEY", "LANGSMITH_API_KEY",
+    "ASTRA_DB_APPLICATION_TOKEN", "ASTRA_DB_API_ENDPOINT",
+    "ASTRA_COLLECTION_NAME",
     "BLOG_INTERVAL_HOURS", "SCHEDULER_INTERVAL_MINUTES",
     "GOOGLE_POSTS_SPREADSHEET_ID", "GOOGLE_TOKENS_SPREADSHEET_ID",
 ]

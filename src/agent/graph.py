@@ -29,6 +29,7 @@ from langsmith import traceable
 # ── Core ────────────────────────────────────────────────────────────────
 from src.agent.core.state import AgentState
 from src.agent.core.config import validate_account_ids
+from src.agent.core.knowledge import load_knowledge_context, FDWA_IDENTITY
 
 # ── Sub-agents ──────────────────────────────────────────────────────────
 from src.agent.agents import research_agent
@@ -127,6 +128,13 @@ def generate_content_node(state: AgentState) -> dict:
         f"AI automation is transforming business operations in {datetime.now().year}."
     )
 
+    # ── Inject shared FDWA knowledge so every agent knows the brand ──
+    try:
+        kb_snippet = load_knowledge_context()[:1500]  # enough for context, not too heavy
+        base_insights = f"{FDWA_IDENTITY}\n\n{base_insights}\n\nBrand context: {kb_snippet}"
+    except Exception:
+        pass
+
     # ── AI Decision Engine ──
     strategy = None
     try:
@@ -190,18 +198,31 @@ def generate_content_node(state: AgentState) -> dict:
 
 @traceable(name="generate_image")
 def generate_image_node(state: AgentState) -> dict:
-    """Generate FDWA-branded image (Pollinations → HF fallback)."""
+    """Generate FDWA-branded image using LLM-powered prompt agent."""
     logger.info("──── IMAGE ────")
-    _broadcast_sync("start_step", "generate_image", "Generating image…")
+    _broadcast_sync("start_step", "generate_image", "Designing image prompt with AI…")
 
     tweet_text = state.get("tweet_text", "")
     if not tweet_text:
         return {"image_url": None, "image_path": None}
 
-    from src.agent.tools.image_tools import enhance_prompt
+    # Extract strategy context for the image prompt agent
     ai_strategy = state.get("ai_strategy") or {}
     topic = ai_strategy.get("topic", "business") if isinstance(ai_strategy, dict) else "business"
-    prompt = enhance_prompt(tweet_text, topic)
+    products = ai_strategy.get("products", []) if isinstance(ai_strategy, dict) else []
+    product_name = products[0].get("name") if products else None
+    product_price = products[0].get("price") if products else None
+
+    # Use LLM-powered image prompt agent (falls back to template if LLM fails)
+    from src.agent.agents.image_prompt_agent import generate_image_prompt
+    prompt = generate_image_prompt(
+        post_text=tweet_text,
+        topic=topic,
+        product_name=product_name,
+        product_price=product_price,
+        platform="general",
+    )
+    logger.info("Image prompt (%d chars): %s", len(prompt), prompt[:120])
 
     try:
         from src.agent.pollinations_image_gen import (
