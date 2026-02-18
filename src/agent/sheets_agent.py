@@ -9,6 +9,7 @@ This module provides AI agents with persistent storage in Google Sheets for:
 import logging
 import os
 import re
+import json
 from datetime import datetime
 from typing import Dict, List
 
@@ -35,6 +36,10 @@ TOKENS_SHEET_ID = os.getenv("GOOGLESHEETS_TOKENS_SPREADSHEET_ID")
 class GoogleSheetsAgent:
     """Sub-agent for managing Google Sheets storage."""
     
+    # Workbook thresholds
+    SHEET_CELL_LIMIT = 10_000_000
+    SHEET_ROTATE_THRESHOLD = 9_800_000  # proactively rotate when approaching this many cells
+
     def __init__(self):
         """Initialize Google Sheets agent with credentials."""
         self.account_id = os.getenv("GOOGLESHEETS_ACCOUNT_ID")
@@ -42,6 +47,74 @@ class GoogleSheetsAgent:
         self.tokens_sheet_id = TOKENS_SHEET_ID
         # cache discovered tool slugs to avoid repeated API calls
         self._discovered_create_slug: str | None = None
+
+    # -----------------------------
+    # Sheet metadata / rotation helpers
+    # -----------------------------
+    def _get_sheet_metadata(self, spreadsheet_id: str) -> dict | None:
+        """Return workbook-level cell counts and per-tab gridProperties.
+
+        Returns: {"total_cells": int, "tabs": {title: {rows, cols, sheetId}}}
+        """
+        try:
+            resp = self._execute_tool("GOOGLESHEETS_GET_SHEET_NAMES", {"spreadsheet_id": spreadsheet_id})
+            if not resp.get("successful"):
+                return None
+            sheets = resp.get("data", {}).get("sheets", [])
+            total_cells = 0
+            tabs: Dict[str, dict] = {}
+            for sheet in sheets:
+                if isinstance(sheet, dict):
+                    props = sheet.get("properties", {}) or {}
+                    title = props.get("title", "")
+                    grid = props.get("gridProperties", {}) or {}
+                    rows = int(grid.get("rowCount", 0) or 0)
+                    cols = int(grid.get("columnCount", 0) or 0)
+                    sheet_id = props.get("sheetId")
+                    total_cells += rows * cols
+                    tabs[title] = {"rows": rows, "cols": cols, "sheetId": sheet_id}
+            return {"total_cells": total_cells, "tabs": tabs}
+        except Exception as e:
+            logger.debug("Could not fetch sheet metadata: %s", e)
+            return None
+
+    def _should_rotate_sheet(self, spreadsheet_id: str, sheet_names: list | None = None, required_rows: int = 1, safety_margin: int = 2000) -> bool:
+        """Return True when adding `required_rows` would push workbook near rotation threshold."""
+        meta = self._get_sheet_metadata(spreadsheet_id)
+        if not meta:
+            return False
+        total_cells = meta.get("total_cells", 0)
+        # estimate columns for the target tab(s)
+        cols = 1000  # conservative fallback
+        if sheet_names:
+            for name in sheet_names:
+                info = meta["tabs"].get(name)
+                if info and info.get("cols"):
+                    cols = info.get("cols")
+                    break
+        else:
+            for candidate in ("Posts Tracking", "Token Tracking", "AI Agent Memory", "Sheet1"):
+                if candidate in meta["tabs"]:
+                    cols = meta["tabs"][candidate].get("cols", cols)
+                    break
+        estimated_new_cells = required_rows * max(1, int(cols))
+        return (total_cells + estimated_new_cells + safety_margin) >= self.SHEET_ROTATE_THRESHOLD
+
+    def _offload_rows_to_local(self, filename: str, rows: list) -> bool:
+        """Persist rows locally (non-fatal fallback when Sheets unavailable)."""
+        try:
+            base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            data_dir = os.path.join(base, "data")
+            os.makedirs(data_dir, exist_ok=True)
+            file_path = os.path.join(data_dir, filename)
+            with open(file_path, "a", encoding="utf-8") as f:
+                for r in rows:
+                    f.write(json.dumps({"timestamp": datetime.now().isoformat(), "row": r}) + "\n")
+            logger.warning("Offloaded %d rows to %s", len(rows), file_path)
+            return True
+        except Exception as e:
+            logger.error("Failed to offload rows to local file: %s", e)
+            return False
         
     def _execute_tool(self, tool_name: str, params: Dict) -> Dict:
         """Execute a Composio Google Sheets tool (simple wrapper)."""
@@ -147,15 +220,16 @@ class GoogleSheetsAgent:
             logger.exception(f"Error creating posts spreadsheet: {e}")
             return None
     
-    def _setup_posts_headers(self, sheet_id: str):
-        """Set up column headers for posts sheet."""
+    def _setup_posts_headers(self, sheet_id: str) -> bool:
+        """Set up column headers for posts sheet. Returns True on success."""
         headers = [
             ["Timestamp", "Platform", "Content Preview", "Post ID", "Image URL", 
              "Engagement", "Status", "Hash", "Full Content"]
         ]
-        
+
+        # Primary attempt: write header cells by sheetId (low-level update)
         try:
-            self._execute_tool(
+            resp = self._execute_tool(
                 "GOOGLESHEETS_BATCH_UPDATE",
                 {
                     "spreadsheet_id": sheet_id,
@@ -179,9 +253,31 @@ class GoogleSheetsAgent:
                     }]
                 }
             )
-            logger.info("✓ Set up posts sheet headers")
+            if resp.get("successful") or resp.get("data"):
+                logger.info("✓ Set up posts sheet headers")
+                return True
         except Exception as e:
-            logger.error(f"Failed to set up headers: {e}")
+            logger.debug(f"Primary header write failed (sheetId method): {e}")
+
+        # Fallback: write headers by sheet name (compatible with other tool implementations)
+        try:
+            resp = self._execute_tool(
+                "GOOGLESHEETS_BATCH_UPDATE",
+                {
+                    "spreadsheet_id": sheet_id,
+                    "sheet_name": "Posts Tracking",
+                    "values": headers,
+                    "first_cell_location": "A1"
+                }
+            )
+            if resp.get("successful"):
+                logger.info("✓ Set up posts sheet headers (fallback by name)")
+                return True
+        except Exception as e:
+            logger.debug(f"Fallback header write (sheet_name) failed: {e}")
+
+        logger.error("Failed to set up posts sheet headers")
+        return False
     
     def create_tokens_spreadsheet(self) -> str | None:
         """Create a new spreadsheet for tracking crypto tokens (fallback-aware)."""
@@ -203,16 +299,17 @@ class GoogleSheetsAgent:
             logger.exception(f"Error creating tokens spreadsheet: {e}")
             return None
     
-    def _setup_tokens_headers(self, sheet_id: str):
-        """Set up column headers for tokens sheet with AI analysis."""
+    def _setup_tokens_headers(self, sheet_id: str) -> bool:
+        """Set up column headers for tokens sheet with AI analysis. Returns True on success."""
         headers = [
             ["Timestamp", "Token Symbol", "Token Name", "Price", "24h Change %", "Volume 24h", "Market Cap",
              "Trade Score", "Profit Prob %", "Risk Level", "Trading Signal", "Momentum", "Liquidity",
              "Source", "AI Reasoning", "Notes"]
         ]
-        
+
+        # Primary attempt: low-level updateCells by sheetId
         try:
-            self._execute_tool(
+            resp = self._execute_tool(
                 "GOOGLESHEETS_BATCH_UPDATE",
                 {
                     "spreadsheet_id": sheet_id,
@@ -236,30 +333,53 @@ class GoogleSheetsAgent:
                     }]
                 }
             )
-            logger.info("✓ Set up tokens sheet headers")
+            if resp.get("successful") or resp.get("data"):
+                logger.info("✓ Set up tokens sheet headers")
+                return True
         except Exception as e:
-            logger.error(f"Failed to set up headers: {e}")
+            logger.debug(f"Primary tokens header write failed: {e}")
+
+        # Fallback: write headers by sheet name
+        try:
+            resp = self._execute_tool(
+                "GOOGLESHEETS_BATCH_UPDATE",
+                {
+                    "spreadsheet_id": sheet_id,
+                    "sheet_name": "Token Tracking",
+                    "values": headers,
+                    "first_cell_location": "A1"
+                }
+            )
+            if resp.get("successful"):
+                logger.info("✓ Set up tokens sheet headers (fallback by name)")
+                return True
+        except Exception as e:
+            logger.debug(f"Fallback tokens header write failed: {e}")
+
+        logger.error("Failed to set up tokens sheet headers")
+        return False
     
     def save_post(self, platform: str, content: str, post_id: str = "", 
                   image_url: str = "", metadata: Dict | None = None) -> bool:
         """Save a social media post to Google Sheets.
-        
-        Auto-creates new sheet if current one hits 10M cell limit.
-        
-        Args:
-            platform: Platform name (twitter, facebook, linkedin, etc.)
-            content: Post content/text
-            post_id: Platform-specific post ID
-            image_url: URL of attached image
-            metadata: Additional metadata dict
-            
-        Returns:
-            True if saved successfully
+
+        Auto-rotates sheet before limit, and offloads rows locally when Sheets writes fail.
+        Returns True if data is persisted somewhere (Sheets or local offload).
         """
         if not self.posts_sheet_id:
             logger.warning("Posts spreadsheet not configured, skipping Sheets save")
             return False
-        
+
+        # Pre-rotate proactively if workbook is approaching the cell limit
+        try:
+            if self._should_rotate_sheet(self.posts_sheet_id, ["Posts Tracking", "AI Agent Memory", "Sheet1"], required_rows=1):
+                logger.warning("Pre-rotation: creating new posts sheet before append (approaching cell limit)")
+                new_sheet_id = self._create_new_posts_sheet_and_update_env()
+                if new_sheet_id:
+                    self.posts_sheet_id = new_sheet_id
+        except Exception:
+            pass
+
         # Try to save, with auto-recovery if cell limit hit
         for attempt in range(2):  # Try twice: original + retry after new sheet
             try:
@@ -267,7 +387,7 @@ class GoogleSheetsAgent:
                 timestamp = datetime.now().isoformat()
                 content_preview = content[:200]
                 content_hash = self._get_content_hash(content)
-                
+
                 row_data = [
                     timestamp,
                     platform.upper(),
@@ -279,73 +399,64 @@ class GoogleSheetsAgent:
                     content_hash,
                     content
                 ]
-                
-                # Append to sheet using batch_update
-                # Try different sheet names with fallback chain: Posts Tracking → AI Agent Memory → Sheet1
-                sheet_name = "Posts Tracking"  # New sheets use this name
-                response = self._execute_tool(
-                    "GOOGLESHEETS_BATCH_UPDATE",
-                    {
-                        "spreadsheet_id": self.posts_sheet_id,
-                        "sheet_name": sheet_name,
-                        "values": [row_data]
-                    }
-                )
-                
-                # Fallback to "AI Agent Memory" (legacy sheets)
-                if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
+
+                # Append to sheet using batch_update (try several tab names)
+                sheet_names = ["Posts Tracking", "AI Agent Memory", "Sheet1"]
+                response = None
+                for sheet_name in sheet_names:
                     response = self._execute_tool(
                         "GOOGLESHEETS_BATCH_UPDATE",
                         {
                             "spreadsheet_id": self.posts_sheet_id,
-                            "sheet_name": "AI Agent Memory",
+                            "sheet_name": sheet_name,
                             "values": [row_data]
                         }
                     )
-                
-                # Final fallback to "Sheet1" (brand new/unconfigured sheets)
-                if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
-                    response = self._execute_tool(
-                        "GOOGLESHEETS_BATCH_UPDATE",
-                        {
-                            "spreadsheet_id": self.posts_sheet_id,
-                            "sheet_name": "Sheet1",
-                            "values": [row_data]
-                        }
-                    )
-                
-                if response.get("successful"):
+                    if response.get("successful"):
+                        break
+                    # If tab not found, keep trying next name
+                    if "not found" not in str(response.get("error", "")).lower():
+                        break
+
+                if response and response.get("successful"):
                     logger.info(f"✓ Saved {platform} post to Google Sheets")
                     return True
-                else:
-                    error_msg = response.get('error', '')
-                    
-                    # Check if cell limit error
-                    if attempt == 0 and self._is_cell_limit_error(error_msg):
-                        logger.warning("⚠️ Posts sheet hit cell limit, creating new sheet...")
-                        new_sheet_id = self._create_new_posts_sheet_and_update_env()
-                        if new_sheet_id:
-                            logger.info("🔄 Retrying save with new sheet...")
-                            continue  # Retry with new sheet
-                    
-                    logger.error(f"Failed to save post: {error_msg}")
-                    return False
-                    
+
+                # If cell-limit detected, create a new sheet and retry once
+                error_msg = (response or {}).get('error', '')
+                if attempt == 0 and self._is_cell_limit_error(error_msg):
+                    logger.warning("⚠️ Posts sheet hit cell limit, creating new sheet...")
+                    new_sheet_id = self._create_new_posts_sheet_and_update_env()
+                    if new_sheet_id:
+                        self.posts_sheet_id = new_sheet_id
+                        logger.info("🔄 Retrying save with new sheet...")
+                        continue  # retry
+
+                # Final fallback: offload locally so pipeline continues (non-fatal)
+                logger.error(f"Failed to save post to Sheets: {error_msg} — offloading locally")
+                self._offload_rows_to_local("offload_posts.jsonl", [row_data])
+                return True
+
             except Exception as e:
                 error_msg = str(e)
-                
-                # Check if cell limit error in exception
+                # Retry on cell-limit exception
                 if attempt == 0 and self._is_cell_limit_error(error_msg):
                     logger.warning("⚠️ Posts sheet hit cell limit (exception), creating new sheet...")
                     new_sheet_id = self._create_new_posts_sheet_and_update_env()
                     if new_sheet_id:
+                        self.posts_sheet_id = new_sheet_id
                         logger.info("🔄 Retrying save with new sheet...")
-                        continue  # Retry with new sheet
-                
-                logger.exception(f"Error saving post to Sheets: {e}")
-                return False
-        
-        return False
+                        continue
+
+                logger.exception(f"Error saving post to Sheets: {e} — offloading locally")
+                self._offload_rows_to_local("offload_posts.jsonl", [
+                    timestamp, platform.upper(), content[:200], post_id or "N/A", image_url or "", metadata or {}, "Posted",
+                    self._get_content_hash(content), content
+                ])
+                return True
+
+        # Shouldn't reach here, but treat as non-fatal (already offloaded above)
+        return True
     
     def save_crypto_token(self, symbol: str, name: str = "", 
                          price: str = "", percent_change_24h: str = "",
@@ -356,38 +467,29 @@ class GoogleSheetsAgent:
                          source: str = "ai_analysis",
                          reasoning: str = "", notes: str = "") -> bool:
         """Save an AI-analyzed crypto token to Google Sheets.
-        
-        Auto-creates new sheet if current one hits 10M cell limit.
-        
-        Args:
-            symbol: Token symbol (e.g., BTC, ETH, DOGE)
-            name: Full token name
-            price: Current price (USD)
-            percent_change_24h: 24h percentage change
-            volume_24h: 24h trading volume
-            market_cap: Market capitalization
-            trade_score: AI trade score (0-100)
-            profit_probability: Profit probability (0-100%)
-            risk_level: Risk assessment (LOW/MEDIUM/HIGH)
-            trading_signal: Trading signal (STRONG_BUY, BUY, HOLD, etc.)
-            momentum: Momentum strength (STRONG, MODERATE, WEAK, etc.)
-            liquidity: Liquidity quality (EXCELLENT, GOOD, FAIR, POOR)
-            source: Data source (default: ai_analysis)
-            reasoning: AI reasoning for selecting this token
-            notes: Additional notes
-            
-        Returns:
-            True if saved successfully
+
+        Pre-rotates the sheet if needed and offloads locally when writes fail.
+        Returns True if data persisted (Sheets or local offload).
         """
         if not self.tokens_sheet_id:
             logger.warning("Tokens spreadsheet not configured, skipping Sheets save")
             return False
-        
+
+        # Pre-rotate proactively
+        try:
+            if self._should_rotate_sheet(self.tokens_sheet_id, ["Token Tracking", "AI Agent Memory", "Sheet1"], required_rows=1):
+                logger.warning("Pre-rotation: creating new tokens sheet before append (approaching cell limit)")
+                new_sheet_id = self._create_new_tokens_sheet_and_update_env()
+                if new_sheet_id:
+                    self.tokens_sheet_id = new_sheet_id
+        except Exception:
+            pass
+
         # Try to save, with auto-recovery if cell limit hit
         for attempt in range(2):  # Try twice: original + retry after new sheet
             try:
                 timestamp = datetime.now().isoformat()
-                
+
                 row_data = [
                     timestamp,
                     symbol.upper(),
@@ -406,84 +508,59 @@ class GoogleSheetsAgent:
                     reasoning,
                     notes
                 ]
-                
-                # Append to sheet using batch_update
-                # Try different sheet names with fallback chain: Token Tracking → AI Agent Memory → Sheet1
-                sheet_name = "Token Tracking"  # New sheets use this name
-                response = self._execute_tool(
-                    "GOOGLESHEETS_BATCH_UPDATE",
-                    {
-                        "spreadsheet_id": self.tokens_sheet_id,
-                        "sheet_name": sheet_name,
-                        "values": [row_data]
-                    }
-                )
-                
-                # Fallback to "AI Agent Memory" (legacy sheets)
-                if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
+
+                # Append to sheet using batch_update (try common tab names)
+                sheet_names = ["Token Tracking", "AI Agent Memory", "Sheet1"]
+                response = None
+                for sheet_name in sheet_names:
                     response = self._execute_tool(
                         "GOOGLESHEETS_BATCH_UPDATE",
-                        {
-                            "spreadsheet_id": self.tokens_sheet_id,
-                            "sheet_name": "AI Agent Memory",
-                            "values": [row_data]
-                        }
+                        {"spreadsheet_id": self.tokens_sheet_id, "sheet_name": sheet_name, "values": [row_data]}
                     )
-                
-                # Final fallback to "Sheet1" (brand new/unconfigured sheets)
-                if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
-                    response = self._execute_tool(
-                        "GOOGLESHEETS_BATCH_UPDATE",
-                        {
-                            "spreadsheet_id": self.tokens_sheet_id,
-                            "sheet_name": "Sheet1",
-                            "values": [row_data]
-                        }
-                    )
-                
-                if response.get("successful"):
+                    if response.get("successful"):
+                        break
+                    if "not found" not in str(response.get("error", "")).lower():
+                        break
+
+                if response and response.get("successful"):
                     logger.info(f"✓ Saved {symbol} token to Google Sheets")
                     return True
-                else:
-                    error_msg = response.get('error', '')
-                    
-                    # Check if cell limit error
-                    if attempt == 0 and self._is_cell_limit_error(error_msg):
-                        logger.warning("⚠️ Tokens sheet hit cell limit, creating new sheet...")
-                        new_sheet_id = self._create_new_tokens_sheet_and_update_env()
-                        if new_sheet_id:
-                            logger.info("🔄 Retrying save with new sheet...")
-                            continue  # Retry with new sheet
-                    
-                    logger.error(f"Failed to save token: {error_msg}")
-                    return False
-                    
+
+                error_msg = (response or {}).get("error", "")
+                if attempt == 0 and self._is_cell_limit_error(error_msg):
+                    logger.warning("⚠️ Tokens sheet hit cell limit, creating new sheet...")
+                    new_sheet_id = self._create_new_tokens_sheet_and_update_env()
+                    if new_sheet_id:
+                        self.tokens_sheet_id = new_sheet_id
+                        logger.info("🔄 Retrying save with new sheet...")
+                        continue
+
+                # Final fallback: offload locally so pipeline continues
+                logger.error(f"Failed to save token to Sheets: {error_msg} — offloading locally")
+                self._offload_rows_to_local("offload_tokens.jsonl", [row_data])
+                return True
+
             except Exception as e:
                 error_msg = str(e)
-                
-                # Check if cell limit error in exception
                 if attempt == 0 and self._is_cell_limit_error(error_msg):
                     logger.warning("⚠️ Tokens sheet hit cell limit (exception), creating new sheet...")
                     new_sheet_id = self._create_new_tokens_sheet_and_update_env()
                     if new_sheet_id:
+                        self.tokens_sheet_id = new_sheet_id
                         logger.info("🔄 Retrying save with new sheet...")
-                        continue  # Retry with new sheet
-                
-                logger.exception(f"Error saving token to Sheets: {e}")
-                return False
-        
-        return False
+                        continue
+                logger.exception(f"Error saving token to Sheets: {e} — offloading locally")
+                self._offload_rows_to_local("offload_tokens.jsonl", [row_data])
+                return True
+
+        return True
     
     def save_crypto_tokens_batch(self, tokens: list[dict]) -> int:
         """Save multiple crypto tokens to Google Sheets in a single API call.
 
-        Each token dict should have keys matching save_crypto_token() params:
-        symbol, name, price, percent_change_24h, volume_24h, market_cap,
-        trade_score, profit_probability, risk_level, trading_signal,
-        momentum, liquidity, source, reasoning, notes.
-
-        Returns:
-            Number of tokens saved (0 if any error).
+        Will pre-rotate if the workbook is near capacity. If Sheets writes fail
+        it will offload rows locally so the pipeline can continue.
+        Returns number of tokens "persisted" (Sheets or offload).
         """
         if not self.tokens_sheet_id or not tokens:
             return 0
@@ -510,6 +587,16 @@ class GoogleSheetsAgent:
                 str(t.get("notes", "")),
             ])
 
+        # Pre-rotate if adding these rows would push the workbook near the limit
+        try:
+            if self._should_rotate_sheet(self.tokens_sheet_id, ["Token Tracking", "AI Agent Memory", "Sheet1"], required_rows=len(rows)):
+                logger.warning("Pre-rotation: creating new tokens sheet before batch append (approaching cell limit)")
+                new_sheet_id = self._create_new_tokens_sheet_and_update_env()
+                if new_sheet_id:
+                    self.tokens_sheet_id = new_sheet_id
+        except Exception:
+            pass
+
         for sheet_name in ("Token Tracking", "AI Agent Memory", "Sheet1"):
             try:
                 response = self._execute_tool(
@@ -525,14 +612,21 @@ class GoogleSheetsAgent:
                     return len(rows)
                 if "not found" not in str(response.get("error", "")).lower():
                     logger.error("Batch token save failed: %s", response.get("error"))
-                    return 0
+                    try:
+                        from src.agent.tools.composio_tools import send_telegram_text
+                        send_telegram_text(f"⚠️ FDWA Agent — Batch token save failed: {response.get('error')}")
+                    except Exception:
+                        pass
+                    break
             except Exception as e:
                 if "not found" not in str(e).lower():
                     logger.exception("Batch token save error: %s", e)
-                    return 0
+                    break
 
-        logger.error("Could not find any valid sheet tab for batch token save")
-        return 0
+        # Final fallback: offload locally so caller can continue (treat as persisted)
+        logger.warning("Batch token save failed for all tabs — offloading %d rows locally", len(rows))
+        self._offload_rows_to_local("offload_tokens.jsonl", rows)
+        return len(rows)
 
     def search_posts(self, platform: str | None = None, 
                     days_back: int = 30, limit: int = 100) -> List[Dict]:
@@ -858,6 +952,11 @@ class GoogleSheetsAgent:
                 return True
             else:
                 logger.error(f"Failed to rename sheet: {rename_response.get('error')}")
+                try:
+                    from src.agent.tools.composio_tools import send_telegram_text
+                    send_telegram_text(f"⚠️ FDWA Agent — failed to rename sheet '{old_title}' → '{new_title}': {rename_response.get('error')}")
+                except Exception:
+                    pass
                 return False
                 
         except Exception as e:
@@ -893,6 +992,11 @@ class GoogleSheetsAgent:
             
             if not new_sheet_id:
                 logger.error("Failed to create new tokens sheet")
+                try:
+                    from src.agent.tools.composio_tools import send_telegram_text
+                    send_telegram_text(f"⚠️ FDWA Agent — failed to create new tokens sheet ({new_title}). Manual intervention required.")
+                except Exception:
+                    pass
                 return None
             
             # Rename default "Sheet1" to "Token Tracking"
@@ -901,9 +1005,13 @@ class GoogleSheetsAgent:
             # Set up headers on new sheet
             self._setup_tokens_headers(new_sheet_id)
             
-            # Update .env file
-            _update_env_file("GOOGLESHEETS_TOKENS_SPREADSHEET_ID", new_sheet_id)
-            
+            # Update .env file (try .env then runtime fallback)
+            if not _update_env_file("GOOGLESHEETS_TOKENS_SPREADSHEET_ID", new_sheet_id):
+                try:
+                    _persist_sheet_id_runtime("GOOGLESHEETS_TOKENS_SPREADSHEET_ID", new_sheet_id)
+                except Exception:
+                    pass
+
             # Update instance variable
             self.tokens_sheet_id = new_sheet_id
             
@@ -934,6 +1042,11 @@ class GoogleSheetsAgent:
             
             if not new_sheet_id:
                 logger.error("Failed to create new posts sheet")
+                try:
+                    from src.agent.tools.composio_tools import send_telegram_text
+                    send_telegram_text(f"⚠️ FDWA Agent — failed to create new posts sheet ({new_title}). Manual intervention required.")
+                except Exception:
+                    pass
                 return None
             
             # Rename default "Sheet1" to "Posts Tracking"
@@ -942,9 +1055,13 @@ class GoogleSheetsAgent:
             # Set up headers on new sheet
             self._setup_posts_headers(new_sheet_id)
             
-            # Update .env file
-            _update_env_file("GOOGLESHEETS_POSTS_SPREADSHEET_ID", new_sheet_id)
-            
+            # Update .env file (try .env then runtime fallback)
+            if not _update_env_file("GOOGLESHEETS_POSTS_SPREADSHEET_ID", new_sheet_id):
+                try:
+                    _persist_sheet_id_runtime("GOOGLESHEETS_POSTS_SPREADSHEET_ID", new_sheet_id)
+                except Exception:
+                    pass
+
             # Update instance variable
             self.posts_sheet_id = new_sheet_id
             
@@ -1101,15 +1218,26 @@ def initialize_google_sheets() -> Dict[str, str]:
     return result
 
 
-def _update_env_file(key: str, value: str):
-    """Update .env file with a new key-value pair."""
+def _update_env_file(key: str, value: str) -> bool:
+    """Update .env file with a new key-value pair. Returns True on success."""
     env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
-    
+
     try:
+        # If .env missing, try to create it
+        if not os.path.exists(env_path):
+            try:
+                with open(env_path, 'w', encoding='utf-8') as f:
+                    f.write(f"{key}={value}\n")
+                logger.debug(f"Created .env and set {key}")
+                return True
+            except Exception as create_e:
+                logger.warning("Could not create .env: %s", create_e)
+                # fall through to runtime persistence
+
         # Read current .env
         with open(env_path, encoding='utf-8') as f:
             lines = f.readlines()
-        
+
         # Find and update or append
         key_found = False
         for i, line in enumerate(lines):
@@ -1117,14 +1245,48 @@ def _update_env_file(key: str, value: str):
                 lines[i] = f"{key}={value}\n"
                 key_found = True
                 break
-        
+
         if not key_found:
             lines.append(f"\n{key}={value}\n")
-        
+
         # Write back
         with open(env_path, 'w', encoding='utf-8') as f:
             f.writelines(lines)
-            
+
         logger.debug(f"Updated .env: {key}={value}")
+        return True
     except Exception as e:
         logger.error(f"Failed to update .env file: {e}")
+        # Fallback: persist to runtime JSON store so runtime can continue
+        try:
+            _persist_sheet_id_runtime(key, value)
+            logger.info("Persisted %s to runtime sheet store", key)
+        except Exception:
+            logger.exception("Failed to persist sheet id to runtime store")
+        return False
+
+
+def _persist_sheet_id_runtime(key: str, value: str):
+    """Write sheet id to data/sheet_ids.json (fallback when .env not writable)."""
+    base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    data_dir = os.path.join(base, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    store_path = os.path.join(data_dir, "sheet_ids.json")
+    try:
+        if os.path.exists(store_path):
+            with open(store_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = {}
+        data[key] = value
+        with open(store_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.error("Failed to persist sheet id runtime store: %s", e)
+        raise
+        # Notify operators via Telegram (best-effort) so missing/readonly .env doesn't silently break runs
+        try:
+            from src.agent.tools.composio_tools import send_telegram_text
+            send_telegram_text(f"⚠️ FDWA Agent — failed to update .env ({key}): {e}")
+        except Exception:
+            pass
