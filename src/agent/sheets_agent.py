@@ -38,7 +38,7 @@ class GoogleSheetsAgent:
     
     # Workbook thresholds
     SHEET_CELL_LIMIT = 10_000_000
-    SHEET_ROTATE_THRESHOLD = 9_800_000  # proactively rotate when approaching this many cells
+    SHEET_ROTATE_THRESHOLD = 9_600_000  # proactively rotate earlier to avoid hitting Google Sheets hard limit
 
     def __init__(self):
         """Initialize Google Sheets agent with credentials."""
@@ -259,20 +259,21 @@ class GoogleSheetsAgent:
         except Exception as e:
             logger.debug(f"Primary header write failed (sheetId method): {e}")
 
-        # Fallback: write headers by sheet name (compatible with other tool implementations)
+        # Fallback: try several common tab names (compatible with other tool implementations)
         try:
-            resp = self._execute_tool(
-                "GOOGLESHEETS_BATCH_UPDATE",
-                {
-                    "spreadsheet_id": sheet_id,
-                    "sheet_name": "Posts Tracking",
-                    "values": headers,
-                    "first_cell_location": "A1"
-                }
-            )
-            if resp.get("successful"):
-                logger.info("✓ Set up posts sheet headers (fallback by name)")
-                return True
+            for sname in ("Posts Tracking", "AI Agent Memory", "Sheet1"):
+                resp = self._execute_tool(
+                    "GOOGLESHEETS_BATCH_UPDATE",
+                    {
+                        "spreadsheet_id": sheet_id,
+                        "sheet_name": sname,
+                        "values": headers,
+                        "first_cell_location": "A1"
+                    }
+                )
+                if resp.get("successful"):
+                    logger.info("✓ Set up posts sheet headers (fallback by name: %s)", sname)
+                    return True
         except Exception as e:
             logger.debug(f"Fallback header write (sheet_name) failed: {e}")
 
@@ -339,20 +340,21 @@ class GoogleSheetsAgent:
         except Exception as e:
             logger.debug(f"Primary tokens header write failed: {e}")
 
-        # Fallback: write headers by sheet name
+        # Fallback: try several common tab names (compatible with other tool implementations)
         try:
-            resp = self._execute_tool(
-                "GOOGLESHEETS_BATCH_UPDATE",
-                {
-                    "spreadsheet_id": sheet_id,
-                    "sheet_name": "Token Tracking",
-                    "values": headers,
-                    "first_cell_location": "A1"
-                }
-            )
-            if resp.get("successful"):
-                logger.info("✓ Set up tokens sheet headers (fallback by name)")
-                return True
+            for sname in ("Token Tracking", "AI Agent Memory", "Sheet1"):
+                resp = self._execute_tool(
+                    "GOOGLESHEETS_BATCH_UPDATE",
+                    {
+                        "spreadsheet_id": sheet_id,
+                        "sheet_name": sname,
+                        "values": headers,
+                        "first_cell_location": "A1"
+                    }
+                )
+                if resp.get("successful"):
+                    logger.info("✓ Set up tokens sheet headers (fallback by name: %s)", sname)
+                    return True
         except Exception as e:
             logger.debug(f"Fallback tokens header write failed: {e}")
 
@@ -610,7 +612,14 @@ class GoogleSheetsAgent:
                 if response.get("successful"):
                     logger.info("✓ Batch-saved %d tokens to sheet '%s'", len(rows), sheet_name)
                     return len(rows)
-                if "not found" not in str(response.get("error", "")).lower():
+
+                err = str(response.get("error", ""))
+                # If failure is due to cell-limit, stop trying other tab names and handle below
+                if self._is_cell_limit_error(err):
+                    response = response  # preserve for later check
+                    break
+
+                if "not found" not in err.lower():
                     logger.error("Batch token save failed: %s", response.get("error"))
                     try:
                         from src.agent.tools.composio_tools import send_telegram_text
@@ -622,6 +631,28 @@ class GoogleSheetsAgent:
                 if "not found" not in str(e).lower():
                     logger.exception("Batch token save error: %s", e)
                     break
+
+        # If failure was due to cell-limit, create a new tokens sheet and retry once
+        last_error = (response or {}).get("error", "") if 'response' in locals() else ""
+        if self._is_cell_limit_error(last_error):
+            logger.warning("Cell-limit detected during batch append — creating new tokens sheet and retrying once")
+            new_sheet_id = self._create_new_tokens_sheet_and_update_env()
+            if new_sheet_id:
+                self.tokens_sheet_id = new_sheet_id
+                # try append again to the new sheet (Token Tracking / AI Agent Memory / Sheet1)
+                for sheet_name in ("Token Tracking", "AI Agent Memory", "Sheet1"):
+                    resp2 = self._execute_tool(
+                        "GOOGLESHEETS_BATCH_UPDATE",
+                        {
+                            "spreadsheet_id": self.tokens_sheet_id,
+                            "sheet_name": sheet_name,
+                            "values": rows,
+                        },
+                    )
+                    if resp2.get("successful"):
+                        logger.info("✓ Batch-saved %d tokens to new sheet '%s'", len(rows), sheet_name)
+                        return len(rows)
+                logger.warning("Retry to write to new sheet also failed; will offload locally")
 
         # Final fallback: offload locally so caller can continue (treat as persisted)
         logger.warning("Batch token save failed for all tabs — offloading %d rows locally", len(rows))
@@ -817,27 +848,19 @@ class GoogleSheetsAgent:
                      "Engagement", "Status", "Hash", "Full Content"]
                 ]
                 
-                response = self._execute_tool(
-                    "GOOGLESHEETS_BATCH_UPDATE",
-                    {
-                        "spreadsheet_id": self.posts_sheet_id,
-                        "sheet_name": "Posts Tracking",
-                        "values": headers,
-                        "first_cell_location": "A1"
-                    }
-                )
-                
-                # Try old name if new name fails (backwards compatibility)
-                if not response.get("successful") and "not found" in str(response.get('error', '')).lower():
+                # Try several common tab names (Posts Tracking preferred)
+                for sname in ("Posts Tracking", "AI Agent Memory", "Sheet1"):
                     response = self._execute_tool(
                         "GOOGLESHEETS_BATCH_UPDATE",
                         {
                             "spreadsheet_id": self.posts_sheet_id,
-                            "sheet_name": "AI Agent Memory",
+                            "sheet_name": sname,
                             "values": headers,
                             "first_cell_location": "A1"
                         }
                     )
+                    if response.get("successful") or "not found" not in str(response.get('error', '')).lower():
+                        break
                 
                 if response.get("successful"):
                     logger.info("✓ Posts sheet headers set up")
@@ -951,10 +974,19 @@ class GoogleSheetsAgent:
                 logger.info(f"✓ Renamed sheet tab from '{old_title}' to '{new_title}'")
                 return True
             else:
-                logger.error(f"Failed to rename sheet: {rename_response.get('error')}")
+                err = rename_response.get('error', '')
+                # Some Composio toolkit implementations don't support updateSheetProperties
+                # and respond by asking for 'values'/'sheet_name' fields. Treat that as
+                # a non-fatal 'rename not supported' situation and fall back to using
+                # the default tab name (Sheet1) for header writes.
+                if isinstance(err, str) and ("Following fields are missing" in err or "{'values', 'sheet_name'}" in err):
+                    logger.warning("Rename not supported by Sheets toolkit (falling back to 'Sheet1'); error: %s", err)
+                    return False
+
+                logger.error(f"Failed to rename sheet: {err}")
                 try:
                     from src.agent.tools.composio_tools import send_telegram_text
-                    send_telegram_text(f"⚠️ FDWA Agent — failed to rename sheet '{old_title}' → '{new_title}': {rename_response.get('error')}")
+                    send_telegram_text(f"⚠️ FDWA Agent — failed to rename sheet '{old_title}' → '{new_title}': {err}")
                 except Exception:
                     pass
                 return False
