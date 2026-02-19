@@ -400,52 +400,40 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
             if recent_topics:
                 avoid_topics_note = f"\n\nIMPORTANT: We recently posted about these topics: {', '.join(recent_topics)}. Choose a DIFFERENT topic category (marketing, AI/tech, crypto, automation, etc.) to ensure content variety."
 
-            generation_prompt = f"""You are an expert content strategist for FDWA (Futurist Digital Wealth Agency).
-It is {current_month} {current_year}.{avoid_topics_note}
+            # Blog generation tunables (can be changed via .env)
+            blog_min_words = int(os.getenv("BLOG_MIN_WORDS", "500"))
+            blog_max_words = int(os.getenv("BLOG_MAX_WORDS", "800"))
+            include_affiliates = os.getenv("BLOG_INCLUDE_AFFILIATE_LINKS", "false").lower() in ("1","true","yes")
+            tone_instruction = (
+                "Tone: Write in a human, concise, and actionable FDWA voice — no marketing fluff, no long-winded filler. "
+                "Use concrete examples and short paragraphs for readability."
+            )
 
-Create a 1000-1500 word educational blog post. Embed at least 3 affiliate links, include a Resources section, and mention 2-3 FDWA products.
+            affiliate_instruction = (
+                "Embed up to 3 affiliate links if relevant." if include_affiliates else "Do NOT include affiliate links."
+            )
 
-=== INPUT DATA ===
-{prompt}
+            kb_instruction = (
+                "Reference at least one specific product, fact, or link from the provided business_profile or knowledge base."
+            )
 
-=== STYLE ===
-{style_guide[:4000] if style_guide else "Write detailed, educational content."}
-
-=== STRUCTURE ===
-1. Opening hook with data/stats (100-200 words)
-2. Context & trends (150-300 words)
-3. Main educational content with <h2>/<h3> headers (800-1200 words)
-4. Reality check — be honest about challenges
-5. Resources section (FDWA products, community links, consultation booking)
-6. Disclaimer if applicable
-
-=== AFFILIATE LINKS (use 3-5) ===
-- n8n: https://n8n.partnerlinks.io/pxw8nlb4iwfh
-- Hostinger: https://hostinger.com/horizons?REFERRALCODE=VMKMILDHI76M
-- ElevenLabs: https://try.elevenlabs.io/2dh4kqbqw25i
-- ManyChat: https://manychat.partnerlinks.io/gal0gascf0ml
-- Lovable: https://lovable.dev/?via=daniel-wray
-- VEED: https://veed.cello.so/Y4hEgduDP5L
-- BrightData: https://get.brightdata.com/xafa5cizt3zw
-
-=== FDWA LINKS ===
-- Community: https://whop.com/futuristicwealth/
-- Newsletter: https://futuristic-wealth.beehiiv.com/
-- Website: https://fdwa.site
-- AI consultation: https://cal.com/bookme-daniel/ai-consultation-smb
-- Credit consultation: https://cal.com/bookme-daniel/credit-consultation
-
-=== OUTPUT FORMAT ===
-Use these EXACT delimiters (not JSON). Do NOT wrap in code blocks or quotes.
-
-===TITLE===
-Your engaging blog title here
-===EXCERPT===
-A compelling 1-2 sentence hook
-===HTML===
-<h1>Your title</h1>
-<p>Full HTML article here...</p>
-"""
+            generation_prompt = (
+                f"""You are an expert content strategist for FDWA (Futurist Digital Wealth Agency). It is {current_month} {current_year}.{avoid_topics_note}\n\n"
+                f"{tone_instruction}\n"
+                f"Create a {blog_min_words}-{blog_max_words} word educational blog post focused on the topic and trend data provided. {affiliate_instruction} {kb_instruction}\n\n"
+                f"=== INPUT DATA ===\n{prompt}\n\n"
+                f"=== STYLE ===\n{style_guide[:4000] if style_guide else 'Write clear, concise, human-sounding content aimed at small business owners.'}\n\n"
+                f"=== STRUCTURE ===\n"
+                f"1. Opening hook (short, 50-120 words)\n"
+                f"2. Context & trends (100-200 words)\n"
+                f"3. Practical guidance / how-to (main body) — keep this the focus\n"
+                f"4. Short reality check and suggested next steps (50-100 words)\n"
+                f"5. Resources / CTA (include a link to the primary site)\n\n"
+                f"=== OUTPUT FORMAT ===\nUse the delimiters exactly: ===TITLE===, ===EXCERPT===, ===HTML===.\n"
+                "Return valid HTML only in the ===HTML=== section and do NOT include JSON, debug metadata, or non-HTML artifacts."
+                "Do NOT exceed the requested word count range."
+                """
+            )
 
             # Single LLM call — no retries for content quality, just reliability retry
             max_retries = int(os.getenv("BLOG_LLM_MAX_RETRIES", "2"))
@@ -534,18 +522,97 @@ A compelling 1-2 sentence hook
 
             logger.info("Blog parsed: title=%s, html=%d chars", title[:60], len(html_output))
 
+            # Basic content-quality checks (word count, HTML length) and optional regenerate
+            try:
+                # Sanitize raw HTML for word count (strip tags)
+                text_only = re.sub(r'<[^>]+>', ' ', html_output)
+                word_count = len([w for w in re.findall(r"\w+", text_only)])
+            except Exception:
+                word_count = 0
+
+            blog_min_words = int(os.getenv("BLOG_MIN_WORDS", "500"))
+            blog_max_words = int(os.getenv("BLOG_MAX_WORDS", "800"))
+            blog_max_chars = int(os.getenv("BLOG_MAX_CHARS", "12000"))
+            content_retries = int(os.getenv("BLOG_LLM_CONTENT_RETRIES", "1"))
+            include_affiliates = os.getenv("BLOG_INCLUDE_AFFILIATE_LINKS", "false").lower() in ("1","true","yes")
+
+            def _needs_regen(wc, html_len):
+                return wc < blog_min_words or wc > blog_max_words or html_len > blog_max_chars or not html_output.strip()
+
+            regenerated = False
+            if _needs_regen(word_count, len(html_output)) and content_retries > 0:
+                logger.warning("Blog content outside requested range (words=%d, chars=%d) — attempting %d content-quality retry(ies)", word_count, len(html_output), content_retries)
+                followup_instr = (
+                    f"Rewrite the ARTICLE ONLY (the ===HTML=== section) to be between {blog_min_words} and {blog_max_words} words, "
+                    "keep the same title and excerpt, maintain FDWA voice (concise, human), and do NOT add affiliate links unless specifically relevant. "
+                    "Return output using the exact same delimiters: ===TITLE=== ===EXCERPT=== ===HTML===."
+                )
+                for attempt in range(content_retries):
+                    try:
+                        logger.info("Content-quality retry %d/%d", attempt + 1, content_retries)
+                        followup_prompt = generation_prompt + "\n\nFOLLOW-UP INSTRUCTION: " + followup_instr
+                        resp2 = llm.invoke(followup_prompt)
+                        resp_text = resp2.content if hasattr(resp2, 'content') else str(resp2)
+                        # extract HTML part quickly
+                        if "===HTML===" in resp_text:
+                            parts = resp_text.split("===HTML===", 1)
+                            candidate_html = parts[-1].strip()
+                            # update variables and re-evaluate
+                            html_output = candidate_html
+                            text_only = re.sub(r'<[^>]+>', ' ', html_output)
+                            word_count = len([w for w in re.findall(r"\w+", text_only)])
+                            if not _needs_regen(word_count, len(html_output)):
+                                regenerated = True
+                                break
+                    except Exception as e:
+                        logger.warning("Content retry %d failed: %s", attempt + 1, str(e)[:200])
+                        continue
+
+            # If still out-of-range, truncate safely to BLOG_MAX_CHARS
+            if _needs_regen(word_count, len(html_output)) and not regenerated:
+                logger.warning("Final blog content still out-of-range after retries (words=%d, chars=%d). Truncating to %d chars.", word_count, len(html_output), blog_max_chars)
+                # Attempt to truncate at paragraph boundary
+                truncated = html_output[:blog_max_chars]
+                last_close = truncated.rfind('</p>')
+                if last_close > int(blog_max_chars * 0.5):
+                    html_output = truncated[:last_close+4]
+                else:
+                    html_output = truncated + '...'
+
             # Check for duplicates
             if _is_duplicate_post(title, excerpt or html_output[:200], topic, check_topic=False):
                 logger.warning("Blog title is duplicate, appending timestamp")
                 title = f"{title} ({current_month} {current_year})"
-            
-            # Add image to blog HTML
+
+            # Strip affiliate links if disabled
+            if not include_affiliates:
+                for v in AFFILIATE_LINKS.values():
+                    try:
+                        html_output = re.sub(rf'<a[^>]+href=["\']{re.escape(v)}["\'][^>]*>.*?</a>', '', html_output, flags=re.I|re.S)
+                        html_output = html_output.replace(v, '')
+                    except Exception:
+                        pass
+
+            # Add image to blog HTML (only if configured to embed)
             image_html = ""
             image_url = image_path or os.environ.get("BLOG_IMAGE_URL")
-            if image_url and image_url.startswith(('http://', 'https://')):
+            embed_image = os.getenv("BLOG_EMBED_IMAGE", "true").lower() in ("1","true","yes")
+
+            # sanitize image_url (ensure plain http(s) URL)
+            if image_url and isinstance(image_url, str):
+                m = re.search(r'"url"\s*:\s*"([^"]+)"', image_url)
+                if m:
+                    image_url = m.group(1)
+                else:
+                    m2 = re.search(r'(https?://\S+)', image_url)
+                    if m2:
+                        image_url = m2.group(1).rstrip('\"\')
+
+            if embed_image and image_url and image_url.startswith(('http://', 'https://')):
+                # ensure only the URL is embedded (no delete_url or metadata)
                 image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;display:block;" />\n'
-            
-            blog_html = image_html + html_output
+
+            blog_html = (image_html + html_output).strip()
 
             # Ensure primary site CTA/link is present in the blog HTML. If the LLM omitted
             # our CTA, append a short call-to-action paragraph so every blog includes the link.
@@ -560,6 +627,7 @@ A compelling 1-2 sentence hook
             except Exception:
                 # non-critical if CTA append fails
                 pass
+
             logger.info("✅ LLM-generated blog created: %s", title)
             return {
                 "blog_html": blog_html,
