@@ -58,7 +58,7 @@ async def run_agent_task() -> dict:
 
         # If any platform step was skipped/failed, send an immediate Telegram alert so operators see why the flow stopped
         try:
-            from src.agent.tools.composio_tools import send_telegram_text
+            from src.agent.tools.composio_tools import send_telegram_alert as send_telegram_text
 
             problems = []
             # platform-level checks (treat missing twitter/facebook IDs as failures)
@@ -119,8 +119,8 @@ async def run_agent_task() -> dict:
 
         # Send Telegram alert for run-level failure (best-effort)
         try:
-            from src.agent.tools.composio_tools import send_telegram_text
-            send_telegram_text(f"🔥 FDWA Agent run FAILED: {str(e)}\nTime: {datetime.now().isoformat()}")
+            from src.agent.tools.composio_tools import send_telegram_alert
+            send_telegram_alert(f"🔥 FDWA Agent run FAILED: {str(e)}\nTime: {datetime.now().isoformat()}")
         except Exception:
             pass
 

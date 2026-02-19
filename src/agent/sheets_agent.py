@@ -622,8 +622,8 @@ class GoogleSheetsAgent:
                 if "not found" not in err.lower():
                     logger.error("Batch token save failed: %s", response.get("error"))
                     try:
-                        from src.agent.tools.composio_tools import send_telegram_text
-                        send_telegram_text(f"⚠️ FDWA Agent — Batch token save failed: {response.get('error')}")
+                        from src.agent.tools.composio_tools import send_telegram_alert
+                        send_telegram_alert(f"⚠️ FDWA Agent — Batch token save failed: {response.get('error')}")
                     except Exception:
                         pass
                     break
@@ -985,8 +985,8 @@ class GoogleSheetsAgent:
 
                 logger.error(f"Failed to rename sheet: {err}")
                 try:
-                    from src.agent.tools.composio_tools import send_telegram_text
-                    send_telegram_text(f"⚠️ FDWA Agent — failed to rename sheet '{old_title}' → '{new_title}': {err}")
+                    from src.agent.tools.composio_tools import send_telegram_alert
+                    send_telegram_alert(f"⚠️ FDWA Agent — failed to rename sheet '{old_title}' → '{new_title}': {err}")
                 except Exception:
                     pass
                 return False
@@ -1025,8 +1025,8 @@ class GoogleSheetsAgent:
             if not new_sheet_id:
                 logger.error("Failed to create new tokens sheet")
                 try:
-                    from src.agent.tools.composio_tools import send_telegram_text
-                    send_telegram_text(f"⚠️ FDWA Agent — failed to create new tokens sheet ({new_title}). Manual intervention required.")
+                    from src.agent.tools.composio_tools import send_telegram_alert
+                    send_telegram_alert(f"⚠️ FDWA Agent — failed to create new tokens sheet ({new_title}). Manual intervention required.")
                 except Exception:
                     pass
                 return None
@@ -1075,8 +1075,8 @@ class GoogleSheetsAgent:
             if not new_sheet_id:
                 logger.error("Failed to create new posts sheet")
                 try:
-                    from src.agent.tools.composio_tools import send_telegram_text
-                    send_telegram_text(f"⚠️ FDWA Agent — failed to create new posts sheet ({new_title}). Manual intervention required.")
+                    from src.agent.tools.composio_tools import send_telegram_alert
+                    send_telegram_alert(f"⚠️ FDWA Agent — failed to create new posts sheet ({new_title}). Manual intervention required.")
                 except Exception:
                     pass
                 return None
@@ -1318,7 +1318,7 @@ def _persist_sheet_id_runtime(key: str, value: str):
         raise
         # Notify operators via Telegram (best-effort) so missing/readonly .env doesn't silently break runs
         try:
-            from src.agent.tools.composio_tools import send_telegram_text
-            send_telegram_text(f"⚠️ FDWA Agent — failed to update .env ({key}): {e}")
+            from src.agent.tools.composio_tools import send_telegram_alert
+            send_telegram_alert(f"⚠️ FDWA Agent — failed to update .env ({key}): {e}")
         except Exception:
             pass

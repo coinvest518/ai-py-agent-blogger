@@ -237,3 +237,27 @@ def send_telegram_text(message: str) -> dict:
         return {"error": result.get("error", "Unknown")}
     except Exception as e:
         return {"error": str(e)}
+
+
+def send_telegram_alert(message: str) -> dict:
+    """Send alert text to a dedicated Telegram failure chat if configured.
+
+    Falls back to the primary group when no failure-specific target is configured.
+    Configure `TELEGRAM_FAILURE_GROUP_USERNAME` (e.g. @omniai_ai) or
+    `TELEGRAM_FAILURE_GROUP_CHAT_ID` (numeric chat id) in the environment.
+    """
+    from src.agent import telegram_agent
+
+    # Prefer explicit failure-chat settings
+    failure_chat = os.getenv("TELEGRAM_FAILURE_GROUP_USERNAME") or os.getenv("TELEGRAM_FAILURE_GROUP_CHAT_ID")
+    target = failure_chat or (telegram_agent.TELEGRAM_GROUP_USERNAME or telegram_agent.TELEGRAM_GROUP_CHAT_ID)
+    if not target:
+        return {"error": "No Telegram group configured for alerts"}
+    try:
+        result = telegram_agent.send_message(chat_id=target, text=message)
+        if result.get("success"):
+            msg_id = result.get("data", {}).get("result", {}).get("message_id", "N/A")
+            return {"telegram_status": f"Posted: message_id={msg_id}"}
+        return {"error": result.get("error", "Unknown")}
+    except Exception as e:
+        return {"error": str(e)}
