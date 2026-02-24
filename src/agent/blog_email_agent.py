@@ -606,7 +606,7 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
                 else:
                     m2 = re.search(r'(https?://\S+)', image_url)
                     if m2:
-                        image_url = m2.group(1).rstrip('\"\')
+                        image_url = m2.group(1).rstrip('"\\')
 
             if embed_image and image_url and image_url.startswith(('http://', 'https://')):
                 # ensure only the URL is embedded (no delete_url or metadata)
