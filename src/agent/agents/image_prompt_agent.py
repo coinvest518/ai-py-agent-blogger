@@ -3,13 +3,13 @@
 Uses the cascading LLM to craft detailed, brand-consistent image prompts
 based on the post content, topic, and FDWA's visual identity.
 
-FDWA Brand Visual Identity (derived from generated content library):
-- Cyberpunk/futuristic cityscape with neon-lit skyscrapers
-- Black woman protagonist in tech/futuristic attire
-- Holographic UI dashboards, charts, data visualizations
-- Neon color palette: cyan, magenta, purple, gold accents on dark backgrounds
-- Cinematic composition, dramatic lighting, atmospheric depth
-- No readable text in images (text is added separately)
+FDWA Visual Identity (post-pivot — product / infographic / dev-focused):
+- Digital product mockups (ebook covers, dashboard screenshots, code editors)
+- Infographics with charts, flowcharts, agent architecture diagrams
+- Marketing flyers for AI tools and skills
+- NO humans, NO people, NO faces, NO characters of any kind
+- Tech-clean aesthetic: deep dark backgrounds, neon accents, glassmorphism
+- Visual elements: terminals, agents-as-nodes diagrams, framework logos placeholder shapes
 """
 
 import logging
@@ -26,50 +26,61 @@ logger = logging.getLogger(__name__)
 # FDWA Brand Visual DNA — the core aesthetic every image must follow
 # ---------------------------------------------------------------------------
 
-FDWA_VISUAL_DNA = """FDWA BRAND VISUAL IDENTITY:
-- Setting: Cyberpunk/futuristic cityscape, neon-lit skyscrapers, rain-slicked streets
-- Protagonist: Confident Black woman in sleek futuristic tech attire (bodysuit, trenchcoat, or professional futuristic outfit)
-- Technology: Holographic floating UI panels, transparent data dashboards, glowing charts and graphs
-- Color palette: Deep dark backgrounds with neon cyan, electric magenta, vivid purple, gold/amber accents
-- Lighting: Cinematic dramatic lighting, volumetric light rays, neon reflections on wet surfaces
-- Atmosphere: Atmospheric fog/haze, depth of field, urban energy, flying drones in background
-- Composition: Wide or medium shot, protagonist interacting with holographic displays
-- Style: Ultra-realistic digital art, 8K detail, photorealistic rendering
-- NEVER include readable text, words, or letters in the image"""
+FDWA_VISUAL_DNA = """FDWA VISUAL IDENTITY (DEV / PRODUCT / INFOGRAPHIC):
+- Subject: Digital product mockups, infographic compositions, dashboard UIs, code editors, agent architecture diagrams, marketing flyers
+- HARD RULE: NO humans, NO people, NO faces, NO characters, NO body parts, NO portraits — products and diagrams ONLY
+- Style: Clean tech aesthetic with glassmorphism, depth, glowing accents
+- Color palette: Deep dark backgrounds (#0a0a14, #111122) with neon cyan, electric magenta, gold/amber accents
+- Common elements: holographic UI panels, terminal windows, flowcharts, node-based agent diagrams, ebook/PDF covers, app screenshots
+- Lighting: Cinematic, soft volumetric glow, no harsh shadows
+- Composition: Centered product or balanced infographic layout, depth of field
+- Style references: Product hunt header art, modern SaaS landing page hero, dev tool marketing assets
+- NEVER include readable text, words, or letters in the image (text added separately by overlay)"""
 
 
-# Topic-specific visual elements to layer on top of brand DNA
+# Topic-specific visual elements — products / infographics / diagrams only
 TOPIC_VISUALS = {
     "crypto": {
-        "elements": "cryptocurrency trading dashboards, Bitcoin/Ethereum holographic symbols, candlestick charts glowing green, blockchain network visualization, digital wallet interfaces floating in air",
-        "mood": "high-tech trading floor energy, wealth and power, digital gold rush",
-        "colors": "neon gold, electric green, cyan blue accents",
+        "elements": "candlestick chart hologram, agent-as-node diagram showing trading bot loop, dashboard UI mockup with portfolio metrics, Bitcoin/Ethereum coin renders floating, NO traders or people",
+        "mood": "data-driven, automated, algorithmic precision",
+        "colors": "neon gold, electric green, cyan accents",
     },
     "credit_repair": {
-        "elements": "credit score gauge rising to 800+, financial documents being organized by AI, debt chains breaking apart, credit report hologram showing improvements",
-        "mood": "empowerment, financial freedom, breaking free from debt, professional confidence",
-        "colors": "emerald green, cyan, white highlights on dark background",
+        "elements": "credit score gauge UI mockup, dispute letter PDF cover, dashboard showing before/after score, automated workflow diagram, NO humans",
+        "mood": "professional, automated, financial clarity",
+        "colors": "emerald green, cyan, white accents",
     },
     "ai_automation": {
-        "elements": "neural network holographic web, AI assistant robot/avatar, automated workflow pipelines visualized as glowing streams, multiple holographic screens showing analytics",
-        "mood": "cutting-edge innovation, power of automation, limitless possibility",
-        "colors": "electric blue, vivid purple, magenta energy streams",
+        "elements": "agent architecture diagram (nodes connected with glowing lines), terminal showing code, LangGraph-style flowchart, dashboard UI mockup with metrics, framework logo placeholder shapes (LangChain, Composio etc.)",
+        "mood": "developer-focused, system-design clarity, technical sophistication",
+        "colors": "electric blue, vivid purple, magenta accents",
+    },
+    "openclaw": {
+        "elements": "Claude/OpenClaw skill bundle visualized as 3D card, agent skill marketplace UI mockup, MCP server diagram, code snippet floating in glass panel",
+        "mood": "developer tool launch, premium product mockup",
+        "colors": "deep navy, cyan, magenta highlights",
+    },
+    "ai_agent_dev": {
+        "elements": "tutorial cover for 'build your first AI agent', step-by-step infographic with numbered nodes, framework comparison chart, beginner-friendly dashboard mockup",
+        "mood": "approachable, educational, builder-focused",
+        "colors": "purple, cyan, soft white accents",
     },
     "general": {
-        "elements": "digital wealth dashboard, multiple revenue streams visualized as data flows, entrepreneurship tools floating holographically, modern business ecosystem",
-        "mood": "success, ambition, digital entrepreneurship, modern wealth building",
-        "colors": "balanced neon palette — cyan, magenta, purple, gold",
+        "elements": "digital product showcase, ebook covers stacked, dashboard UI hero shot, agent flow diagram, marketing flyer composition",
+        "mood": "premium SaaS launch, product hunt hero",
+        "colors": "balanced cyan, magenta, gold",
     },
 }
 
-# Product-specific visual overlays
+# Product-specific visual overlays — all object/diagram, no humans
 PRODUCT_VISUALS = {
-    "credit repair": "AI-powered credit analyzer hologram, dispute letter generator interface, credit score transformation dashboard",
-    "ebook": "digital book floating holographically, pages turning with glowing data, knowledge download visualization",
-    "course": "virtual classroom hologram, learning pathway visualization, certification badge glowing",
-    "ai tool": "AI workflow builder interface, automation pipeline visualized, bot army deployment",
-    "consulting": "strategy hologram, business growth chart, one-on-one virtual meeting visualization",
-    "yieldbot": "crypto trading bot interface, automated DeFi yield farming dashboard, token analytics",
+    "credit repair": "AI credit analyzer dashboard mockup, dispute letter PDF cover with FDWA branding placeholder, score-gauge widget — NO faces",
+    "ebook": "3D ebook cover render with subtle shadow, pages slightly fanned, glowing edge — product shot only",
+    "course": "course curriculum infographic, module flowchart, certification badge render — no instructors visible",
+    "ai tool": "agent architecture node diagram, terminal UI screenshot, framework integration map",
+    "consulting": "service tier comparison infographic, calendar booking UI mockup, deliverables checklist visual — no people",
+    "yieldbot": "trading bot dashboard UI mockup, automated yield-farming flowchart, token analytics widget",
+    "openclaw": "Claude-themed skill card, MCP server diagram, code-block hero shot in glass panel",
 }
 
 
@@ -110,37 +121,37 @@ def generate_image_prompt(
     product_price: str | None = None,
     platform: str = "general",
     use_llm: bool = True,
+    research_summary: str | None = None,
 ) -> str:
     """Generate a detailed, brand-consistent image prompt using the LLM.
 
     Args:
-        post_text: The social media post text to visualize.
+        post_text: Refined caption the image must visualize (not the raw tweet).
         topic: Content topic ('crypto', 'credit_repair', 'ai_automation', 'general').
-                Auto-detected from post_text if not provided.
         product_name: Optional product name for selling-focused images.
-        product_price: Optional price for product-focused images.
-        platform: Target platform (affects composition — square for IG, wider for blog).
-        use_llm: If True, uses LLM for creative prompt. If False, uses template fallback.
-
-    Returns:
-        A detailed image generation prompt string (300-500 chars).
+        product_price: Optional price.
+        platform: Target platform (composition hint).
+        use_llm: If True, LLM-first. Template is last-resort.
+        research_summary: Optional trend/research snippet so the image reflects what
+            the caption is actually about, not just generic brand DNA.
     """
-    # Auto-detect topic if not provided
     if not topic:
         topic = detect_topic(post_text)
-    
+
     topic_data = TOPIC_VISUALS.get(topic, TOPIC_VISUALS["general"])
-    
-    # Clean the post text for context extraction
+
     clean_text = re.sub(r"#\w+", "", post_text)
     clean_text = re.sub(r"https?://\S+", "", clean_text)
     clean_text = re.sub(r"[@*_\[\]{}()\\'\"\\\\]", "", clean_text)
-    clean_text = " ".join(clean_text.split())[:150]
-    
-    # Product overlay
+    clean_text = " ".join(clean_text.split())[:220]
+
+    research_ctx = ""
+    if research_summary:
+        rs = " ".join(str(research_summary).split())[:300]
+        research_ctx = f"\nRESEARCH / TREND CONTEXT: {rs}"
+
     product_context = ""
     if product_name:
-        # Find matching product visual
         for key, visual in PRODUCT_VISUALS.items():
             if key in product_name.lower():
                 product_context = f"\nProduct focus: {product_name}"
@@ -148,24 +159,45 @@ def generate_image_prompt(
                     product_context += f" (${product_price})"
                 product_context += f"\nProduct visual elements: {visual}"
                 break
-        if not product_context and product_name:
+        if not product_context:
             product_context = f"\nProduct focus: {product_name}"
             if product_price:
                 product_context += f" (${product_price})"
-    
-    # Recent images context
+
     recent = _get_recent_image_styles()
-    
+
     if use_llm:
         prompt = _llm_generate_prompt(
-            clean_text, topic, topic_data, product_context, platform, recent
+            clean_text, topic, topic_data, product_context, platform, recent, research_ctx
         )
         if prompt and len(prompt) > 50:
             return prompt
         logger.warning("LLM prompt generation failed, using template fallback")
-    
-    # Template fallback (no LLM needed)
+
     return _template_prompt(clean_text, topic, topic_data, product_name)
+
+
+def generate_caption_image_prompt(
+    refined_caption: str,
+    research_data: str | None = None,
+    product_name: str | None = None,
+    product_price: str | None = None,
+    topic: str | None = None,
+    platform: str = "general",
+) -> str:
+    """Shortcut for the graph: build an image prompt from the REFINED caption
+    (post_refine_content) + research_data + product. LLM-first, falls back to
+    template. Used by generate_image_node.
+    """
+    return generate_image_prompt(
+        post_text=refined_caption or "",
+        topic=topic,
+        product_name=product_name,
+        product_price=product_price,
+        platform=platform,
+        use_llm=True,
+        research_summary=research_data,
+    )
 
 
 def _llm_generate_prompt(
@@ -175,18 +207,20 @@ def _llm_generate_prompt(
     product_context: str,
     platform: str,
     recent_context: str,
+    research_ctx: str = "",
 ) -> str:
-    """Use the cascading LLM to craft a creative, brand-aligned image prompt."""
-    
+    """Use the cascading LLM to craft a product/infographic image prompt derived
+    from the finalized caption + research. No humans — subject is product/diagram."""
+
     composition_hint = {
-        "instagram": "Square 1:1 composition, centered subject, high visual impact",
-        "blog": "Wide 16:9 composition, dramatic landscape orientation, editorial quality",
+        "instagram": "Square 1:1 composition, centered product/diagram subject, high visual impact",
+        "blog": "Wide 16:9 composition, editorial hero-shot framing",
         "twitter": "Wide composition, bold visual, high contrast for small thumbnails",
         "general": "Versatile composition, works at any aspect ratio",
     }.get(platform, "Versatile composition")
-    
-    system_prompt = f"""You are FDWA's visual creative director. Your job is to write image generation prompts
-that perfectly match the FDWA cyberpunk brand aesthetic.
+
+    system_prompt = f"""You are FDWA's visual creative director. You write image generation prompts
+that match the FDWA product/infographic brand aesthetic — NO humans, NO faces, NO characters.
 
 {FDWA_VISUAL_DNA}
 
@@ -200,23 +234,23 @@ COMPOSITION: {composition_hint}
 {f'CONTINUITY: {recent_context}' if recent_context else ''}
 
 RULES FOR YOUR PROMPT:
-1. Output ONLY the image generation prompt — no explanation, no quotes
-2. 300-500 characters maximum
-3. Always include the Black woman protagonist in futuristic attire
-4. Always include the cyberpunk cityscape backdrop
-5. Always include holographic UI/dashboard elements
-6. Incorporate topic-specific visual elements naturally
-7. Specify lighting, atmosphere, and camera angle
-8. End with quality keywords: ultra realistic, 8K, cinematic lighting
-9. NEVER include text, words, watermarks, or logos in the prompt
-10. Each prompt should feel unique while staying on-brand"""
+1. Output ONLY the image generation prompt — no explanation, no quotes.
+2. 300-500 characters.
+3. The subject MUST be a product mockup, infographic, dashboard UI, code editor, agent diagram, or marketing flyer. Never a person.
+4. Let the REFINED CAPTION and RESEARCH CONTEXT drive the concept — pick visual metaphors that illustrate the specific idea in the caption, not a generic brand shot.
+5. Incorporate the topic-specific visual elements naturally.
+6. Specify lighting, atmosphere, and camera angle.
+7. End with quality keywords: ultra realistic, 8K, cinematic lighting.
+8. NEVER include readable text, words, watermarks, or logos (text-free composition).
+9. Each prompt should feel unique to the caption while staying on-brand."""
 
-    user_prompt = f"""Create an image prompt for this social media post:
+    user_prompt = f"""Create an image prompt that visualizes this refined social caption:
 
 "{clean_text}"
+{research_ctx}
 
-Remember: cyberpunk cityscape, Black woman in futuristic tech attire, holographic dashboards, 
-neon {topic_data['colors']}, cinematic atmosphere. Make it unique and vivid."""
+Translate the caption's specific idea into a product mockup, dashboard, or infographic scene.
+Colors: {topic_data['colors']}. No people, no faces, no characters."""
 
     try:
         llm = get_llm(purpose="image prompt design")

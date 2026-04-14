@@ -158,81 +158,208 @@ class AIDecisionEngine:
             logger.warning("Could not fetch from Google Sheets: %s", e)
             return []
     
-    def select_relevant_products(self, topic: str, category: str | None = None, limit: int = 2) -> List[Dict]:
-        """Select most relevant products based on topic/category.
-        
-        Args:
-            topic: Content topic (e.g., "AI automation", "credit repair")
-            category: Filter by category (e.g., "AI & Automation")
-            limit: Max number of products to return
-            
-        Returns:
-            List of product dicts with name, price, category
+    def _normalize_product(self, product: Dict) -> Dict:
+        """Normalize product shape across business_profile (structured) and markdown catalog."""
+        if "title" in product:
+            return {
+                "name": product.get("title", ""),
+                "price": product.get("price", 0),
+                "type": product.get("type", ""),
+                "channel": product.get("channel", ""),
+                "url": product.get("url", ""),
+                "tags": product.get("tags", []),
+                "category": ", ".join(product.get("tags", [])),
+            }
+        return {
+            "name": product.get("name", ""),
+            "price": product.get("price", "$0"),
+            "type": "",
+            "channel": "gumroad",
+            "url": "https://futuristicwealth.gumroad.com/",
+            "tags": [],
+            "category": product.get("category", ""),
+        }
+
+    def _price_value(self, price) -> float:
+        """Coerce price (int/float/str) → float."""
+        if isinstance(price, (int, float)):
+            return float(price)
+        s = str(price).replace("$", "").replace("+", "").strip().split()[0] if price else "0"
+        try:
+            return float(s)
+        except (ValueError, TypeError):
+            return 0.0
+
+    def score_for_revenue(self, product: Dict, topic: str) -> float:
+        """CFO-style revenue score: weight by price, tags, recency, lead-magnet potential.
+
+        Higher score = better revenue/funnel candidate for the topic.
         """
-        products = self.products_catalog.get("products", [])
-        
-        if not products:
-            logger.warning("No products available")
-            return []
-        
-        # Filter by category if specified
-        if category:
-            products = [p for p in products if category.lower() in p["category"].lower()]
-        
-        # Score products by relevance to topic
-        scored_products = []
+        score = 0.0
         topic_lower = topic.lower()
-        
-        for product in products:
-            score = 0
-            name_lower = product["name"].lower()
-            
-            # Keyword matching
-            keywords = topic_lower.split()
-            for keyword in keywords:
-                if keyword in name_lower or keyword in product["category"].lower():
-                    score += 10
-            
-            # Boost free products (great lead magnets)
-            if "free" in product["price"].lower() or "$0" in product["price"]:
-                score += 5
-            
-            # Boost high-value products
-            if "$" in product["price"]:
-                try:
-                    price_nums = [int(s) for s in product["price"].split() if s.isdigit()]
-                    if price_nums and max(price_nums) > 100:
-                        score += 3
-                except Exception as e:
-                    logger.warning(f"Error parsing price for product {product.get('name', 'unknown')}: {e}")
-                    pass
-            
-            # Check past performance in memory
-            product_name = product["name"]
+        name_lower = product.get("name", "").lower()
+        tags = [t.lower() for t in product.get("tags", [])]
+        category_lower = product.get("category", "").lower()
+
+        for kw in topic_lower.split():
+            if not kw or len(kw) < 3:
+                continue
+            if kw in name_lower:
+                score += 12
+            if kw in category_lower:
+                score += 8
+            if any(kw in t for t in tags):
+                score += 10
+
+        price = self._price_value(product.get("price"))
+        if price == 0.0:
+            score += 8
+        elif price < 20:
+            score += 5
+        elif price < 50:
+            score += 4
+        else:
+            score += 2
+
+        if "free_lead_magnet" in tags:
+            score += 6
+        if "openclaw" in tags:
+            score += 4
+
+        product_name = product.get("name", "")
+        try:
             if self.use_memory_store:
-                # Use modern memory store
                 product_data = self.memory_store.get_top_products(limit=100)
                 for p in product_data:
                     if p.get("product_name") == product_name:
-                        mentions = p.get("mention_count", 0)
-                        score += min(mentions, 5)  # Cap boost at 5
+                        score += min(p.get("mention_count", 0), 5)
                         break
             else:
-                # Legacy JSON memory
-                if product_name in self.memory.get("product_mentions", {}):
-                    mentions = self.memory["product_mentions"][product_name]
-                    score += min(mentions, 5)  # Cap boost at 5
-            
-            scored_products.append((score, product))
-        
-        # Sort by score and return top N
-        scored_products.sort(reverse=True, key=lambda x: x[0])
-        selected = [p[1] for p in scored_products[:limit]]
-        
-        logger.info("🎯 Selected %d products for topic '%s': %s", 
+                mentions = self.memory.get("product_mentions", {}).get(product_name, 0)
+                score += min(mentions, 5)
+        except Exception:
+            pass
+
+        return score
+
+    def select_relevant_products(self, topic: str, category: str | None = None, limit: int = 2) -> List[Dict]:
+        """Select revenue-optimal products for the topic.
+
+        Prefers structured products from business_profile.json (with price/tags/url),
+        falls back to markdown catalog. Returns normalized dicts.
+        """
+        bp_products = self.business_profile.get("products", [])
+        if bp_products:
+            products = [self._normalize_product(p) for p in bp_products]
+        else:
+            products = [self._normalize_product(p) for p in self.products_catalog.get("products", [])]
+
+        if not products:
+            logger.warning("No products available")
+            return []
+
+        if category:
+            cat_lower = category.lower()
+            products = [
+                p for p in products
+                if cat_lower in p["category"].lower() or any(cat_lower in t for t in p["tags"])
+            ]
+
+        scored = [(self.score_for_revenue(p, topic), p) for p in products]
+        scored.sort(reverse=True, key=lambda x: x[0])
+        selected = [p for _, p in scored[:limit]]
+
+        logger.info("🎯 Selected %d products for topic '%s': %s",
                    len(selected), topic, [p["name"][:50] for p in selected])
-        
         return selected
+
+    def cfo_pick_strategy(self, topic: str, products: List[Dict] | None = None) -> Dict:
+        """CFO funnel pick: free lead magnet + paid upsell + framework angle + CTA.
+
+        Returns:
+            {
+              "free_guide": {...} or None,  # the lead magnet
+              "paid_skill": {...} or None,  # the upsell
+              "framework_used": ["LangChain", "LangGraph", "Composio"],
+              "primary_url": str,
+              "cta_line": str,
+              "affiliate": {...} or None    # contextual affiliate offer
+            }
+        """
+        if products is None:
+            products = self.select_relevant_products(topic, limit=4)
+
+        free_guide = None
+        paid_skill = None
+        for p in products:
+            price = self._price_value(p.get("price"))
+            if price == 0.0 and free_guide is None:
+                free_guide = p
+            elif price > 0 and paid_skill is None:
+                paid_skill = p
+            if free_guide and paid_skill:
+                break
+
+        # If we only got free products, scan whole catalog for best paid upsell
+        if paid_skill is None:
+            all_normalized = [self._normalize_product(p) for p in self.business_profile.get("products", [])]
+            paid_candidates = [p for p in all_normalized if self._price_value(p.get("price")) > 0]
+            if paid_candidates:
+                scored = [(self.score_for_revenue(p, topic), p) for p in paid_candidates]
+                scored.sort(reverse=True, key=lambda x: x[0])
+                paid_skill = scored[0][1]
+
+        # Same for free guide
+        if free_guide is None:
+            all_normalized = [self._normalize_product(p) for p in self.business_profile.get("products", [])]
+            free_candidates = [p for p in all_normalized if self._price_value(p.get("price")) == 0.0]
+            if free_candidates:
+                scored = [(self.score_for_revenue(p, topic), p) for p in free_candidates]
+                scored.sort(reverse=True, key=lambda x: x[0])
+                free_guide = scored[0][1]
+
+        frameworks = self.business_profile.get("frameworks_we_use_and_tag", [])
+        topic_lower = topic.lower()
+        relevant_frameworks = []
+        if any(kw in topic_lower for kw in ["agent", "openclaw", "ai", "automation", "build", "skill"]):
+            relevant_frameworks = ["LangChain", "LangGraph", "Composio"]
+        elif "crypto" in topic_lower or "trading" in topic_lower:
+            relevant_frameworks = ["LangChain", "Composio", "Mistral"]
+        elif "credit" in topic_lower or "real estate" in topic_lower:
+            relevant_frameworks = ["LangChain", "Composio"]
+        else:
+            relevant_frameworks = frameworks[:3]
+
+        affiliate = None
+        for offer in self.business_profile.get("affiliate_offers", []):
+            offer_topic = offer.get("topic", "").lower().replace("_", " ")
+            if any(t in topic_lower for t in offer_topic.split()):
+                affiliate = offer
+                break
+
+        primary = free_guide or paid_skill
+        primary_url = (primary or {}).get("url", "https://futuristicwealth.gumroad.com/")
+
+        if free_guide and paid_skill:
+            cta_line = (
+                f"Free starter: {free_guide['name']} → {free_guide['url']} "
+                f"| Upgrade: {paid_skill['name']} (${self._price_value(paid_skill['price'])}) → {paid_skill['url']}"
+            )
+        elif free_guide:
+            cta_line = f"Grab the free guide: {free_guide['name']} → {free_guide['url']}"
+        elif paid_skill:
+            cta_line = f"Get the skill: {paid_skill['name']} (${self._price_value(paid_skill['price'])}) → {paid_skill['url']}"
+        else:
+            cta_line = "Browse our OpenClaw skills: https://futuristicwealth.gumroad.com/"
+
+        return {
+            "free_guide": free_guide,
+            "paid_skill": paid_skill,
+            "framework_used": relevant_frameworks,
+            "primary_url": primary_url,
+            "cta_line": cta_line,
+            "affiliate": affiliate,
+        }
     
     def get_content_strategy(self, trend_data: str) -> Dict:
         """Generate comprehensive content strategy based on ALL available data.
@@ -307,6 +434,9 @@ class AIDecisionEngine:
         except Exception:
             memory_examples = []
         
+        # 7b. CFO monetization angle (free guide → paid upsell + framework tagging)
+        monetization_angle = self.cfo_pick_strategy(primary_topic, products_to_feature)
+
         strategy = {
             "topic": primary_topic,
             "products": products_to_feature,
@@ -315,6 +445,7 @@ class AIDecisionEngine:
             "memory_insights": memory_insights,
             "memory_examples": memory_examples,
             "recent_topics": recent_topics,
+            "monetization_angle": monetization_angle,
             "decision_timestamp": datetime.now().isoformat()
         }
         
@@ -422,8 +553,8 @@ class AIDecisionEngine:
                 "char_limit": 2200
             },
             "telegram": {
-                "style": "Direct, actionable, crypto-focused",
-                "product_mention": "Quick pitch with crypto tie-in" if products else None,
+                "style": "Internal status briefing — what we researched, posted, promoted, next run",
+                "product_mention": "Mention which product the run promoted" if products else None,
                 "char_limit": 4096
             }
         }

@@ -60,6 +60,66 @@ def _llm_generate(prompt: str, purpose: str) -> str:
         return ""
 
 
+# Twitter handle map for framework tagging
+_FRAMEWORK_HANDLES = {
+    "LangChain": "@LangChainAI",
+    "LangGraph": "@LangChainAI",
+    "Composio": "@composiohq",
+    "LangSmith": "@LangChainAI",
+    "Mistral": "@MistralAI",
+    "OpenRouter": "@OpenRouterAI",
+    "Hugging Face": "@huggingface",
+    "Cloudflare Workers AI": "@cloudflare",
+    "Astra DB (DataStax)": "@datastax",
+    "Anthropic Claude / OpenClaw": "@AnthropicAI",
+}
+
+
+def _monetization_block(strategy: dict | None, platform: str) -> str:
+    """Render the CFO monetization angle into a prompt fragment.
+
+    Tells the LLM: which product to push, the framework angle, and the CTA
+    line. Empty string when no strategy is provided.
+    """
+    if not strategy:
+        return ""
+    angle = strategy.get("monetization_angle") or {}
+    if not angle:
+        return ""
+
+    lines = ["", "MONETIZATION ANGLE (this post must support our funnel):"]
+    if angle.get("free_guide"):
+        fg = angle["free_guide"]
+        lines.append(f"- Free lead magnet: {fg.get('name')} → {fg.get('url')}")
+    if angle.get("paid_skill"):
+        ps = angle["paid_skill"]
+        lines.append(f"- Paid upsell: {ps.get('name')} (${ps.get('price')}) → {ps.get('url')}")
+    frameworks = angle.get("framework_used") or []
+    if frameworks:
+        if platform == "twitter":
+            handles = " ".join(_FRAMEWORK_HANDLES.get(f, "") for f in frameworks if _FRAMEWORK_HANDLES.get(f))
+            if handles:
+                lines.append(f"- Tag these accounts: {handles.strip()}")
+        else:
+            lines.append(f"- Frameworks we used: {', '.join(frameworks)} (mention them so devs find us)")
+    if angle.get("affiliate"):
+        aff = angle["affiliate"]
+        lines.append(f"- Optional affiliate (only if contextually relevant): {aff.get('name')} → {aff.get('url')}")
+    lines.append("- Position content as 'how we built X with [framework]', NOT generic advice")
+    return "\n".join(lines) + "\n"
+
+
+def _framework_footer(strategy: dict | None) -> str:
+    """Builder-tag footer line for non-Twitter platforms."""
+    if not strategy:
+        return ""
+    angle = strategy.get("monetization_angle") or {}
+    fws = angle.get("framework_used") or []
+    if not fws:
+        return ""
+    return f"Built with {' + '.join(fws[:3])}"
+
+
 # =============================================================================
 # Per-platform content generators
 # =============================================================================
@@ -81,17 +141,18 @@ def generate_twitter(insights: str, strategy: dict | None = None) -> str:
         elif isinstance(examples, str) and len(examples) > 10:
             memory_hint = f"\nPast high-performing posts:\n{examples[:300]}\n"
 
+    monetization = _monetization_block(strategy, "twitter")
     prompt = f"""Current year: {year}. Create a Twitter post based on this insight:
 
 {insights[:300]}
-{memory_hint}
+{memory_hint}{monetization}
 HARD RULES:
 - MAXIMUM 250 characters (leave room for link)
 - Plain text only — NO Markdown
 - Use {year} for dates
 - Include 1-2 relevant emojis
-- 1-2 hashtags max: #YBOT #AIAutomation
-- Be engaging and actionable
+- 1-2 hashtags max — prefer #OpenClaw #AIAgents over generic tags
+- Frame as "how we built X" — builder voice, not generic advice
 - Do NOT include any URL — the system appends one automatically
 
 Output ONLY the tweet text."""
@@ -121,18 +182,20 @@ def generate_facebook(insights: str, strategy: dict | None = None) -> str:
     topic = (strategy or {}).get("topic", "general")
     site = get_site_for_topic(topic)
 
+    monetization = _monetization_block(strategy, "facebook")
     prompt = f"""Create a Facebook post based on this insight:
 
 {insights[:500]}
-
+{monetization}
 Requirements:
-- Conversational, community-focused tone
+- Conversational, builder-to-builder tone
 - 400-600 characters
 - Plain text only (NO Markdown)
 - Relevant emojis
-- Mention FDWA services naturally
+- Frame as "we built X with [framework] — here is how" — not generic advice
+- Promote the free guide first (lead magnet), upsell the paid skill second
 - CTA: {site}
-- 3-4 hashtags: #AIAutomation #BusinessGrowth #FinancialFreedom
+- 3-4 hashtags: #OpenClaw #AIAgents #LangChain
 - Value-driven and engaging
 
 Output ONLY the Facebook post text."""
@@ -149,6 +212,10 @@ Output ONLY the Facebook post text."""
 
     if site not in post:
         post += f"\n\nLearn more: {site}"
+
+    footer = _framework_footer(strategy)
+    if footer and footer not in post:
+        post += f"\n\n{footer}"
 
     limit = PLATFORM_LIMITS["facebook"]
     if len(post) > limit:
@@ -195,28 +262,28 @@ def generate_linkedin(insights: str, strategy: dict | None = None) -> str:
         elif isinstance(examples, str) and len(examples) > 10:
             memory_hint = f"\nPast high-performing posts:\n{examples[:300]}\n"
 
-    prompt = f"""You are Daniel Wray, founder of FDWA — an AI automation agency.
+    monetization = _monetization_block(strategy, "linkedin")
+    prompt = f"""You are Daniel Wray, founder of FDWA — we build OpenClaw skills and AI agent tooling.
 Write a LinkedIn post for {year}.
 
 Context/insight:
 {insights[:400]}
 {product_lines}
 {formula}
-{memory_hint}
+{memory_hint}{monetization}
 LINKEDIN RULES:
 - 600-1200 characters MAXIMUM (sweet spot for engagement — LinkedIn hard limit is 3000)
 - NEVER exceed 1200 characters — shorter performs better
-- Write as a FOUNDER sharing updates about tools you built, results for clients
-- Start with a data-driven hook or personal story
-- Include specific metrics or ROI outcomes when possible
+- Write as a BUILDER sharing what we shipped, the stack we used, the gotchas
+- Start with a concrete result or build story (no generic intros)
+- Include the framework names (LangChain, LangGraph, Composio, Mistral) where relevant
 - Use ✅ bullet points for readability
-- Professional but conversational tone ("street smart entrepreneur")
 - Plain text only (NO Markdown)
-- 3-5 hashtags max at the end
-- CTA: {site}
+- 3-5 hashtags max — prefer #OpenClaw #AIAgents #LangChain #Composio
+- CTA: lead magnet first → upsell second → {site}
 - Topic focus: {topic}
 
-THIS IS NOT a generic AI article — it's YOUR thought leadership as a builder.
+THIS IS NOT a generic AI article — it's YOUR builder's notebook.
 
 Output ONLY the LinkedIn post text."""
 
@@ -236,6 +303,10 @@ Output ONLY the LinkedIn post text."""
     if site not in post:
         post += f"\n\nLearn more: {site}"
 
+    footer = _framework_footer(strategy)
+    if footer and footer not in post:
+        post += f"\n\n{footer}"
+
     limit = PLATFORM_LIMITS["linkedin"]
     if len(post) > limit:
         post = post[:limit - 3] + "..."
@@ -248,18 +319,19 @@ def generate_instagram(insights: str, strategy: dict | None = None) -> str:
     year = datetime.now().year
     topic = (strategy or {}).get("topic", "general")
 
+    monetization = _monetization_block(strategy, "instagram")
     prompt = f"""Current year: {year}. Create an Instagram caption:
 
 {insights[:400]}
-
+{monetization}
 Requirements:
-- Visual-first, lifestyle-focused, aspirational
+- Visual-first, builder/maker tone
 - 400-600 characters
 - Plain text only (NO Markdown)
 - Emoji-heavy (but tasteful)
-- Entrepreneurship / financial freedom angle
-- Mention link in bio
-- Hashtags: #AIAutomation #FinancialFreedom #Entrepreneur #PassiveIncome
+- Frame as "we built this AI agent — here is what it does"
+- Mention link in bio (free guide first, paid skill second)
+- Hashtags: #OpenClaw #AIAgents #LangChain #BuildInPublic
 - NO URLs in caption (Instagram doesn't allow clickable links)
 
 Output ONLY the Instagram caption."""
@@ -284,70 +356,73 @@ Output ONLY the Instagram caption."""
 
 
 def generate_telegram(insights: str, strategy: dict | None = None) -> dict:
-    """Generate Telegram message — crypto token data ONLY.
+    """Generate Telegram message — internal FDWA status briefing.
 
-    ✅ FIX: Telegram = crypto symbols + percentages. NO images, NO generic business.
-    Uses CoinMarketCap data, not LLM generation.
+    Replaces the old crypto market dump. Telegram is now the operator
+    channel: what the agent researched this run, where it posted, which
+    product it promoted, when the next run is. Crypto data is only added
+    when the picked topic is crypto-related (yieldbot side-brand mode).
 
     Returns dict with:
-      - message: str (the Telegram text)
-      - crypto_analysis: dict (gainers/losers for memory persistence)
+      - message: str (the Telegram briefing)
+      - crypto_analysis: dict (only populated when topic is crypto)
     """
-    from src.agent.tools.crypto_tools import fetch_quality_tokens, CMC_AVAILABLE
+    strategy = strategy or {}
+    topic = strategy.get("topic", "general")
+    angle = strategy.get("monetization_angle") or {}
+    products = strategy.get("products", [])
 
-    if not CMC_AVAILABLE:
-        logger.warning("CMC not available — sending minimal crypto update")
-        return {"message": _telegram_minimal_update(), "crypto_analysis": {}}
+    # Build internal briefing
+    parts = ["🤖 FDWA Agent Briefing", ""]
+    parts.append(f"• Researched: {topic}")
 
-    data = fetch_quality_tokens(top_n=5)
-    if not data.get("success") or (not data["gainers"] and not data["losers"]):
-        logger.warning("No quality tokens found — sending minimal crypto update")
-        return {"message": _telegram_minimal_update(), "crypto_analysis": {}}
+    if products:
+        names = ", ".join(p.get("name", "?")[:40] for p in products[:2])
+        parts.append(f"• Promoting: {names}")
 
-    parts = []
+    if angle.get("free_guide"):
+        fg = angle["free_guide"]
+        parts.append(f"• Free lead magnet: {fg.get('name', '?')[:60]}")
+    if angle.get("paid_skill"):
+        ps = angle["paid_skill"]
+        parts.append(f"• Paid upsell: {ps.get('name', '?')[:60]} (${ps.get('price')})")
 
-    # Gainers
-    if data["gainers"]:
-        parts.append("📈 Top Gainers (24h):")
-        symbols = []
-        for t in data["gainers"][:5]:
-            sym = t.get("symbol", "?").upper()
-            chg = t.get("change_24h", 0)
-            symbols.append(f"${sym} +{chg:.1f}%")
-        parts.append(" | ".join(symbols))
+    fws = angle.get("framework_used") or []
+    if fws:
+        parts.append(f"• Stack tagged: {', '.join(fws[:3])}")
+
+    if angle.get("affiliate"):
+        parts.append(f"• Affiliate angle: {angle['affiliate'].get('name')}")
+
+    parts.append("• Posting to: Twitter, Facebook, LinkedIn, Instagram")
+    parts.append("• Next run: ~6h")
+
+    if angle.get("primary_url"):
         parts.append("")
+        parts.append(f"🔗 {angle['primary_url']}")
 
-    # Losers
-    if data["losers"]:
-        parts.append("📉 Top Losers (24h):")
-        symbols = []
-        for t in data["losers"][:5]:
-            sym = t.get("symbol", "?").upper()
-            chg = t.get("change_24h", 0)
-            symbols.append(f"${sym} {chg:.1f}%")
-        parts.append(" | ".join(symbols))
-        parts.append("")
-
-    parts.append("💡 Learn more: https://yieldbot.cc")
+    crypto_analysis = {}
+    # Only fetch crypto data when topic is yieldbot/crypto-related
+    if "crypto" in topic.lower() or "bitcoin" in topic.lower() or "yieldbot" in topic.lower():
+        try:
+            from src.agent.tools.crypto_tools import fetch_quality_tokens, CMC_AVAILABLE
+            if CMC_AVAILABLE:
+                data = fetch_quality_tokens(top_n=3)
+                if data.get("success") and (data["gainers"] or data["losers"]):
+                    parts.append("")
+                    if data["gainers"]:
+                        syms = " | ".join(
+                            f"${t.get('symbol', '?').upper()} +{t.get('change_24h', 0):.1f}%"
+                            for t in data["gainers"][:3]
+                        )
+                        parts.append(f"📈 {syms}")
+                    crypto_analysis = {
+                        "best_gainers": data["gainers"],
+                        "best_losers": data["losers"],
+                    }
+        except Exception as e:
+            logger.debug("Crypto enrichment skipped: %s", e)
 
     msg = "\n".join(parts)
-    logger.info("Telegram: %d chars, %d gainers, %d losers",
-                len(msg), len(data["gainers"]), len(data["losers"]))
-
-    # Return both message and raw crypto data for memory persistence
-    crypto_analysis = {
-        "best_gainers": data["gainers"],
-        "best_losers": data["losers"],
-    }
+    logger.info("Telegram briefing: %d chars, topic=%s", len(msg), topic)
     return {"message": msg, "crypto_analysis": crypto_analysis}
-
-
-def _telegram_minimal_update() -> str:
-    """Graceful fallback when CMC data is unavailable — NO admin debug messages."""
-    return (
-        "📊 Crypto Market Update\n\n"
-        "Market data is being refreshed. "
-        "Check back shortly for live token analysis.\n\n"
-        "💡 Learn more: https://yieldbot.cc\n\n"
-        "#DeFi #Crypto #YieldBot"
-    )

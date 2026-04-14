@@ -29,8 +29,32 @@ NAMESPACE_PLATFORMS = ("platforms", "insights")
 NAMESPACE_CRYPTO = ("crypto", "insights")
 NAMESPACE_GENERAL = ("agent", "general")
 
-# Single Astra collection name — all document types go here with a `_type` field
+# Default Astra collection for untyped/general writes.
+# Each logical domain now uses its own collection (see ASTRA_COLLECTIONS).
 ASTRA_COLLECTION = os.getenv("ASTRA_COLLECTION_NAME", "ai_auto")
+
+# Per-type collection routing — keeps memory segmented instead of one dumping ground.
+# Override any of these via env if you want different names in Astra.
+ASTRA_COLLECTIONS: Dict[str, str] = {
+    "content_performance": os.getenv("ASTRA_COLL_CONTENT", "fdwa_content_performance"),
+    "products": os.getenv("ASTRA_COLL_PRODUCTS", "fdwa_products"),
+    "crypto_insights": os.getenv("ASTRA_COLL_CRYPTO", "fdwa_crypto_insights"),
+    "general_memory": os.getenv("ASTRA_COLL_GENERAL", "fdwa_general_memory"),
+    "engagement_snapshot": os.getenv("ASTRA_COLL_ENGAGEMENT", "fdwa_engagement"),
+    "supervisor_reflection": os.getenv("ASTRA_COLL_REFLECTION", "fdwa_reflections"),
+}
+
+
+def _astra_env() -> tuple[str | None, str | None, str]:
+    """Resolve Astra endpoint + token from env, supporting both naming styles."""
+    endpoint = os.getenv("ASTRA_DB_API_ENDPOINT") or os.getenv("ASTRA_DB_ENDPOINT")
+    token = (
+        os.getenv("ASTRA_DB_APPLICATION_TOKEN")
+        or os.getenv("ASTRA_APPLICATION_TOKEN")
+        or os.getenv("ASTRA_DB_API_KEY")
+    )
+    keyspace = os.getenv("ASTRA_DB_KEYSPACE") or os.getenv("ASTRA_KEYSPACE", "default_keyspace")
+    return endpoint, token, keyspace
 
 
 class AgentMemoryStore:
@@ -54,13 +78,11 @@ class AgentMemoryStore:
         self.user_id = user_id
         self.store = store or InMemoryStore()
         self._astra_db = None
-        self._astra_collection_ready = False
-        self._astra_collection_failed_until: float = 0
+        self._astra_ready_collections: set[str] = set()
+        self._astra_failed_until: Dict[str, float] = {}
 
         # Detect Astra configuration via environment variables (best-effort)
-        astra_endpoint = os.getenv("ASTRA_DB_ENDPOINT")
-        astra_token = os.getenv("ASTRA_APPLICATION_TOKEN")
-        astra_keyspace = os.getenv("ASTRA_KEYSPACE", "default_keyspace")
+        astra_endpoint, astra_token, astra_keyspace = _astra_env()
 
         if astra_endpoint and astra_token:
             try:
@@ -371,76 +393,107 @@ class AgentMemoryStore:
         return posts[:limit]
 
     # ------------------ Astra helpers (best-effort persistence) ------------------
-    # All data goes into the SINGLE existing collection (default: ai_auto).
-    # Documents are distinguished by a `_type` field.
+    # Each logical domain gets its own collection (see ASTRA_COLLECTIONS).
+    # Callers pass a `doc_type` that maps to a collection name.
 
-    def _astra_ensure_collection(self) -> bool:
-        """Ensure the Astra collection is accessible (best-effort).
+    def _collection_name(self, doc_type: str | None) -> str:
+        if doc_type and doc_type in ASTRA_COLLECTIONS:
+            return ASTRA_COLLECTIONS[doc_type]
+        return ASTRA_COLLECTION
 
-        We do NOT try to create the collection — it must already exist in
-        the database (e.g. 'ai_auto'). This avoids COLLECTION_NOT_EXIST errors
-        by checking once and caching the result with cooldown on failure.
-        """
+    def _astra_ensure_collection(self, name: str) -> bool:
+        """Ensure a specific Astra collection exists (create if missing)."""
         if not self._astra_db:
             return False
-
-        if self._astra_collection_ready:
+        if name in self._astra_ready_collections:
             return True
-
-        if self._astra_collection_failed_until > time.time():
+        if self._astra_failed_until.get(name, 0) > time.time():
             return False
-
         try:
-            coll = self._astra_db.get_collection(ASTRA_COLLECTION)
-            # Quick probe — just list 1 doc to verify it exists
+            coll = self._astra_db.get_collection(name)
             coll.find_one({})
-            self._astra_collection_ready = True
-            logger.info("✅ Astra collection '%s' verified", ASTRA_COLLECTION)
+            self._astra_ready_collections.add(name)
+            logger.info("✅ Astra collection '%s' verified", name)
             return True
         except Exception as e:
+            msg = str(e)
+            if "COLLECTION_NOT_EXIST" in msg or "does not exist" in msg.lower():
+                if self._astra_create_collection(name):
+                    self._astra_ready_collections.add(name)
+                    logger.info("✅ Astra collection '%s' created", name)
+                    return True
             cooldown_secs = int(os.getenv("ASTRA_COLLECTION_RETRY_COOLDOWN_SECS", "300"))
-            self._astra_collection_failed_until = time.time() + cooldown_secs
-            logger.debug("Astra collection '%s' not available (cooldown %ds): %s", ASTRA_COLLECTION, cooldown_secs, e)
+            self._astra_failed_until[name] = time.time() + cooldown_secs
+            logger.debug("Astra collection '%s' not available (cooldown %ds): %s", name, cooldown_secs, e)
+            return False
+
+    def _astra_create_collection(self, name: str) -> bool:
+        """Create a collection with vectorize enabled (best-effort)."""
+        try:
+            self._astra_db.create_collection(name)
+            return True
+        except Exception as e:
+            logger.debug("Astra create_collection('%s') failed: %s", name, e)
             return False
 
     def _astra_insert(self, doc: Dict) -> bool:
-        """Insert a document into the Astra collection (non-blocking best-effort)."""
+        """Insert a document into the appropriate Astra collection (by `_type`)."""
         if not self._astra_db:
             return False
-
-        if not self._astra_collection_ready and not self._astra_ensure_collection():
+        name = self._collection_name(doc.get("_type"))
+        if not self._astra_ensure_collection(name):
             return False
+        # Retry loop with exponential backoff to handle transient Astra errors
+        max_retries = int(os.getenv("ASTRA_INSERT_MAX_RETRIES", "3"))
+        backoff = float(os.getenv("ASTRA_INSERT_BACKOFF_SECS", "1"))
+        attempt = 0
+        last_exc = None
+        while attempt < max_retries:
+            attempt += 1
+            try:
+                coll = self._astra_db.get_collection(name)
+                doc_id = doc.get("_id")
+                if doc_id is not None:
+                    coll.replace_one({"_id": doc_id}, doc, upsert=True)
+                else:
+                    coll.insert_one(doc)
+                return True
+            except Exception as e:
+                last_exc = e
+                logger.debug("Astra insert attempt %d/%d into '%s' failed: %s", attempt, max_retries, name, e)
+                time.sleep(backoff)
+                backoff *= 2
 
+        # If we reach here, all attempts failed — persist the failed doc locally for later retry
         try:
-            coll = self._astra_db.get_collection(ASTRA_COLLECTION)
-            coll.insert_one(doc)
-            return True
+            base = Path(__file__).resolve().parent.parent
+            failed_dir = base / "data"
+            failed_dir.mkdir(parents=True, exist_ok=True)
+            out_path = failed_dir / "astra_failed_inserts.jsonl"
+            with open(out_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"collection": name, "doc": doc, "error": str(last_exc)}) + "\n")
+            logger.warning("Astra insert failed after %d attempts — queued to %s", max_retries, out_path)
         except Exception as e:
-            logger.debug("Astra insert failed: %s", e)
-            return False
+            logger.debug("Failed to persist failed Astra insert locally: %s", e)
+        return False
 
     def _astra_find(self, filter_dict: Dict | None = None, limit: int = 10, vector_query: str | None = None) -> List[Dict]:
-        """Find documents in the Astra collection (best-effort).
-
-        All queries go to the single ASTRA_COLLECTION. Callers should include
-        `_type` in filter_dict to scope results (e.g. {"_type": "content_performance"}).
-        """
+        """Find documents by routing to the collection matching filter_dict['_type']."""
         if not self._astra_db:
             return []
-
-        if not self._astra_collection_ready and not self._astra_ensure_collection():
+        doc_type = (filter_dict or {}).get("_type")
+        name = self._collection_name(doc_type)
+        if not self._astra_ensure_collection(name):
             return []
-
         try:
-            coll = self._astra_db.get_collection(ASTRA_COLLECTION)
-
+            coll = self._astra_db.get_collection(name)
             if vector_query:
                 rows = coll.find(filter=filter_dict or {}, sort={"$vectorize": vector_query}, limit=limit)
             else:
                 rows = coll.find(filter=filter_dict or {}, limit=limit)
             return [r for r in rows]
         except Exception as e:
-            logger.debug("Astra find failed: %s", e)
+            logger.debug("Astra find on '%s' failed: %s", name, e)
             return []
     
     # ================ CRYPTO INSIGHTS ================
@@ -721,9 +774,34 @@ def initialize_memory_store(store: BaseStore, user_id: str = "fdwa_agent") -> Ag
 
 def get_astra_status() -> dict:
     """Return a summary of Astra DB health (for the dashboard)."""
+    endpoint, token, keyspace = _astra_env()
+    if not (endpoint and token):
+        return {
+            "astra": "not_configured",
+            "endpoint": None,
+            "keyspace": keyspace,
+            "collections": list(ASTRA_COLLECTIONS.values()),
+        }
+
+    store = get_memory_store()
+    ready = sorted(store._astra_ready_collections) if store._astra_db else []
+    pending = [c for c in ASTRA_COLLECTIONS.values() if c not in ready]
+
+    if store._astra_db:
+        try:
+            for name in ASTRA_COLLECTIONS.values():
+                store._astra_ensure_collection(name)
+            ready = sorted(store._astra_ready_collections)
+            pending = [c for c in ASTRA_COLLECTIONS.values() if c not in ready]
+        except Exception:
+            pass
+
     return {
-        "astra": "configured" if ASTRA_DB_TOKEN and ASTRA_DB_ENDPOINT else "not_configured",
-        "collection": ASTRA_COLLECTION,
-        "collection_ready": _astra_collection_ready,
-        "endpoint": ASTRA_DB_ENDPOINT[:40] + "…" if ASTRA_DB_ENDPOINT and len(ASTRA_DB_ENDPOINT) > 40 else ASTRA_DB_ENDPOINT,
+        "astra": "connected" if store._astra_db else "error",
+        "endpoint": (endpoint[:40] + "…") if endpoint and len(endpoint) > 40 else endpoint,
+        "keyspace": keyspace,
+        "default_collection": ASTRA_COLLECTION,
+        "collections_ready": ready,
+        "collections_pending": pending,
+        "routing": ASTRA_COLLECTIONS,
     }

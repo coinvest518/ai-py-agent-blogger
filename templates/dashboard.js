@@ -230,11 +230,43 @@ function displayResults(r) {
     const card = document.getElementById('resultsCard');
     if (card) card.style.display = 'block';
     if (r.image) { const img = document.getElementById('generatedImage'); img.src = r.image; img.style.display = 'block'; }
+    // Video: embed if playable, otherwise show a link
+    const vidContainer = document.getElementById('generatedVideoContainer');
+    if (vidContainer) {
+        vidContainer.innerHTML = '';
+        const videoUrl = r.video || r.video_url || '';
+        if (videoUrl) {
+            try {
+                const isMp4 = videoUrl.toLowerCase().endsWith('.mp4');
+                if (isMp4) {
+                    const v = document.createElement('video');
+                    v.src = videoUrl;
+                    v.controls = true;
+                    v.style.width = '100%';
+                    v.style.borderRadius = '12px';
+                    vidContainer.appendChild(v);
+                } else {
+                    const a = document.createElement('a');
+                    a.href = videoUrl;
+                    a.target = '_blank';
+                    a.rel = 'noopener';
+                    a.textContent = '🎞️ View generated video';
+                    vidContainer.appendChild(a);
+                }
+                vidContainer.style.display = 'block';
+            } catch (e) {
+                vidContainer.style.display = 'none';
+            }
+        } else {
+            vidContainer.style.display = 'none';
+        }
+    }
     if (r.tweet) document.getElementById('twitterPost').textContent = r.tweet;
     if (r.facebook) document.getElementById('facebookPost').textContent = r.facebook;
     if (r.linkedin) document.getElementById('linkedinPost').textContent = r.linkedin;
     if (r.telegram) document.getElementById('telegramPost').textContent = r.telegram;
     if (r.instagram) document.getElementById('instagramPost').textContent = r.instagram;
+    if (r.upload_post_status) document.getElementById('uploadPost').textContent = r.upload_post_status;
     updateAgentMetrics(r);
 }
 
@@ -422,6 +454,108 @@ function showNotification(title, message, type = 'info') {
     document.body.appendChild(n);
     setTimeout(() => { n.style.animation = 'slideOut 0.3s ease-out'; setTimeout(() => n.remove(), 300); }, 5000);
 }
+
+// ── Scheduler jobs (Phase 18/21) ───────────────────────────────────
+async function refreshJobs() {
+    const el = document.getElementById('jobsList');
+    if (!el) return;
+    el.textContent = 'Loading…';
+    try {
+        const res = await fetch('/scheduler/jobs');
+        const data = await res.json();
+        const jobs = data.jobs || [];
+        if (!jobs.length) { el.innerHTML = '<span style="color:var(--text-muted);">No custom jobs. Default 6h tick still active.</span>'; return; }
+        el.innerHTML = jobs.map(j => {
+            const when = j.cron ? ('cron ' + j.cron) : ('every ' + j.minutes + 'm');
+            const badge = j.enabled === false ? '⏸' : '✓';
+            const topic = j.topic || '—';
+            return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #21262d;">
+                <span><strong>${badge} ${j.id}</strong> — ${when} <span style="color:var(--text-muted);">topic=${topic}</span></span>
+                <button class="btn btn-secondary" onclick="deleteJob('${j.id}')" style="padding:4px 10px;font-size:11px;">Delete</button>
+            </div>`;
+        }).join('');
+    } catch (e) { el.textContent = 'Error: ' + e.message; }
+}
+
+async function addJobNL() {
+    const input = document.getElementById('schedNlInput');
+    const text = (input?.value || '').trim();
+    if (!text) return;
+    try {
+        const res = await fetch('/scheduler/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text })
+        });
+        const data = await res.json();
+        if (data.error) { terminal.error('Schedule parse failed: ' + data.error); return; }
+        terminal.info('Scheduled: ' + JSON.stringify(data.job));
+        input.value = '';
+        refreshJobs();
+    } catch (e) { terminal.error('Add job failed: ' + e.message); }
+}
+
+async function deleteJob(id) {
+    if (!confirm('Delete job ' + id + '?')) return;
+    try {
+        await fetch('/scheduler/jobs/' + encodeURIComponent(id), { method: 'DELETE' });
+        refreshJobs();
+    } catch (e) { terminal.error('Delete failed: ' + e.message); }
+}
+
+// ── Engagement (Phase 16/21) ───────────────────────────────────────
+async function fetchEngagement() {
+    const sum = document.getElementById('engagementSummary');
+    const out = document.getElementById('engagementJson');
+    sum.textContent = 'Fetching…';
+    try {
+        const res = await fetch('/engagement/fetch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force: true })
+        });
+        const data = await res.json();
+        sum.textContent = data.summary || 'No summary';
+        out.textContent = JSON.stringify(data.engagement || data, null, 2);
+    } catch (e) { sum.textContent = 'Error: ' + e.message; }
+}
+
+// ── Supervisor reasoning (Phase 17/21) ─────────────────────────────
+async function fetchReasoning() {
+    const plan = document.getElementById('reasoningPlan');
+    const refl = document.getElementById('reasoningReflect');
+    plan.textContent = 'Loading…';
+    refl.textContent = 'Loading…';
+    try {
+        const res = await fetch('/reasoning/last');
+        const data = await res.json();
+        plan.textContent = JSON.stringify(data.plan || [], null, 2);
+        refl.textContent = JSON.stringify(data.reflection || [], null, 2);
+    } catch (e) { plan.textContent = 'Error: ' + e.message; refl.textContent = ''; }
+}
+
+// ── Memory search (Phase 21) ───────────────────────────────────────
+async function searchMemory() {
+    const q = (document.getElementById('memQueryInput')?.value || '').trim();
+    const out = document.getElementById('memHits');
+    if (!q || !out) return;
+    out.textContent = 'Searching…';
+    try {
+        const res = await fetch('/memory/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: q, top_k: 8 })
+        });
+        const data = await res.json();
+        out.textContent = JSON.stringify(data, null, 2);
+    } catch (e) { out.textContent = 'Error: ' + e.message; }
+}
+
+// Auto-refresh scheduler jobs when tab opens
+const _navObserver = new MutationObserver(() => {
+    if (document.getElementById('section-scheduler')?.style.display !== 'none') refreshJobs();
+});
+if (document.body) _navObserver.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['style'] });
 
 // ── Boot ───────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', initDashboard);

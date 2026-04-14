@@ -465,3 +465,25 @@ to review your credit report and create an action plan."
 
 *Last Updated: February 13, 2026*
 *This knowledge base is dynamic - update as we learn what works best*
+
+
+## What the agent knows about us (auto-injected into content + research prompts)
+
+**Primary brand:** Futuristic Digital Wealth Agency (FDWA) — https://fdwa.site
+We build, ship, and sell AI agent skills. Content angle is always "here's what we built + here's the stack + here's where to get it." Audience = indie developers, automation founders, and small business operators.
+
+**Sub-brands we represent:**
+- `fdwa.site` — consulting, AI Bootcamp, stack map, credit-secrets ebook
+- `futuristicwealth.gumroad.com` — OpenClaw skills + agent guides (free lead magnets + paid skills)
+- `reportdisputer.xyz` — credit-report analysis tool (pairs with credit-repair affiliates)
+- `yieldbot.cc` — crypto trading bot, side sub-brand (post only on big crypto trends)
+- `ai-realestate-agents.vercel.app` — real-estate lead-gen agent BETA
+- `clawhub.ai/coinvest518/secure-gmail` — Gmail OpenClaw skill
+- `buymeacoffee.com/futuristicwealth` — tips, Supporter/Builder/Pro tiers, newsletter, free vs paid group chat
+- `yieldbot_token` (on Base mainnet) — governance/utility token; contract pulled from `YIELDBOT_TOKEN_ADDRESS`
+
+**Affiliate matrix handled by `MASTER_PRODUCT_AFFILIATE_MATRIX.md`** — content agents pick the offer that matches the current topic.
+
+**Frameworks we tag on every post:** LangChain, LangGraph, Composio, LangSmith, Mistral, OpenRouter, Hugging Face, Cloudflare Workers AI, Mem0, Anthropic/OpenClaw, FastAPI.
+
+**Crypto/agent wallet:** `AGENT_WALLET_ADDRESS` lives on `CDP_NETWORK_ID` (default `base-sepolia`). Live sends require `CDP_ENABLE_SEND=true` AND `dry_run=False` on the call site AND amount ≤ `CDP_MAX_TRANSFER_ETH` (0.01 default).

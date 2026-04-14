@@ -14,10 +14,10 @@ load_dotenv()
 
 # Configuration
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
-TELEGRAM_USER_ID = os.getenv("TELEGRAM_ENTITY_ID")  # Composio v3 uses `user_id`
-TELEGRAM_GROUP_CHAT_ID = os.getenv("TELEGRAM_GROUP_CHAT_ID")  # numeric chat id (optional)
-TELEGRAM_GROUP_USERNAME = os.getenv("TELEGRAM_GROUP_USERNAME")  # preferred: username (e.g. @yieldbotdefi)
-TELEGRAM_CONNECTED_ACCOUNT_ID = os.getenv("TELEGRAM_ACCOUNT_ID")  # composio connected account id (optional)
+TELEGRAM_USER_ID = os.getenv("TELEGRAM_ENTITY_ID") or os.getenv("COMPOSIO_ENTITY_ID")
+TELEGRAM_GROUP_CHAT_ID = os.getenv("TELEGRAM_GROUP_CHAT_ID") or os.getenv("TELEGRAM_AI_OWNER_CHAT_ID")
+TELEGRAM_GROUP_USERNAME = os.getenv("TELEGRAM_GROUP_USERNAME")
+TELEGRAM_CONNECTED_ACCOUNT_ID = os.getenv("TELEGRAM_ACCOUNT_ID") or os.getenv("COMPOSIO_TELEGRAM_ACCOUNT_ID")
 BASE_URL = "https://backend.composio.dev/api/v3/tools/execute"
 
 # Configure logging
@@ -105,13 +105,41 @@ def send_message(
     if reply_markup:
         arguments["reply_markup"] = reply_markup
 
-    # Use Composio v3 API only — follow toolkit docs (accepts `@channelusername`)
-    result = _execute_telegram_tool("TELEGRAM_SEND_MESSAGE", arguments)
-    
-    # Note: Token saving is now handled separately with AI analysis data
-    # (not extracted from message text to ensure we have trade scores, signals, reasoning)
-    
-    return result
+    # Prefer direct Bot API when a TELEGRAM_BOT_TOKEN is configured (control/chat)
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if bot_token:
+        try:
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            payload = {"chat_id": chat_id, "text": text}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            if disable_notification:
+                payload["disable_notification"] = True
+            if disable_web_page_preview:
+                payload["disable_web_page_preview"] = True
+            if reply_to_message_id:
+                payload["reply_to_message_id"] = int(reply_to_message_id)
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+
+            resp = requests.post(url, json=payload, timeout=30)
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw_text": resp.text}
+            if resp.status_code == 200 and isinstance(body, dict) and body.get("ok"):
+                return {"success": True, "data": body.get("result"), "status_code": resp.status_code}
+            err = body.get("description") if isinstance(body, dict) else resp.text
+            return {"success": False, "error": f"Telegram API {resp.status_code}: {err}", "body": body, "status_code": resp.status_code}
+        except Exception as e:
+            return {"success": False, "error": f"Direct bot API error: {e}"}
+
+    # Fallback: use Composio v3 API if available
+    if COMPOSIO_API_KEY:
+        result = _execute_telegram_tool("TELEGRAM_SEND_MESSAGE", arguments)
+        return result
+
+    return {"success": False, "error": "No TELEGRAM_BOT_TOKEN and no COMPOSIO_API_KEY configured"}
 
 
 # NOTE: direct Bot API fallback removed to strictly follow Composio toolkit docs.
@@ -134,13 +162,40 @@ def get_updates(
         Dict with success status and updates array
     """
     arguments = {"limit": limit}
-    
     if offset is not None:
         arguments["offset"] = offset
     if timeout:
         arguments["timeout"] = timeout
-    
-    return _execute_telegram_tool("TELEGRAM_GET_UPDATES", arguments)
+
+    # Prefer direct Bot API getUpdates when token present (control/chat use-case)
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if bot_token:
+        try:
+            url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+            params = {}
+            if offset is not None:
+                params["offset"] = offset
+            if limit:
+                params["limit"] = limit
+            if timeout:
+                params["timeout"] = timeout
+            resp = requests.get(url, params=params, timeout=timeout + 10)
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw_text": resp.text}
+            if resp.status_code == 200 and isinstance(body, dict) and body.get("ok"):
+                return {"success": True, "data": body, "status_code": resp.status_code}
+            err = body.get("description") if isinstance(body, dict) else resp.text
+            return {"success": False, "error": f"Telegram API {resp.status_code}: {err}", "body": body, "status_code": resp.status_code}
+        except Exception as e:
+            return {"success": False, "error": f"Direct bot API error: {e}"}
+
+    # Fallback to Composio toolkit
+    if COMPOSIO_API_KEY:
+        return _execute_telegram_tool("TELEGRAM_GET_UPDATES", arguments)
+
+    return {"success": False, "error": "No TELEGRAM_BOT_TOKEN and no COMPOSIO_API_KEY configured"}
 
 
 def get_bot_info() -> Dict[str, Any]:

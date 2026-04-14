@@ -13,8 +13,8 @@ import json
 from datetime import datetime
 from typing import Dict, List
 
-from composio import Composio
 from dotenv import load_dotenv
+from src.agent.tools.composio_tools import get_composio_client, _execute_with_fallback
 
 load_dotenv()
 
@@ -22,13 +22,15 @@ logger = logging.getLogger(__name__)
 
 # Initialize Composio client
 # Set toolkit version for googlesheets app (required for manual tool execution)
-composio_client = Composio(
-    api_key=os.getenv("COMPOSIO_API_KEY"),
-    entity_id=os.getenv("GOOGLESHEETS_USER_ID"),
-    toolkit_versions={"googlesheets": "20260211_00"}
+_SHEETS_ENTITY_ID = (
+    os.getenv("GOOGLESHEETS_USER_ID")
+    or os.getenv("COMPOSIO_ENTITY_ID")
+    or os.getenv("COMPOSIO_GOOGLESHEETS_ACCOUNT_ID")
 )
 
-# Spreadsheet IDs (will be created if not exist)
+composio_client = get_composio_client()
+
+# Spreadsheet IDs (auto-created if not set — see _ensure_sheet_* helpers).
 POSTS_SHEET_ID = os.getenv("GOOGLESHEETS_POSTS_SPREADSHEET_ID")
 TOKENS_SHEET_ID = os.getenv("GOOGLESHEETS_TOKENS_SPREADSHEET_ID")
 
@@ -42,7 +44,7 @@ class GoogleSheetsAgent:
 
     def __init__(self):
         """Initialize Google Sheets agent with credentials."""
-        self.account_id = os.getenv("GOOGLESHEETS_ACCOUNT_ID")
+        self.entity_id = os.getenv("COMPOSIO_ENTITY_ID") or os.getenv("COMPOSIO_USER_ID")
         self.posts_sheet_id = POSTS_SHEET_ID
         self.tokens_sheet_id = TOKENS_SHEET_ID
         # cache discovered tool slugs to avoid repeated API calls
@@ -119,11 +121,7 @@ class GoogleSheetsAgent:
     def _execute_tool(self, tool_name: str, params: Dict) -> Dict:
         """Execute a Composio Google Sheets tool (simple wrapper)."""
         try:
-            response = composio_client.tools.execute(
-                tool_name,
-                params,
-                connected_account_id=self.account_id
-            )
+            response = _execute_with_fallback(tool_name, params, self.entity_id)
             return response
         except Exception as e:
             logger.error(f"Google Sheets tool error ({tool_name}): {e}")

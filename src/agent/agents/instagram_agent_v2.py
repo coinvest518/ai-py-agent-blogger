@@ -8,7 +8,9 @@ import os
 import time
 
 from src.agent.agents.content_agent import generate_instagram
+from src.agent.core.config import COMPOSIO_ENTITY_ID, INSTAGRAM_USER_ID
 from src.agent.duplicate_detector import record_post
+from src.agent.tools.composio_tools import post_instagram
 
 logger = logging.getLogger(__name__)
 
@@ -32,54 +34,26 @@ def run(state: dict) -> dict:
     if not caption:
         return {"instagram_caption": "", "instagram_status": "Skipped: empty caption", "instagram_post_id": ""}
 
-    ig_user_id = os.getenv("INSTAGRAM_USER_ID")
-    ig_account_id = os.getenv("INSTAGRAM_ACCOUNT_ID")
-    if not ig_user_id or not ig_account_id:
-        logger.error("Instagram creds missing")
+    ig_user_id = INSTAGRAM_USER_ID or os.getenv("INSTAGRAM_USER_ID") or os.getenv("INSTAGRAM_USER_NAME")
+    entity = COMPOSIO_ENTITY_ID or os.getenv("COMPOSIO_ENTITY_ID") or os.getenv("COMPOSIO_USER_ID")
+    if not ig_user_id or not entity:
+        logger.error(
+            "Instagram creds missing — INSTAGRAM_USER_ID=%r COMPOSIO_ENTITY_ID=%r",
+            bool(ig_user_id), bool(entity),
+        )
         return {"instagram_caption": caption, "instagram_status": "Skipped: creds missing", "instagram_post_id": ""}
 
+    # Use composio_tools wrapper to handle client initialization and toolkit versions
     try:
-        from composio import Composio
-        composio_client = Composio(api_key=os.getenv("COMPOSIO_API_KEY"))
-
-        # Step 1: create media container
-        container_resp = composio_client.tools.execute(
-            "INSTAGRAM_CREATE_MEDIA_CONTAINER",
-            {
-                "ig_user_id": ig_user_id,
-                "image_url": image_url,
-                "caption": caption,
-                "content_type": "photo",
-            },
-            connected_account_id=ig_account_id,
-        )
-
-        if not container_resp.get("successful"):
-            err = container_resp.get("error", "Container creation failed")
-            logger.error("IG container failed: %s", err)
-            return {"instagram_caption": caption, "instagram_status": f"Failed: {err}", "instagram_post_id": ""}
-
-        container_id = container_resp.get("data", {}).get("id", "")
-        logger.info("IG container created: %s — waiting 10 s", container_id)
-        time.sleep(10)
-
-        # Step 2: publish
-        pub_resp = composio_client.tools.execute(
-            "INSTAGRAM_CREATE_POST",
-            {"ig_user_id": ig_user_id, "creation_id": container_id},
-            connected_account_id=ig_account_id,
-        )
-
-        if pub_resp.get("successful"):
-            post_id = pub_resp.get("data", {}).get("id", "")
+        result = post_instagram(caption, image_url)
+        if result.get("instagram_status") == "Posted" or result.get("instagram_post_id"):
+            post_id = result.get("instagram_post_id", "")
             record_post(caption, "instagram", post_id=post_id, image_url=image_url)
             logger.info("Instagram posted: %s", post_id)
             return {"instagram_caption": caption, "instagram_status": "Posted", "instagram_post_id": post_id}
-        else:
-            err = pub_resp.get("error", "Publish failed")
-            logger.error("IG publish failed: %s", err)
-            return {"instagram_caption": caption, "instagram_status": f"Failed: {err}", "instagram_post_id": ""}
-
+        err = result.get("error") or result.get("instagram_status") or "Unknown"
+        logger.error("IG publish failed: %s", err)
+        return {"instagram_caption": caption, "instagram_status": f"Failed: {err}", "instagram_post_id": ""}
     except Exception as e:
         logger.exception("Instagram error: %s", e)
         return {"instagram_caption": caption, "instagram_status": f"Failed: {e!s}", "instagram_post_id": ""}

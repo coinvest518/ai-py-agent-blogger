@@ -28,20 +28,57 @@ except ImportError:
     logger.info("Google Sheets not available for Telegram token tracking")
 
 
-def run(state: dict) -> dict:
-    """Generate Telegram crypto update and post to group (text only).
+def _enrich_briefing(message: str, state: dict) -> str:
+    """Append actual post statuses (Twitter/Facebook/LinkedIn/Instagram) to the briefing.
 
-    Returns dict with telegram_message, telegram_status, crypto_analysis.
+    Telegram runs after the other platform posts so we know what actually went out.
     """
-    logger.info("--- TELEGRAM CRYPTO AGENT ---")
+    statuses = []
+    for plat, key in [
+        ("Twitter", "twitter_url"),
+        ("Facebook", "facebook_status"),
+        ("LinkedIn", "linkedin_status"),
+        ("Instagram", "instagram_status"),
+    ]:
+        val = str(state.get(key, "") or "")
+        if not val:
+            continue
+        if val.lower().startswith("posted") or val.startswith("https://"):
+            statuses.append(f"  ✓ {plat}")
+        elif "skipped" in val.lower():
+            statuses.append(f"  ⏭️  {plat}: {val[:50]}")
+        else:
+            statuses.append(f"  ✗ {plat}: {val[:50]}")
+
+    if statuses:
+        # Replace the placeholder line if present
+        lines = message.split("\n")
+        out = []
+        replaced = False
+        for line in lines:
+            if line.startswith("• Posting to:") and not replaced:
+                out.append("• Run results:")
+                out.extend(statuses)
+                replaced = True
+            else:
+                out.append(line)
+        return "\n".join(out)
+    return message
+
+
+def run(state: dict) -> dict:
+    """Generate the FDWA agent status briefing and post to Telegram (text only)."""
+    logger.info("--- TELEGRAM BRIEFING AGENT ---")
 
     insights = state.get("base_insights", "")
     strategy = state.get("ai_strategy")
 
-    # Generate content (fetches CMC data internally, returns dict)
     tg_result = generate_telegram(insights, strategy)
     message = tg_result.get("message", "") if isinstance(tg_result, dict) else str(tg_result)
     crypto_analysis = tg_result.get("crypto_analysis", {}) if isinstance(tg_result, dict) else {}
+
+    # Enrich with actual post statuses from this run
+    message = _enrich_briefing(message, state)
 
     if not message:
         return {"telegram_message": "", "telegram_status": "Skipped: empty", "crypto_analysis": {}}

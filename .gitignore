@@ -1,5 +1,7 @@
 # Ignore temp_images folder
 temp_images/
+temp_blog_output/
+
 # Virtual Environment
 .venv/
 venv/
@@ -16,8 +18,24 @@ __pycache__/
 dist/
 build/
 
-# Environment variables
+# Environment variables & secret tokens
 .env
+.env.*
+!.env.example
+.tokens.json
+.upload_post_usage.json
+*.secrets.json
+
+# Generated/runtime state — do not push
+agent_memory.json
+agent_memory.json.backup
+agent_status.json
+social_media_history.json
+sent_blog_posts.json
+trend_cache.json
+product_data_cache.json
+.engagement_cache.json
+scheduler_jobs.json
 
 # IDE
 .tests/
@@ -37,16 +55,11 @@ Thumbs.db
 *.log
 *.tmp
 tmp*/
+tmp_user_blog.txt
 
-# Do not include tests in linter/deploy flows
+# Tests / dev scripts (not pushed)
 tests/
-
-# Local/dev scripts and test helpers (do not push local experiments)
 scripts/test_*.py
 scripts/check_*.py
 scripts/count_*.py
 scripts/*_tmp*.py
-
-# Temporary user files
-tmp_user_blog.txt
-temp_blog_output/

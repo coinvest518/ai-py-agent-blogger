@@ -17,19 +17,14 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import requests
-from composio import Composio
 from dotenv import load_dotenv
+from src.agent.tools.composio_tools import get_composio_client, _execute_with_fallback
 
 # Load environment variables
 load_dotenv()
 
-# Initialize Composio client
-composio_client = Composio(
-    api_key=os.getenv("COMPOSIO_API_KEY"),
-    toolkit_versions={
-        "gmail": os.getenv("COMPOSIO_TOOLKIT_VERSION_GMAIL")
-    }
-)
+# Initialize Composio client via centralized helper (handles toolkit versions)
+composio_client = get_composio_client()
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -421,6 +416,10 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
                 f"""You are an expert content strategist for FDWA (Futurist Digital Wealth Agency). It is {current_month} {current_year}.{avoid_topics_note}\n\n"
                 f"{tone_instruction}\n"
                 f"Create a {blog_min_words}-{blog_max_words} word educational blog post focused on the topic and trend data provided. {affiliate_instruction} {kb_instruction}\n\n"
+                f"=== HARD RULES ===\n"
+                f"- The reader has NO context of any social media posts. Never reference, quote, link to, or allude to tweets, X posts, LinkedIn posts, Facebook posts, Instagram captions, Telegram messages, Pinterest pins, or 'my other posts'.\n"
+                f"- Do not use phrases like 'as I shared on Twitter', 'see my LinkedIn post', 'check my Facebook page for', 'follow me on', or 'my recent post on <platform>'.\n"
+                f"- Write a standalone educational article. Any CTAs must point to FDWA websites or products, not to social-media profiles.\n\n"
                 f"=== INPUT DATA ===\n{prompt}\n\n"
                 f"=== STYLE ===\n{style_guide[:4000] if style_guide else 'Write clear, concise, human-sounding content aimed at small business owners.'}\n\n"
                 f"=== STRUCTURE ===\n"
@@ -612,7 +611,28 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
                 # ensure only the URL is embedded (no delete_url or metadata)
                 image_html = f'<img src="{image_url}" alt="Blog Image" style="max-width:100%;border-radius:12px;margin-bottom:20px;display:block;" />\n'
 
-            blog_html = (image_html + html_output).strip()
+            video_html = ""
+            video_url = os.environ.get("BLOG_VIDEO_URL")
+            if video_url and video_url.startswith(("http://", "https://")):
+                video_html = (
+                    f'<div style="margin:16px 0;"><video controls preload="metadata" '
+                    f'style="max-width:100%;border-radius:12px;display:block;" '
+                    f'src="{video_url}"></video>'
+                    f'<p style="font-size:12px;margin-top:6px;"><a href="{video_url}" target="_blank">Watch video</a></p>'
+                    f'</div>\n'
+                )
+
+            blog_html = (image_html + video_html + html_output).strip()
+
+            # Scrub any social-post references the LLM may have slipped in despite the hard-rule prompt.
+            _social_leak_patterns = [
+                r"(?i)as I (?:posted|tweeted|shared|wrote)[^.]*?on (?:twitter|x|facebook|linkedin|instagram|telegram|pinterest)[^.]*\.?",
+                r"(?i)(?:see|check|read) my (?:recent )?(?:twitter|x|facebook|linkedin|instagram|telegram|pinterest) (?:post|update|share)[^.]*\.?",
+                r"(?i)follow (?:me|us) on (?:twitter|x|facebook|linkedin|instagram|telegram|pinterest)[^.]*\.?",
+                r"(?i)(?:my|our) (?:recent |latest )?(?:twitter|x|facebook|linkedin|instagram|telegram|pinterest) post[^.]*\.?",
+            ]
+            for _pat in _social_leak_patterns:
+                blog_html = re.sub(_pat, "", blog_html)
 
             # Ensure primary site CTA/link is present in the blog HTML. If the LLM omitted
             # our CTA, append a short call-to-action paragraph so every blog includes the link.
@@ -677,11 +697,8 @@ def send_blog_email(blog_html: str, title: str, image_url: str | None = None) ->
             "user_id": "me"
         }
         
-        email_response = composio_client.tools.execute(
-            "GMAIL_SEND_EMAIL",
-            email_params,
-            connected_account_id=os.getenv("GMAIL_CONNECTED_ACCOUNT_ID")
-        )
+        entity = os.getenv("COMPOSIO_ENTITY_ID") or os.getenv("COMPOSIO_USER_ID")
+        email_response = _execute_with_fallback("GMAIL_SEND_EMAIL", email_params, entity)
         
         logger.info("Gmail response: %s", email_response)
         

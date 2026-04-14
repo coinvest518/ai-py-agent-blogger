@@ -52,13 +52,13 @@ def search_trends() -> dict:
     client = get_composio_client()
     today = datetime.now().strftime("%Y-%m-%d")
 
+    entity = os.getenv("COMPOSIO_ENTITY_ID") or os.getenv("COMPOSIO_USER_ID")
+
     # 1) SERPAPI
-    if SERPAPI_ACCOUNT_ID:
+    if entity:
         try:
-            resp = client.tools.execute(
-                "SERPAPI_SEARCH", {"query": query},
-                connected_account_id=SERPAPI_ACCOUNT_ID,
-            )
+            from src.agent.tools.composio_tools import _execute_with_fallback
+            resp = _execute_with_fallback("SERPAPI_SEARCH", {"query": query}, entity)
             data = resp.get("data", {})
             text = _extract_search_insights(data)
             if text and len(text) > 30:
@@ -73,9 +73,10 @@ def search_trends() -> dict:
         logger.info("Using cached Tavily data")
         return {"trend_data": cache["trend_data"], "source": "Tavily (cached)"}
 
-    if TAVILY_ACCOUNT_ID:
+    if entity:
         try:
-            resp = client.tools.execute(
+            from src.agent.tools.composio_tools import _execute_with_fallback
+            resp = _execute_with_fallback(
                 "TAVILY_SEARCH",
                 {
                     "query": query,
@@ -85,7 +86,7 @@ def search_trends() -> dict:
                     "include_raw_content": True,
                     "exclude_domains": ["pinterest.com", "facebook.com", "instagram.com", "twitter.com", "tiktok.com"],
                 },
-                connected_account_id=TAVILY_ACCOUNT_ID,
+                entity,
             )
             data = resp.get("data", {})
             text = _extract_search_insights(data)

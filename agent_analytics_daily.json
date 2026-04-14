@@ -1,0 +1,68 @@
+{
+  "2026-04-12": {
+    "date": "2026-04-12",
+    "posts_per_platform": {
+      "telegram": 4,
+      "facebook": 2,
+      "linkedin": 1,
+      "instagram": 1
+    },
+    "products_promoted": {
+      "x402 Payment Skill for OpenClaw Agents \u2014 Free Setup Guide": 5,
+      "Alpaca AI Trading Agent: Scale $100 to $10,000 with OpenClaw Automation": 5
+    },
+    "frameworks_tagged": {
+      "LangChain": 5,
+      "LangGraph": 5,
+      "Composio": 5
+    },
+    "topics": {
+      "AI automation": 5
+    },
+    "errors": 9,
+    "runs": 5
+  },
+  "2026-04-13": {
+    "date": "2026-04-13",
+    "posts_per_platform": {
+      "telegram": 8
+    },
+    "products_promoted": {
+      "x402 Payment Skill for OpenClaw Agents \u2014 Free Setup Guide": 8,
+      "Alpaca AI Trading Agent: Scale $100 to $10,000 with OpenClaw Automation": 8
+    },
+    "frameworks_tagged": {
+      "LangChain": 8,
+      "LangGraph": 8,
+      "Composio": 8
+    },
+    "topics": {
+      "AI automation": 8
+    },
+    "errors": 16,
+    "runs": 8
+  },
+  "2026-04-14": {
+    "date": "2026-04-14",
+    "posts_per_platform": {
+      "linkedin": 1,
+      "telegram": 6,
+      "instagram": 1,
+      "facebook": 1
+    },
+    "products_promoted": {
+      "x402 Payment Skill for OpenClaw Agents \u2014 Free Setup Guide": 21,
+      "Alpaca AI Trading Agent: Scale $100 to $10,000 with OpenClaw Automation": 21
+    },
+    "frameworks_tagged": {
+      "LangChain": 21,
+      "LangGraph": 21,
+      "Composio": 21
+    },
+    "topics": {
+      "AI automation": 21
+    },
+    "errors": 35,
+    "runs": 21
+  }
+}

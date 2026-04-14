@@ -1,18 +1,52 @@
 """LinkedIn Agent — generate and post LinkedIn content.
 
-✅ FIX: LinkedIn now posts about YOUR tools, products, launches, client wins —
-not generic AI trend articles.  Loads LINKEDIN_CONTENT_BRAIN.md for proven formulas.
+LinkedIn posts about OUR tools, products, launches — not generic AI trend articles.
+Loads LINKEDIN_CONTENT_BRAIN.md for proven formulas.
+
+Daily-cap: enforced via LINKEDIN_DAILY_LIMIT env var (default 1) — checks
+social_media_history.json for today's LinkedIn post count before posting.
 """
 
+import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 
 from src.agent.agents.content_agent import generate_linkedin, strip_markdown
-from src.agent.tools.composio_tools import post_linkedin as _composio_post
+from src.agent.agents import upload_post_agent
+from src.agent.tools.composio_tools import get_linkedin_author_urn, post_linkedin as _composio_post
 from src.agent.duplicate_detector import record_post
 
 logger = logging.getLogger(__name__)
+
+# Path to the post-history file used for the daily cap check.
+_HISTORY_PATH = Path(__file__).resolve().parent.parent.parent.parent / "social_media_history.json"
+
+
+def _linkedin_posts_today() -> int:
+    """Return the number of LinkedIn posts already recorded for today (UTC)."""
+    try:
+        if not _HISTORY_PATH.exists():
+            return 0
+        with open(_HISTORY_PATH, encoding="utf-8") as f:
+            history = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return 0
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    entries = history if isinstance(history, list) else history.get("posts", [])
+    count = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("platform", "").lower() != "linkedin":
+            continue
+        ts = str(entry.get("timestamp") or entry.get("posted_at") or "")
+        if ts.startswith(today):
+            count += 1
+    return count
 
 
 def _clean_for_linkedin(text: str) -> str:
@@ -36,6 +70,12 @@ def run(state: dict) -> dict:
     """
     logger.info("--- LINKEDIN AGENT ---")
 
+    daily_limit = int(os.getenv("LINKEDIN_DAILY_LIMIT", "1"))
+    posted_today = _linkedin_posts_today()
+    if posted_today >= daily_limit:
+        logger.info("LinkedIn daily cap reached (%d/%d) — skipping", posted_today, daily_limit)
+        return {"linkedin_text": "", "linkedin_status": f"Skipped: daily cap {posted_today}/{daily_limit}"}
+
     insights = state.get("base_insights", "")
     strategy = state.get("ai_strategy")
 
@@ -46,20 +86,37 @@ def run(state: dict) -> dict:
     # Defense-in-depth: strip any residual markdown before posting
     li_text = _clean_for_linkedin(li_text)
 
-    account_id = os.getenv("LINKEDIN_ACCOUNT_ID")
-    author_urn = os.getenv("LINKEDIN_AUTHOR_URN")
-    if not account_id or not author_urn:
-        logger.error("LinkedIn creds missing: LINKEDIN_ACCOUNT_ID=%s, LINKEDIN_AUTHOR_URN=%s",
-                      account_id, author_urn)
-        return {"linkedin_text": li_text, "linkedin_status": "Skipped: creds missing"}
-
-    result = _composio_post(author_urn, li_text)
-
-    if result.get("success"):
-        record_post(li_text, "linkedin")
-        logger.info("LinkedIn posted")
-        return {"linkedin_text": li_text, "linkedin_status": "Posted"}
+    author_urn = get_linkedin_author_urn(os.getenv("LINKEDIN_AUTHOR_URN"))
+    composio_err = None
+    if not author_urn:
+        logger.error("LinkedIn creds missing: LINKEDIN_AUTHOR_URN not set or discoverable")
+        composio_err = "creds missing"
     else:
-        err = result.get("error", "Unknown")
-        logger.error("LinkedIn failed: %s", err)
-        return {"linkedin_text": li_text, "linkedin_status": f"Failed: {err}"}
+        result = _composio_post(author_urn, li_text)
+        if result.get("success"):
+            record_post(li_text, "linkedin")
+            logger.info("LinkedIn posted via Composio")
+            return {"linkedin_text": li_text, "linkedin_status": "Posted"}
+        composio_err = result.get("error", "Unknown")
+        logger.warning("LinkedIn Composio failed: %s — trying upload-post fallback", composio_err)
+
+    image_url = state.get("image_url")
+    if not image_url:
+        return {"linkedin_text": li_text, "linkedin_status": f"Failed: {composio_err} (no image for fallback)"}
+    if upload_post_agent.remaining_quota() <= 0:
+        return {"linkedin_text": li_text, "linkedin_status": f"Failed: {composio_err} (upload-post cap reached)"}
+
+    fb = upload_post_agent.upload(
+        platforms=["linkedin"],
+        title=(li_text.split("\n", 1)[0] or "FDWA Update")[:90],
+        caption=li_text[:2900],
+        image_url=image_url,
+    )
+    if fb.get("success"):
+        record_post(li_text, "linkedin")
+        logger.info("LinkedIn posted via upload-post fallback")
+        return {"linkedin_text": li_text, "linkedin_status": "Posted (upload-post fallback)"}
+
+    err2 = fb.get("error", "Unknown")
+    logger.error("LinkedIn fallback failed: %s", err2)
+    return {"linkedin_text": li_text, "linkedin_status": f"Failed: composio={composio_err}; uploadpost={err2[:80]}"}

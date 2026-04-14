@@ -12,6 +12,7 @@ from datetime import datetime
 
 from src.agent.memory_store import get_memory_store
 from src.agent.ai_decision_engine import get_decision_engine
+from src.agent import mem0_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,12 @@ def run(state: dict) -> dict:
             )
         except Exception as e:
             logger.warning("Decision engine record failed: %s", e)
+
+        # Mem0 episodic snapshot (best-effort, no-op when MEM0_API_KEY missing)
+        try:
+            mem0_adapter.record_run(state)
+        except Exception as e:
+            logger.debug("Mem0 record_run skipped: %s", e)
 
         return {"memory_status": f"Recorded: {successful} platforms, topic={topic}, success={overall}"}
 

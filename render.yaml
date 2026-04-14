@@ -1,0 +1,267 @@
+services:
+  - type: web
+    name: fdwa-web
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /status
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: RENDER_ROLE
+        value: web
+      - key: SUPERVISOR_ENABLED
+        value: "true"
+      - fromGroup: fdwa-shared-env
+
+  - type: worker
+    name: fdwa-worker
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m src.agent.worker
+    autoDeploy: true
+    envVars:
+      - key: RENDER_ROLE
+        value: worker
+      - key: SUPERVISOR_ENABLED
+        value: "true"
+      - fromGroup: fdwa-shared-env
+
+envVarGroups:
+  - name: fdwa-shared-env
+    envVars:
+      # LLM providers (cascading order in code)
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: CLOUDFLARE_AI_API_KEY
+        sync: false
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_MODEL
+        value: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+      - key: HUGGINGFACEHUB_API_TOKEN
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: NEBIUS_API_KEY
+        sync: false
+      - key: MOONSHOT_API_KEY
+        sync: false
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+
+      # LangSmith tracing
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_PROJECT
+        value: fdwa-multi-agent
+      - key: LANGSMITH_TRACING
+        value: "true"
+      - key: VIRUSTOTAL_API_KEY
+        sync: false
+
+      # Composio core + toolkit
+      - key: COMPOSIO_API_KEY
+        sync: false
+      - key: COMPOSIO_API_URL
+        value: https://backend.composio.dev
+      - key: COMPOSIO_ENTITY_ID
+        sync: false
+      - key: COMPOSIO_DANGEROUSLY_SKIP_VERSION_CHECK
+        value: "true"
+
+      # Composio connected-account IDs (per toolkit)
+      - key: COMPOSIO_FACEBOOK_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_INSTAGRAM_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_LINKEDIN_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_TWITTER_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_TELEGRAM_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_GMAIL_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_GOOGLESHEETS_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_GOOGLE_DOCS_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_GOOGLEDRIVE_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_GOOGLE_ANALYTICS_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_NOTION_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_GITHUB_ACCOUNT_ID
+        sync: false
+      - key: COMPOSIO_SERPAPI_ACCOUNT_ID
+        sync: false
+
+      # Composio toolkit versions — safe defaults
+      - key: COMPOSIO_TOOLKIT_VERSION_FACEBOOK
+        value: "20260413_00"
+      - key: COMPOSIO_TOOLKIT_VERSION_LINKEDIN
+        value: "20260413_00"
+      - key: COMPOSIO_TOOLKIT_VERSION_INSTAGRAM
+        value: "20260413_00"
+      - key: COMPOSIO_TOOLKIT_VERSION_TELEGRAM
+        value: "20260413_00"
+      - key: COMPOSIO_TOOLKIT_VERSION_GMAIL
+        value: "20260413_00"
+      - key: COMPOSIO_TOOLKIT_VERSION_GOOGLESHEETS
+        value: "20260413_00"
+      - key: COMPOSIO_TOOLKIT_VERSION_GOOGLE_DOCS
+        value: "20260413_00"
+      - key: COMPOSIO_TOOLKIT_VERSION_GOOGLEDRIVE
+        value: "20260413_01"
+      - key: COMPOSIO_TOOLKIT_VERSION_GOOGLE_ANALYTICS
+        value: "20260413_00"
+      - key: COMPOSIO_TOOLKIT_VERSION_NOTION
+        value: "20260413_00"
+      - key: COMPOSIO_TOOLKIT_VERSION_GITHUB
+        value: "20260413_00"
+      - key: COMPOSIO_TOOLKIT_VERSION_SERPAPI
+        value: "20260413_01"
+      - key: COMPOSIO_TOOLKIT_VERSION_TAVILY
+        value: "20260407_00"
+      - key: COMPOSIO_TOOLKIT_VERSION_GEMINI
+        value: "20260413_00"
+
+      # Twitter / X (OAuth 1.0a — direct API)
+      - key: TWITTER_API_KEY
+        sync: false
+      - key: TWITTER_API_SECRET
+        sync: false
+      - key: TWITTER_ACCESS_TOKEN
+        sync: false
+      - key: TWITTER_ACCESS_TOKEN_SECRET
+        sync: false
+      - key: TWITTER_CLIENT_ID
+        sync: false
+      - key: TWITTER_CLIENT_SECRET
+        sync: false
+
+      # Facebook / Instagram (Meta)
+      - key: FACEBOOK_PAGE_ID
+        sync: false
+      - key: FACEBOOK_PAGE_ACCESS_TOKEN
+        sync: false
+      - key: INSTAGRAM_USER_ID
+        sync: false
+      - key: INSTAGRAM_USER_NAME
+        sync: false
+
+      # LinkedIn direct API (fallback if Composio fails)
+      - key: LINKEDIN_CLIENT_ID
+        sync: false
+      - key: LINKEDIN_CLIENT_SECRET
+        sync: false
+      - key: LINKEDIN_DAILY_LIMIT
+        value: "1"
+
+      # Buffer (scheduler/image aggregator)
+      - key: BUFFER_API_KEY
+        sync: false
+
+      # Upload-post (DISABLED until we have video gen)
+      - key: UPLOAD_POST_ENABLE
+        value: "false"
+      - key: UPLOADPOST_API_KEY
+        sync: false
+      - key: UPLOAD_POST_PROFILE
+        sync: false
+
+      # Telegram
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_YBOT_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_USERNAME
+        sync: false
+      - key: TELEGRAM_AI_OWNER_CHAT_ID
+        sync: false
+      - key: TELEGRAM_ALWAYS_LISTEN_CHAT_IDS
+        sync: false
+
+      # Blog / Email
+      - key: BLOGGER_EMAIL
+        sync: false
+      - key: BLOG_AGENT_ENABLED
+        value: "true"
+      - key: BLOG_MIN_WORDS
+        value: "500"
+      - key: BLOG_MAX_WORDS
+        value: "800"
+      - key: BLOG_MAX_CHARS
+        value: "12000"
+      - key: BLOG_INCLUDE_AFFILIATE_LINKS
+        value: "true"
+      - key: BLOG_EMBED_IMAGE
+        value: "true"
+
+      # Google Sheets (posts spreadsheet ID)
+      - key: GOOGLESHEETS_POSTS_SPREADSHEET_ID
+        sync: false
+
+      # Memory: Astra DB + Mem0
+      - key: ASTRA_DB_API_KEY
+        sync: false
+      - key: ASTRA_DB_ENDPOINT
+        sync: false
+      - key: ASTRA_DB_KEYSPACE
+        value: default_keyspace
+      - key: MEM0_API_KEY
+        sync: false
+
+      # Search / research providers
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: FIRECRAWL_API_KEY
+        sync: false
+      - key: APIFY_API_KEY
+        sync: false
+      - key: HYPERBROWSER_API_KEY
+        sync: false
+      - key: VIRUSTOTAL_API_KEY
+        sync: false
+
+      # Image hosting + generation
+      - key: IMGBB_API_KEY
+        sync: false
+      - key: POLLINATIONS_API_KEY
+        sync: false
+
+      # Crypto / onchain
+      - key: COINMARKETCAP_API_KEY
+        sync: false
+      - key: COINMARKETCAP_API_DEX_KEY
+        sync: false
+      - key: CDP_API_KEY_ID
+        sync: false
+      - key: CDP_API_KEY_SECRET
+        sync: false
+      - key: CDP_WALLET_SECRET
+        sync: false
+      - key: CDP_NETWORK_ID
+        value: base-sepolia
+      - key: ALCHEMY_API_KEY
+        sync: false
+      - key: AGENT_WALLET_ADDRESS
+        sync: false
+      - key: AGENT_WALLET_PRIVATE_KEY
+        sync: false
+
+      # Sandbox / compute
+      - key: DAYTONA_API_KEY
+        sync: false
+      - key: DAYTONA_API_URL
+        value: https://app.daytona.io/api

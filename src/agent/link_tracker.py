@@ -11,7 +11,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List
 
-from composio import Composio
+from src.agent.tools.composio_tools import get_composio_client
 
 logger = logging.getLogger(__name__)
 
@@ -21,17 +21,36 @@ class LinkPerformanceTracker:
     
     def __init__(self):
         """Initialize Composio client with correct toolkit version."""
-        self.composio_client = Composio(
-            api_key=os.getenv("COMPOSIO_API_KEY"),
-            entity_id=os.getenv("COMPOSIO_ENTITY_ID", "pg-test-e862c589-3f43-4cd7-9023-cc6ec5123c23"),
-            toolkit_versions={"googlesheets": "20260211_00"}
-        )
+        # Use centralized Composio client which reads toolkit-version env vars.
+        self.composio_client = get_composio_client()
+        # Explicit entity id used for user-scoped tool executions
+        self.entity_id = os.getenv("COMPOSIO_ENTITY_ID", "pg-test-e862c589-3f43-4cd7-9023-cc6ec5123c23")
         self.spreadsheet_id = os.getenv("BLOG_SHEET_ID", "1d8krgp4rfeph3CjMyzwl9NekmEggYGV10vB6qLaSyfQ")
         
         # Sheet names for different tracking purposes
         self.link_sheet = "Link Performance"
         self.product_sheet = "Product Performance"
         self.blog_sheet = "Blog Performance"
+
+    def _call_action(self, action: str, params: Dict[str, Any]):
+        """Call Composio execute_action when available, otherwise use fallback.
+
+        Returns the raw response object/dict or raises on unexpected errors.
+        """
+        try:
+            from src.agent.tools.composio_tools import _execute_with_fallback
+            # Prefer the client's execute_action helper if present
+            if hasattr(self.composio_client, "execute_action"):
+                try:
+                    return self.composio_client.execute_action(action=action, params=params)
+                except Exception:
+                    # Fallback to slug-based execution
+                    return _execute_with_fallback(action, params, self.entity_id)
+            # Otherwise call fallback helper directly
+            return _execute_with_fallback(action, params, self.entity_id)
+        except Exception as e:
+            logger.debug("Link tracker action %s failed: %s", action, e)
+            raise
     
     def setup_tracking_sheets(self) -> bool:
         """Initialize all tracking sheets with headers.
@@ -77,14 +96,14 @@ class LinkPerformanceTracker:
     def _setup_sheet_headers(self, sheet_name: str, headers: List[List[str]]) -> None:
         """Set up headers for a specific sheet."""
         try:
-            response = self.composio_client.execute_action(
-                action="GOOGLESHEETS_BATCH_UPDATE",
-                params={
+            response = self._call_action(
+                "GOOGLESHEETS_BATCH_UPDATE",
+                {
                     "spreadsheet_id": self.spreadsheet_id,
                     "sheet_name": sheet_name,
                     "values": headers,
-                    "first_cell_location": "A1"
-                }
+                    "first_cell_location": "A1",
+                },
             )
             logger.debug(f"Setup headers for {sheet_name}: {response}")
         except Exception as e:
@@ -118,14 +137,14 @@ class LinkPerformanceTracker:
                 ""  # Notes
             ]]
             
-            self.composio_client.execute_action(
-                action="GOOGLESHEETS_BATCH_UPDATE",
-                params={
+            self._call_action(
+                "GOOGLESHEETS_BATCH_UPDATE",
+                {
                     "spreadsheet_id": self.spreadsheet_id,
                     "sheet_name": self.link_sheet,
                     "values": row_data,
-                    "first_cell_location": "A2"  # Append after headers
-                }
+                    "first_cell_location": "A2",
+                },
             )
             
             logger.info(f"✅ Tracked link click: {link_name} ({link_type})")
@@ -174,14 +193,14 @@ class LinkPerformanceTracker:
                     ""  # Notes
                 ]]
                 
-                self.composio_client.execute_action(
-                    action="GOOGLESHEETS_BATCH_UPDATE",
-                    params={
+                self._call_action(
+                    "GOOGLESHEETS_BATCH_UPDATE",
+                    {
                         "spreadsheet_id": self.spreadsheet_id,
                         "sheet_name": self.product_sheet,
                         "values": row_data,
-                        "first_cell_location": "A2"
-                    }
+                        "first_cell_location": "A2",
+                    },
                 )
                 
                 logger.info(f"✅ Tracked product mention: {product_name}")
@@ -222,14 +241,14 @@ class LinkPerformanceTracker:
                 ""  # Notes
             ]]
             
-            self.composio_client.execute_action(
-                action="GOOGLESHEETS_BATCH_UPDATE",
-                params={
+            self._call_action(
+                "GOOGLESHEETS_BATCH_UPDATE",
+                {
                     "spreadsheet_id": self.spreadsheet_id,
                     "sheet_name": self.blog_sheet,
                     "values": row_data,
-                    "first_cell_location": "A2"
-                }
+                    "first_cell_location": "A2",
+                },
             )
             
             logger.info(f"✅ Tracked blog performance: {blog_data.get('title')}")
@@ -249,12 +268,9 @@ class LinkPerformanceTracker:
             Product row data or None if not found
         """
         try:
-            response = self.composio_client.execute_action(
-                action="GOOGLESHEETS_BATCH_GET",
-                params={
-                    "spreadsheet_id": self.spreadsheet_id,
-                    "ranges": [f"{self.product_sheet}!A:A"]
-                }
+            response = self._call_action(
+                "GOOGLESHEETS_BATCH_GET",
+                {"spreadsheet_id": self.spreadsheet_id, "ranges": [f"{self.product_sheet}!A:A"]},
             )
             
             # Parse response
@@ -288,21 +304,15 @@ class LinkPerformanceTracker:
         """
         try:
             # Get blog performance data
-            self.composio_client.execute_action(
-                action="GOOGLESHEETS_BATCH_GET",
-                params={
-                    "spreadsheet_id": self.spreadsheet_id,
-                    "ranges": [f"{self.blog_sheet}!A2:L100"]  # Get last 100 blogs
-                }
+            self._call_action(
+                "GOOGLESHEETS_BATCH_GET",
+                {"spreadsheet_id": self.spreadsheet_id, "ranges": [f"{self.blog_sheet}!A2:L100"]},
             )
             
             # Get link performance data
-            self.composio_client.execute_action(
-                action="GOOGLESHEETS_BATCH_GET",
-                params={
-                    "spreadsheet_id": self.spreadsheet_id,
-                    "ranges": [f"{self.link_sheet}!A2:J100"]  # Get last 100 clicks
-                }
+            self._call_action(
+                "GOOGLESHEETS_BATCH_GET",
+                {"spreadsheet_id": self.spreadsheet_id, "ranges": [f"{self.link_sheet}!A2:J100"]},
             )
             
             # Parse responses (simplified for now)

@@ -6,9 +6,13 @@ from datetime import datetime
 from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from src.agent.graph import graph
 from src.agent.realtime_status import broadcaster
+
+JOBS_FILE = Path("scheduler_jobs.json")
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +105,8 @@ async def run_agent_task() -> dict:
                 "linkedin": result.get("linkedin_text", "N/A"),
                 "instagram": result.get("instagram_caption", "N/A"),
                 "image": result.get("image_url", ""),
+                "video": result.get("video_url", ""),
+                "video_path": result.get("video_path", ""),
                 "twitter": "Posted" if "twitter_url" in result else "Failed",
                 "facebook": "Posted" if "facebook_post_id" in result else "Failed",
                 "telegram": result.get("telegram_status", "N/A"),
@@ -138,27 +144,181 @@ async def run_agent_task() -> dict:
     return status
 
 
+_scheduler: AsyncIOScheduler | None = None
+
+
+# ── Persisted custom jobs ─────────────────────────────────────────────────
+
+def _load_jobs_file() -> list[dict]:
+    if not JOBS_FILE.exists():
+        return []
+    try:
+        return json.loads(JOBS_FILE.read_text(encoding="utf-8")) or []
+    except Exception:
+        return []
+
+
+def _save_jobs_file(jobs: list[dict]) -> None:
+    try:
+        JOBS_FILE.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning("Jobs save failed: %s", e)
+
+
+def _trigger_from_spec(spec: dict):
+    """Build an APScheduler trigger from a persisted spec.
+
+    spec shapes:
+      {"kind": "cron", "cron": "0 9 * * *"}
+      {"kind": "interval", "minutes": 360}
+    """
+    kind = (spec.get("kind") or "interval").lower()
+    if kind == "cron":
+        parts = (spec.get("cron") or "0 9 * * *").split()
+        if len(parts) != 5:
+            raise ValueError(f"cron must have 5 fields, got: {spec.get('cron')!r}")
+        minute, hour, day, month, dow = parts
+        return CronTrigger(minute=minute, hour=hour, day=day, month=month, day_of_week=dow)
+    return IntervalTrigger(minutes=int(spec.get("minutes") or 360))
+
+
+async def _run_with_topic(topic: str | None = None) -> dict:
+    """Job entry that can bias a cycle toward a topic override."""
+    init_state = {"topic_override": topic} if topic else {}
+    await broadcaster.start_run(total_steps=11)
+    try:
+        result = graph.invoke(init_state)
+        return result
+    except Exception as e:
+        logger.exception("Scheduled run with topic=%s failed: %s", topic, e)
+        return {"error": str(e)}
+
+
+def list_jobs() -> list[dict]:
+    """Return the persisted + live job list."""
+    return _load_jobs_file()
+
+
+def add_job_from_spec(spec: dict) -> dict:
+    """Add a new scheduled job. Spec shape:
+        {"id": "<auto-if-missing>", "topic": "crypto", "kind": "cron|interval",
+         "cron": "0 9 * * *", "minutes": 360, "enabled": true}
+    Returns the stored spec.
+    """
+    if _scheduler is None:
+        return {"error": "scheduler not started"}
+    jobs = _load_jobs_file()
+    job_id = spec.get("id") or f"job_{int(datetime.now().timestamp())}"
+    spec = {"id": job_id, "enabled": True, **spec, "id": job_id}
+
+    trigger = _trigger_from_spec(spec)
+    topic = spec.get("topic")
+
+    _scheduler.add_job(
+        _run_with_topic,
+        trigger=trigger,
+        id=job_id,
+        name=f"FDWA run ({topic or 'default'})",
+        kwargs={"topic": topic},
+        replace_existing=True,
+    )
+
+    jobs = [j for j in jobs if j.get("id") != job_id]
+    jobs.append(spec)
+    _save_jobs_file(jobs)
+    logger.info("Added scheduler job %s", spec)
+    return spec
+
+
+def remove_job(job_id: str) -> bool:
+    if _scheduler is None:
+        return False
+    try:
+        _scheduler.remove_job(job_id)
+    except Exception as e:
+        logger.warning("remove_job %s failed: %s", job_id, e)
+    jobs = [j for j in _load_jobs_file() if j.get("id") != job_id]
+    _save_jobs_file(jobs)
+    return True
+
+
+def toggle_job(job_id: str, enabled: bool) -> bool:
+    if _scheduler is None:
+        return False
+    jobs = _load_jobs_file()
+    found = False
+    for j in jobs:
+        if j.get("id") == job_id:
+            j["enabled"] = enabled
+            found = True
+            try:
+                if enabled:
+                    _scheduler.resume_job(job_id)
+                else:
+                    _scheduler.pause_job(job_id)
+            except Exception as e:
+                logger.warning("toggle_job %s failed: %s", job_id, e)
+    if found:
+        _save_jobs_file(jobs)
+    return found
+
+
 def start_scheduler() -> AsyncIOScheduler:
     """Start the background scheduler."""
+    global _scheduler
     scheduler = AsyncIOScheduler()
-    
-    # Run every 1 hour 20 minutes (80 minutes)
+    _scheduler = scheduler
+
+    # Default 6h agent tick (preserved)
     scheduler.add_job(
         run_agent_task,
         'interval',
-        minutes=80,
+        minutes=360,
         id='agent_task',
         name='Run FDWA Agent',
         replace_existing=True
     )
-    
+
+    # Restore any persisted custom jobs
+    for spec in _load_jobs_file():
+        try:
+            if spec.get("enabled") is False:
+                continue
+            add_job_from_spec(spec)
+        except Exception as e:
+            logger.warning("Could not restore job %s: %s", spec.get("id"), e)
+
     scheduler.start()
-    logger.info("Scheduler started - agent will run every 1 hour 30 minutes")
-    
-    # Load existing status
+    logger.info("Scheduler started - default tick every 6h, %d custom jobs restored", len(_load_jobs_file()))
+
     load_status()
-    
     return scheduler
+
+
+def pause() -> bool:
+    """Pause the scheduler (no new runs until resume()). Idempotent."""
+    if _scheduler is None:
+        return False
+    try:
+        _scheduler.pause()
+        logger.info("Scheduler paused")
+        return True
+    except Exception as e:
+        logger.warning("pause() failed: %s", e)
+        return False
+
+
+def resume() -> bool:
+    """Resume a paused scheduler. Idempotent."""
+    if _scheduler is None:
+        return False
+    try:
+        _scheduler.resume()
+        logger.info("Scheduler resumed")
+        return True
+    except Exception as e:
+        logger.warning("resume() failed: %s", e)
+        return False
 
 
 def get_status() -> dict:

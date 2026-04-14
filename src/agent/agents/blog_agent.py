@@ -21,13 +21,17 @@ def run(state: dict) -> dict:
 
     trend_data = state.get("trend_data", "")
     image_url = state.get("image_url")
+    video_url = state.get("video_url")
 
     if image_url:
         os.environ["BLOG_IMAGE_URL"] = image_url
+    if video_url:
+        os.environ["BLOG_VIDEO_URL"] = video_url
 
-    # Build rich context from state so the blog LLM can create unique content
+    # Build context from state — intentionally DROP tweet_text so the blog does
+    # not parrot social captions or reference "my Twitter/Facebook post".
+    # The blog is a standalone educational artifact.
     ctx = {
-        "tweet_text": state.get("tweet_text"),
         "insight": state.get("insight"),
     }
 

@@ -1,60 +1,117 @@
 {
   "owner": "Daniel",
-  "primary_site": "https://fwda.site",
-  "buymeacoffee": "https://buymeacoffee.com/streets2entrepreneurs",
-  "shop_page": "https://buymeacoffee.com/streets2entrepreneurs/extras",
-  "linktree": "https://linktr.ee/omniai",
-  "products": [
-    {
-      "title": "How to Make and Sell Digital Products",
-      "price": 0,
-      "currency": "USD",
-      "type": "ebook",
-      "availability": "free"
+  "company": "Futuristic Digital Wealth Agency (FDWA)",
+  "primary_site": "https://fdwa.site",
+  "positioning": "We design, deploy, and optimize intelligent AI agents that automate trading, research, marketing, and business workflows. We sell ready-to-deploy OpenClaw skills and teach builders how to assemble agent systems with LangChain, LangGraph, Composio, and modern LLM stacks.",
+  "primary_audience": "Indie developers, founders, automation builders, and small business operators who want to ship AI agents quickly and monetize them.",
+  "tone": "Builder-to-builder. We share what we built, the stack we used, the gotchas, and the affiliate / product link to download or buy. Direct, technical, no fluff.",
+
+  "sub_brands": {
+    "fdwa": {
+      "site": "https://fdwa.site",
+      "focus": "AI agent consulting, custom workflows, courses, AI bootcamp"
     },
-    {
-      "title": "PURCHASE AND SALE AGREEMENT CONTRACT",
-      "price": 4,
-      "currency": "USD",
-      "type": "template",
-      "availability": "paid"
+    "gumroad": {
+      "site": "https://futuristicwealth.gumroad.com",
+      "focus": "OpenClaw skills, AI agent guides, free + paid digital products"
     },
-    {
-      "title": "\ud83d\udcd8 How to Sue Debt Collectors - Credit Secrets",
-      "price": 125,
-      "currency": "USD",
-      "type": "ebook",
-      "availability": "paid"
+    "reportdisputer": {
+      "site": "https://reportdisputer.xyz",
+      "focus": "Credit report analysis tool we built. Replaces our DisputeAI brand. Pairs with credit-repair affiliate offers."
     },
-    {
-      "title": "AI Bootcamp",
-      "price": 350,
-      "currency": "USD",
-      "type": "course",
-      "availability": "paid"
+    "yieldbot": {
+      "site": "https://yieldbot.cc",
+      "focus": "Crypto trading bot — side sub-brand. Posts only when crypto trends are big."
     },
-    {
-      "title": "Futuristic Digital Wealth Agency Stack Map 150+ Tools",
-      "price": 0,
-      "currency": "USD",
-      "type": "resource",
-      "availability": "free"
+    "ai_realestate": {
+      "site": "https://ai-realestate-agents.vercel.app",
+      "focus": "AI real estate scraper / lead-gen agent system (BETA)"
     },
-    {
-      "title": "Daniel 20 supporters Home Membership Posts Gallery Shop Home Membership Posts Gallery Shop Login Follow Share Report Log",
-      "price": 0.0,
-      "currency": "USD",
-      "availability": "paid",
-      "source": "https://buymeacoffee.com/streets2entrepreneurs/extras"
+    "clawhub_gmail": {
+      "site": "https://clawhub.ai/coinvest518/secure-gmail",
+      "focus": "Secure Gmail OpenClaw skill"
     },
-    {
-      "title": "Shop 232 sales All Member discount AI Teachers Educators Ai GenAI Educators Course Podcasting Santas pot Credit E book n",
-      "price": 0.0,
-      "currency": "USD",
-      "availability": "paid",
-      "source": "https://buymeacoffee.com/streets2entrepreneurs/extras"
+    "buymeacoffee": {
+      "site": "https://buymeacoffee.com/futuristicwealth",
+      "focus": "Tips, membership tiers, newsletter posts, free vs paid group access",
+      "tiers": [
+        {"name": "Supporter (free newsletter)", "price": 0, "benefits": ["Weekly build newsletter", "Free group chat"]},
+        {"name": "Builder membership", "price": 5, "benefits": ["Paid group chat", "Source access for one skill/month"]},
+        {"name": "Pro membership", "price": 15, "benefits": ["All skills source", "1:1 Q&A in Discord", "Early access"]}
+      ]
+    },
+    "yieldbot_token": {
+      "site": "https://yieldbot.cc",
+      "focus": "Yieldbot governance/utility token on Base",
+      "contract_env": "YIELDBOT_TOKEN_ADDRESS",
+      "network": "base-mainnet",
+      "holder_target": 1000
     }
+  },
+
+  "frameworks_we_use_and_tag": [
+    "LangChain",
+    "LangGraph",
+    "Composio",
+    "LangSmith",
+    "Mistral",
+    "OpenRouter",
+    "Hugging Face",
+    "Cloudflare Workers AI",
+    "Astra DB (DataStax)",
+    "Mem0",
+    "Anthropic Claude / OpenClaw",
+    "FastAPI",
+    "Pollinations.ai"
   ],
-  "about": "FWDA builds custom AI automation workflows for SMBs (coaches, agencies, consultants, trades, wellness, beauty, fitness, local businesses). We offer consulting, courses, templates, and done-for-you AI funnels.",
-  "contact_cta": "Schedule a free consultation at https://cal.com/bookme-daniel/ai-consultation-smb"
+  "social_handles_to_tag": {
+    "twitter": ["@LangChainAI", "@composiohq", "@MistralAI", "@OpenRouterAI", "@huggingface", "@cloudflare", "@datastax", "@AnthropicAI"],
+    "linkedin": ["LangChain", "Composio", "Mistral AI", "OpenRouter", "Hugging Face", "Cloudflare", "DataStax", "Anthropic"]
+  },
+
+  "products": [
+    {"title": "x402 Payment Skill for OpenClaw Agents — Free Setup Guide", "price": 0, "type": "skill", "channel": "gumroad", "url": "https://futuristicwealth.gumroad.com/", "tags": ["openclaw", "payments", "free_lead_magnet"]},
+    {"title": "OpenClaw Complete Setup Guide + AI Security Checklist (Beginner to Advanced)", "price": 0, "type": "guide", "channel": "gumroad", "url": "https://futuristicwealth.gumroad.com/", "tags": ["openclaw", "security", "free_lead_magnet"]},
+    {"title": "Ultimate Guide: Build Your Kalashi Bitcoin Trading OpenClaw System Scale $100 → $5,000", "price": 49, "type": "guide", "channel": "gumroad", "url": "https://futuristicwealth.gumroad.com/", "tags": ["openclaw", "crypto", "trading"]},
+    {"title": "Coinbase OpenClaw Agent — Automated Crypto Market Analysis Setup", "price": 0, "type": "skill", "channel": "gumroad", "url": "https://futuristicwealth.gumroad.com/", "tags": ["openclaw", "crypto", "free_lead_magnet"]},
+    {"title": "Alpaca AI Trading Agent: Scale $100 to $10,000 with OpenClaw Automation", "price": 29.99, "type": "skill", "channel": "gumroad", "url": "https://futuristicwealth.gumroad.com/", "tags": ["openclaw", "trading"]},
+    {"title": "🥞 PancakeSwap DeFi AI Agent — Automated Trading Skill for OpenClaw (2026)", "price": 9.99, "type": "skill", "channel": "gumroad", "url": "https://futuristicwealth.gumroad.com/", "tags": ["openclaw", "defi"]},
+    {"title": "AI Real Estate Scraper Agent System BETA", "price": 0, "type": "tool", "channel": "gumroad", "url": "https://futuristicwealth.gumroad.com/", "tags": ["real_estate", "free_lead_magnet"]},
+    {"title": "OpenClaw - AI Agent Prompt Injection Security Suite Skills", "price": 0, "type": "skill", "channel": "gumroad", "url": "https://futuristicwealth.gumroad.com/", "tags": ["openclaw", "security", "free_lead_magnet"]},
+    {"title": "5 Ways to Make Money with OpenClaw + AI Agents", "price": 29.99, "type": "guide", "channel": "gumroad", "url": "https://futuristicwealth.gumroad.com/", "tags": ["openclaw", "monetization"]},
+    {"title": "OPEN-CLAW & Claude Content Creation Skill (Remotion)", "price": 0, "type": "skill", "channel": "gumroad", "url": "https://futuristicwealth.gumroad.com/", "tags": ["openclaw", "content", "free_lead_magnet"]},
+    {"title": "The AI Agent Skill Suite for music Artist (Claude & OpenClaw)", "price": 0, "type": "skill", "channel": "gumroad", "url": "https://futuristicwealth.gumroad.com/", "tags": ["openclaw", "music", "free_lead_magnet"]},
+    {"title": "How to Sue Debt Collectors - Credit Secrets", "price": 125, "type": "ebook", "channel": "fdwa", "url": "https://fdwa.site", "tags": ["credit_repair"]},
+    {"title": "AI Bootcamp", "price": 350, "type": "course", "channel": "fdwa", "url": "https://fdwa.site", "tags": ["ai_agent_dev", "course"]},
+    {"title": "Futuristic Digital Wealth Agency Stack Map 150+ Tools", "price": 0, "type": "resource", "channel": "fdwa", "url": "https://fdwa.site", "tags": ["free_lead_magnet"]}
+  ],
+
+  "affiliate_offers": [
+    {"name": "Publish0x Ambassador", "url": "https://www.publish0x.com?a=K9b69y37aE", "topic": "crypto_writing"},
+    {"name": "Credit Repair Cloud", "url": "https://get.creditrepaircloud.com/naq3utx717o0", "topic": "credit_repair_business"},
+    {"name": "Public.com Stocks", "url": "https://public.com/user-referral?referrer=Investor703044", "topic": "investing"},
+    {"name": "IdentityIQ SecureMax (no trial)", "url": "https://www.identityiq.com/sc-securemax.aspx?offercode=4312970S", "price": 32.86, "topic": "credit_monitoring"},
+    {"name": "IdentityIQ SecurePreferred ($1 trial)", "url": "https://www.identityiq.com/securepreferred.aspx?offercode=4312970R", "price": 26.86, "topic": "credit_monitoring"},
+    {"name": "IdentityIQ SecureMax ($1 trial)", "url": "https://www.identityiq.com/sc-securemax.aspx?offercode=4312970Q", "price": 32.86, "topic": "credit_monitoring"},
+    {"name": "HelloSkip Grants (skip the line)", "url": "https://links.helloskip.com/s/c/R55N7e0g2ytcWJXR8sdTfqVewfpWuwsKFOKquabEfTNIAD629ngVb8TKWN37D5RMQzF-bD_26l3aRSkovwjdcQCO6RgqpW6XLbURQ6DeYgTHiBQoBT-DuMvGVfiM6iWaHTsR9LB8t9UuF6mf6vvyb3zqcbLdC_ohZQG0PNk6Z-4wV2QC4i97C4fupf3JmczxEktEo5dvFXb_0r9lOqlod2lMaAxHBXvAnARN8KXWAlF3RW_i-mDwMg2F786C4YQWm4as0ay6swlWmX3nOChkZ-RAhn5bWRBE5L-Q74YIbf4VWVt3MRwWAg_sPdSaFrtQ2gVc5MwDNoQYfGjsUnCs5-hkIc6UP2cpATo28ypYj2U_W85PltWbglqFE0oetKNKzS8AA2LaS-f3xBaByzGZkz1g30ghjMIjr_BcUhK1m_iceATjD8W05v-t6ruQYOmgiVA3VvPCUXIdiLVqAY806TgEsbwxun0ltayCz7X2Er-oHw0F/oeQ_JwkoWPfPCd56OWiwhrCGT9Wx-3ki/16", "topic": "grants"}
+  ],
+
+  "content_strategy": {
+    "primary_angle": "How we build AI agents — show the stack, share the skill, link the product.",
+    "secondary_angles": [
+      "Build-your-first-AI-agent tutorials targeting beginners",
+      "OpenClaw skill walkthroughs (free guide → paid skill upsell)",
+      "Behind-the-scenes of yieldbot.cc / reportdisputer.xyz / real-estate scraper",
+      "Framework comparisons (LangChain vs LangGraph vs raw OpenAI SDK etc.)"
+    ],
+    "must_avoid": [
+      "Generic crypto hype without product tie-in",
+      "Yieldbot promo without OpenClaw / framework angle",
+      "Trends posts that don't link to a product or affiliate",
+      "Images of people / faces / characters"
+    ]
+  },
+
+  "contact_cta": "Schedule a free consultation at https://cal.com/bookme-daniel/ai-consultation-smb",
+  "shop_cta": "Browse our OpenClaw skills and free guides: https://futuristicwealth.gumroad.com/"
 }

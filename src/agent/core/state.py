@@ -13,6 +13,20 @@ class AgentState(TypedDict, total=False):
     return partial dicts without filling every field.
     """
 
+    # ── Engagement (Phase 16 — pulled pre-research) ──
+    engagement: dict
+    engagement_summary: str
+
+    # ── Supervisor (Phase 17) ──
+    plan: dict
+    reflection: dict
+    upload_post_remaining: int
+    upload_post_status: str
+
+    # ── Video (Phase 15) ──
+    video_path: str
+    video_url: str
+
     # ── Research ──
     trend_data: str
     insight: str

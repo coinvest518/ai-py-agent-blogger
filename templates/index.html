@@ -49,6 +49,14 @@
                         <span class="nav-icon">⏰</span>
                         <span>Scheduler</span>
                     </div>
+                    <div class="nav-item" data-section="engagement">
+                        <span class="nav-icon">📊</span>
+                        <span>Engagement</span>
+                    </div>
+                    <div class="nav-item" data-section="reasoning">
+                        <span class="nav-icon">🧭</span>
+                        <span>Reasoning</span>
+                    </div>
                     <div class="nav-item" data-section="memory">
                         <span class="nav-icon">🧠</span>
                         <span>Memory / DB</span>
@@ -134,12 +142,14 @@
                         <div style="margin-bottom:20px;">
                             <div style="color:var(--text-muted);margin-bottom:8px;font-size:12px;">GENERATED IMAGE</div>
                             <img id="generatedImage" style="width:100%;border-radius:12px;display:none;" />
+                            <div id="generatedVideoContainer" style="margin-top:12px;display:none;"></div>
                         </div>
                         <div class="result-block"><div class="result-label">🐦 TWITTER POST</div><div id="twitterPost" class="result-text"></div></div>
                         <div class="result-block"><div class="result-label">📘 FACEBOOK POST</div><div id="facebookPost" class="result-text"></div></div>
                         <div class="result-block"><div class="result-label">💼 LINKEDIN POST</div><div id="linkedinPost" class="result-text"></div></div>
                         <div class="result-block"><div class="result-label">💬 TELEGRAM POST</div><div id="telegramPost" class="result-text"></div></div>
                         <div class="result-block"><div class="result-label">📸 INSTAGRAM CAPTION</div><div id="instagramPost" class="result-text"></div></div>
+                        <div class="result-block"><div class="result-label">📦 UPLOAD-POST</div><div id="uploadPost" class="result-text"></div></div>
                     </div>
                 </div>
             </section>
@@ -199,7 +209,7 @@
             <!-- ============== SCHEDULER ============== -->
             <section id="section-scheduler" style="display:none;">
                 <h2 class="section-heading"><span style="color:var(--terminal-green);">></span> Scheduler Control</h2>
-                <div class="card" style="max-width:600px;">
+                <div class="card" style="max-width:720px;">
                     <div class="card-header">
                         <div class="card-title"><span class="card-icon">⏰</span><span>Auto-Scheduler</span></div>
                         <span class="card-badge" id="schedulerStatusBadge">&mdash;</span>
@@ -208,9 +218,56 @@
                         <div class="stat-row"><span class="stat-label">Status</span><span class="stat-value" id="schedRunning">&mdash;</span></div>
                         <div class="stat-row"><span class="stat-label">Interval</span><span class="stat-value" id="schedInterval">&mdash;</span></div>
                         <div class="stat-row"><span class="stat-label">Next Run</span><span class="stat-value" id="schedNextRun">&mdash;</span></div>
-                        <div style="margin-top:20px;">
+                        <div style="margin-top:16px;">
                             <button class="btn btn-primary" id="schedToggleBtn" onclick="toggleScheduler()">Toggle Scheduler</button>
+                            <a class="btn btn-secondary" href="https://smith.langchain.com/projects/fdwa-multi-agent" target="_blank" rel="noopener">Open LangSmith Traces</a>
                         </div>
+                    </div>
+                </div>
+
+                <div class="card" style="max-width:720px;margin-top:16px;">
+                    <div class="card-header">
+                        <div class="card-title"><span class="card-icon">📅</span><span>Custom Jobs</span></div>
+                        <button class="btn btn-secondary" onclick="refreshJobs()" style="padding:6px 12px;font-size:12px;">Refresh</button>
+                    </div>
+                    <div class="card-content">
+                        <div style="display:flex;gap:8px;margin-bottom:12px;">
+                            <input id="schedNlInput" type="text" placeholder="e.g. every day at 9am crypto" style="flex:1;padding:8px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;" />
+                            <button class="btn btn-primary" onclick="addJobNL()">Add</button>
+                        </div>
+                        <div id="jobsList" style="font-size:13px;"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============== ENGAGEMENT ============== -->
+            <section id="section-engagement" style="display:none;">
+                <h2 class="section-heading"><span style="color:var(--terminal-green);">></span> Social Engagement</h2>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title"><span class="card-icon">📊</span><span>Yesterday's Performance</span></div>
+                        <button class="btn btn-primary" onclick="fetchEngagement()">Fetch Now</button>
+                    </div>
+                    <div class="card-content">
+                        <div id="engagementSummary" style="color:var(--text-muted);margin-bottom:12px;">No data yet — click Fetch Now.</div>
+                        <pre id="engagementJson" style="background:#0d1117;color:#c9d1d9;padding:12px;border-radius:6px;max-height:420px;overflow:auto;font-size:12px;"></pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============== REASONING ============== -->
+            <section id="section-reasoning" style="display:none;">
+                <h2 class="section-heading"><span style="color:var(--terminal-green);">></span> Supervisor Reasoning</h2>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title"><span class="card-icon">🧭</span><span>Last Plan &amp; Reflection</span></div>
+                        <button class="btn btn-primary" onclick="fetchReasoning()">Refresh</button>
+                    </div>
+                    <div class="card-content">
+                        <h4 style="color:var(--terminal-green);margin:0 0 8px;">Plan</h4>
+                        <pre id="reasoningPlan" style="background:#0d1117;color:#c9d1d9;padding:12px;border-radius:6px;max-height:260px;overflow:auto;font-size:12px;"></pre>
+                        <h4 style="color:var(--terminal-green);margin:14px 0 8px;">Reflection</h4>
+                        <pre id="reasoningReflect" style="background:#0d1117;color:#c9d1d9;padding:12px;border-radius:6px;max-height:260px;overflow:auto;font-size:12px;"></pre>
                     </div>
                 </div>
             </section>
@@ -218,12 +275,24 @@
             <!-- ============== MEMORY ============== -->
             <section id="section-memory" style="display:none;">
                 <h2 class="section-heading"><span style="color:var(--terminal-green);">></span> Memory / Astra DB</h2>
-                <div class="card" style="max-width:600px;">
+                <div class="card" style="max-width:720px;">
                     <div class="card-header">
                         <div class="card-title"><span class="card-icon">🧠</span><span>Astra DB Status</span></div>
                     </div>
                     <div class="card-content" id="memoryStatusContent">
                         <p style="color:var(--text-muted);">Loading…</p>
+                    </div>
+                </div>
+                <div class="card" style="max-width:720px;margin-top:16px;">
+                    <div class="card-header">
+                        <div class="card-title"><span class="card-icon">🔍</span><span>Search Mem0</span></div>
+                    </div>
+                    <div class="card-content">
+                        <div style="display:flex;gap:8px;margin-bottom:12px;">
+                            <input id="memQueryInput" type="text" placeholder="search memory…" style="flex:1;padding:8px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;" />
+                            <button class="btn btn-primary" onclick="searchMemory()">Search</button>
+                        </div>
+                        <pre id="memHits" style="background:#0d1117;color:#c9d1d9;padding:12px;border-radius:6px;max-height:360px;overflow:auto;font-size:12px;"></pre>
                     </div>
                 </div>
             </section>
