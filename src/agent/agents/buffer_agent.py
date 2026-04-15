@@ -97,7 +97,7 @@ def _target_channel_ids() -> List[str]:
 
 
 CREATE_POST_MUTATION = """
-mutation CreatePost($input: PostCreateInput!) {
+mutation CreatePost($input: CreatePostInput!) {
   createPost(input: $input) {
     ... on PostActionSuccess {
       post { id text }
@@ -120,12 +120,12 @@ def create_post_on_channel(
     input_obj: Dict[str, Any] = {
         "channelId": channel_id,
         "text": text,
+        "schedulingType": "automatic",
     }
     if scheduled_at:
-        input_obj["schedulingType"] = "custom"
-        input_obj["scheduledAt"] = scheduled_at
+        input_obj["mode"] = "customScheduled"
+        input_obj["dueAt"] = scheduled_at
     else:
-        input_obj["schedulingType"] = "automatic"
         input_obj["mode"] = "addToQueue"
     if image_url:
         input_obj["assets"] = {"images": [{"url": image_url}]}

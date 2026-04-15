@@ -67,5 +67,25 @@ class AgentState(TypedDict, total=False):
     memory_status: str
     crypto_analysis: dict  # best_gainers, best_losers from CMC
 
+    # ── Final report / docs ──
+    final_briefing_markdown: str
+    briefing_markdown: str
+    briefing_title: str
+    briefing_gmail: dict
+    gdocs_status: str
+    gdocs_url: str
+    gdocs_document_id: str
+    notion_status: str
+
+    # ── Snapshots ──
+    ga_snapshot: dict
+    onchain_snapshot: dict
+
+    # ── Buffer ──
+    buffer_status: str
+    buffer_post_ids: list
+    buffer_text: str
+    buffer_scheduled_at: str
+
     # ── Errors ──
     error: str
