@@ -1,6 +1,9 @@
 """Blog Email Agent for FDWA AI Automation Agency.
 
 This agent generates blog content using predefined templates and sends it via Gmail.
+Blogger publishing is performed via the configured BLOGGER_EMAIL address,
+not through a direct Blogger API. The content is posted by email through
+Blogger's post-by-email workflow.
 Image URLs are embedded directly in the HTML body for display.
 Now includes strategic knowledge base integration and link performance tracking.
 """
@@ -668,6 +671,9 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
 def send_blog_email(blog_html: str, title: str, image_url: str | None = None) -> Dict[str, Any]:
     """Send blog content via Gmail with image URL in HTML body.
     
+    This uses Composio's Gmail tool to email the blog HTML to the configured
+    BLOGGER_EMAIL address. Blogger must then accept the email and publish it.
+
     Args:
         blog_html: HTML content of the blog post (image URL already embedded).
         title: Subject/title of the email.
@@ -705,7 +711,7 @@ def send_blog_email(blog_html: str, title: str, image_url: str | None = None) ->
         if email_response.get("successful", False):
             logger.info("Blog email sent successfully!")
             return {
-                "email_status": "Sent successfully", 
+                "email_status": f"Email sent successfully to {blogger_email}",
                 "recipient": blogger_email,
                 "has_image": has_image
             }

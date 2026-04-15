@@ -107,11 +107,21 @@ def _monetization_block(strategy: dict | None, platform: str) -> str:
     if not angle:
         return ""
 
+    # Belt-and-braces: if the strategy brief said "avoid X", drop X from the
+    # monetization block even if the decision engine slipped it back in.
+    avoid_list = [str(a).lower() for a in ((strategy.get("brief") or {}).get("avoid") or [])]
+
+    def _blocked(prod: dict | None) -> bool:
+        if not prod or not avoid_list:
+            return False
+        name = str(prod.get("name", "")).lower()
+        return any(a and (a in name or name in a) for a in avoid_list)
+
     lines = ["", "MONETIZATION ANGLE (this post must support our funnel):"]
-    if angle.get("free_guide"):
+    if angle.get("free_guide") and not _blocked(angle["free_guide"]):
         fg = angle["free_guide"]
         lines.append(f"- Free lead magnet: {fg.get('name')} → {fg.get('url')}")
-    if angle.get("paid_skill"):
+    if angle.get("paid_skill") and not _blocked(angle["paid_skill"]):
         ps = angle["paid_skill"]
         lines.append(f"- Paid upsell: {ps.get('name')} (${ps.get('price')}) → {ps.get('url')}")
     frameworks = angle.get("framework_used") or []

@@ -251,7 +251,7 @@ Get YBOT tools at https://fdwa.site
                     - Generates long-form blog (1000-1500 words)
                     - Runs 1-2x/week (not every day)
                     - Includes 2-3 affiliate links
-                    - Email + Blogger publishing
+                    - Publishes to Blogger via post-by-email (BLOGGER_EMAIL)
 ```
 
 ---

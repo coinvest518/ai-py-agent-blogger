@@ -191,7 +191,7 @@ def _trigger_from_spec(spec: dict):
             raise ValueError(f"cron must have 5 fields, got: {spec.get('cron')!r}")
         minute, hour, day, month, dow = parts
         return CronTrigger(minute=minute, hour=hour, day=day, month=month, day_of_week=dow)
-    return IntervalTrigger(minutes=int(spec.get("minutes") or 360))
+    return IntervalTrigger(minutes=int(spec.get("minutes") or 240))
 
 
 async def _run_with_topic(topic: str | None = None) -> dict:

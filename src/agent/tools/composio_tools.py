@@ -338,9 +338,56 @@ def get_linkedin_author_urn(author_urn: str | None = None) -> Optional[str]:
 # Facebook
 # =============================================================================
 
+def _normalize_facebook_page_id(page_id: str | None) -> str:
+    """Normalize Facebook page ID or URL to the canonical page identifier."""
+    if not page_id:
+        return ""
+    page_id = str(page_id).strip()
+    if not page_id:
+        return ""
+
+    if page_id.lower().startswith("http"):
+        from urllib.parse import parse_qs, urlparse
+
+        parsed = urlparse(page_id)
+        query = parse_qs(parsed.query)
+        if "page_id" in query and query["page_id"]:
+            return query["page_id"][0].strip()
+        page_id = parsed.path.strip("/")
+
+    if "facebook.com" in page_id.lower():
+        page_id = page_id.lower().split("facebook.com")[-1].strip("/")
+
+    if page_id.startswith("pg/"):
+        page_id = page_id[len("pg/"):]
+    if "/" in page_id:
+        page_id = page_id.split("/")[-1]
+
+    return page_id.strip()
+
+
+def _extract_facebook_post_id(response: dict) -> str:
+    """Robustly extract a Facebook post ID from Composio response data."""
+    if not isinstance(response, dict):
+        return ""
+    data = response.get("data", {}) or {}
+    response_data = data.get("response_data", {}) or {}
+    post_id = (
+        response_data.get("post_id")
+        or response_data.get("id")
+        or data.get("post_id")
+        or data.get("id")
+    )
+    if isinstance(post_id, str):
+        return post_id.strip()
+    if post_id is not None:
+        return str(post_id).strip()
+    return ""
+
+
 def post_facebook(page_id: str | None, text: str, photo_path: str | None = None) -> dict:
     """Post to Facebook page. Returns dict with success, post_id, or error."""
-    page_id = page_id or FACEBOOK_PAGE_ID
+    page_id = _normalize_facebook_page_id(page_id or FACEBOOK_PAGE_ID)
     entity = _entity()
     if not page_id:
         return {"error": "FACEBOOK_PAGE_ID not set"}
@@ -359,8 +406,7 @@ def post_facebook(page_id: str | None, text: str, photo_path: str | None = None)
         resp = _execute_with_fallback(tool_name, params, entity)
         if not resp.get("successful"):
             return {"success": False, "error": resp.get("error", "Unknown")}
-        data = resp.get("data", {}).get("response_data", {})
-        post_id = data.get("post_id", "")
+        post_id = _extract_facebook_post_id(resp)
         return {"success": True, "post_id": post_id}
     except Exception as e:
         logger.exception("Facebook post failed: %s", e)
@@ -420,8 +466,41 @@ def post_linkedin(author_urn: str | None, text: str) -> dict:
 # Instagram
 # =============================================================================
 
+def _ensure_publishable_image_url(image_url: str) -> tuple[str, str]:
+    """Re-host image on a fresh CDN URL so Meta doesn't reject stale/blocked URLs.
+
+    Returns (new_url, source) where source is "reuploaded" if we downloaded
+    and re-uploaded, or "as-is" if the original URL was kept.
+    """
+    if not image_url:
+        return "", "missing"
+    # Local-file URLs can never be passed to Meta — always re-upload
+    is_local = image_url.startswith("file://") or image_url.startswith("file:///")
+    if not is_local:
+        # For remote URLs, still re-upload: Meta aggressively rejects repeat URLs.
+        pass
+    try:
+        from src.agent.tools.image_tools import download_image, upload_image
+        local = download_image(image_url)
+        if not local:
+            return image_url, "as-is"  # couldn't download — let Meta try anyway
+        import pathlib
+        data = pathlib.Path(local).read_bytes()
+        up = upload_image(data)
+        if up.get("success") and up.get("url"):
+            return up["url"], "reuploaded"
+    except Exception as e:
+        logger.warning("IG image re-host failed: %s", e)
+    return image_url, "as-is"
+
+
 def post_instagram(caption: str, image_url: str) -> dict:
-    """Post to Instagram (image required). Returns dict with instagram_status."""
+    """Post to Instagram (image required). Returns dict with instagram_status.
+
+    Before handing the URL to Meta, we download the bytes and re-upload to a
+    fresh CDN URL — Meta aggressively rejects stale/re-used third-party CDN
+    links (error 9004 / 2207052). A fresh URL avoids those rejections.
+    """
     entity = _entity()
     if not INSTAGRAM_USER_ID:
         return {"error": "INSTAGRAM_USER_ID not set"}
@@ -429,13 +508,19 @@ def post_instagram(caption: str, image_url: str) -> dict:
         return {"error": "COMPOSIO_ENTITY_ID not set"}
     if not image_url:
         return {"error": "Image required for Instagram"}
+
+    publishable_url, source = _ensure_publishable_image_url(image_url)
+    if not publishable_url:
+        return {"error": "Could not produce a publishable image URL"}
+    logger.info("IG image URL (%s): %s", source, publishable_url)
+
     client = get_composio_client()
     try:
         container = _execute_with_fallback(
             "INSTAGRAM_CREATE_MEDIA_CONTAINER",
             {
                 "ig_user_id": INSTAGRAM_USER_ID,
-                "image_url": image_url,
+                "image_url": publishable_url,
                 "caption": caption,
                 "content_type": "photo",
             },

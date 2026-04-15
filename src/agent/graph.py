@@ -7,8 +7,7 @@ Workflow:
   research → generate_content → generate_image →
   post_twitter → post_facebook → post_linkedin →
   post_telegram → post_instagram →
-  monitor_ig_comments → reply_twitter → comment_facebook →
-  generate_blog → record_memory → END
+  comment_facebook → generate_blog → record_memory → END
 """
 
 from __future__ import annotations
@@ -194,7 +193,7 @@ def generate_content_node(state: AgentState) -> dict:
     strategy = None
     try:
         engine = get_decision_engine()
-        strategy = engine.get_content_strategy(trend_data=base_insights)
+        strategy = engine.get_content_strategy(trend_data=base_insights, brief=strategy_brief)
         # Operator topic override + strategy brief beat the decision engine's topic pick
         override_topic = strategy_brief.get("topic") or (state.get("topic_override") or "").strip()
         if override_topic:
@@ -531,18 +530,6 @@ def post_upload_post_node(state: AgentState) -> dict:
 
 # ── Engagement nodes ────────────────────────────────────────────────────
 
-@traceable(name="monitor_instagram_comments")
-def monitor_ig_comments_node(state: AgentState) -> dict:
-    logger.info("──── IG COMMENTS ────")
-    return comment_agent.monitor_instagram(state)
-
-
-@traceable(name="reply_twitter")
-def reply_twitter_node(state: AgentState) -> dict:
-    logger.info("──── TWITTER REPLY ────")
-    return twitter_agent.reply_to_own_tweet(state)
-
-
 @traceable(name="comment_facebook")
 def comment_facebook_node(state: AgentState) -> dict:
     logger.info("──── FB COMMENT ────")
@@ -594,8 +581,6 @@ workflow.add_node("onchain_snapshot", onchain_snapshot_node)
 workflow.add_node("final_report", final_report_node)
 workflow.add_node("post_notion", post_notion_node)
 workflow.add_node("post_gdocs", post_gdocs_node)
-workflow.add_node("monitor_ig_comments", monitor_ig_comments_node)
-workflow.add_node("reply_twitter", reply_twitter_node)
 workflow.add_node("comment_facebook", comment_facebook_node)
 workflow.add_node("generate_blog", generate_blog_node)
 workflow.add_node("analytics", analytics_node)
@@ -637,12 +622,7 @@ workflow.add_edge("onchain_snapshot", "final_report")
 workflow.add_edge("final_report", "post_telegram")
 workflow.add_edge("final_report", "post_notion")
 workflow.add_edge("final_report", "post_gdocs")
-# Barrier: monitor_ig_comments waits for all 3 briefing destinations
-workflow.add_edge("post_telegram", "monitor_ig_comments")
-workflow.add_edge("post_notion", "monitor_ig_comments")
-workflow.add_edge("post_gdocs", "monitor_ig_comments")
-workflow.add_edge("monitor_ig_comments", "reply_twitter")
-workflow.add_edge("reply_twitter", "comment_facebook")
+workflow.add_edge("post_facebook", "comment_facebook")
 workflow.add_edge("comment_facebook", "generate_blog")
 workflow.add_edge("generate_blog", "analytics")
 workflow.add_edge("analytics", "record_memory")
@@ -668,8 +648,7 @@ if __name__ == "__main__":
         for key in [
             "tweet_text", "image_url", "twitter_url", "facebook_status",
             "linkedin_status", "instagram_status", "telegram_status",
-            "instagram_comment_status", "twitter_reply_status", "comment_status",
-            "blog_status", "blog_title", "memory_status",
+            "comment_status", "blog_status", "blog_title", "memory_status",
         ]:
             logger.info("  %s: %s", key, str(final.get(key, "N/A"))[:120])
 

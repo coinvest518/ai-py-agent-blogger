@@ -72,11 +72,16 @@ def comment_on_post(state: dict) -> dict:
     topic = (state.get("strategy") or {}).get("topic", "general")
     site = get_site_for_topic(topic)
     fb_text = state.get("facebook_text", "")[:400]
+    ai_strategy = state.get("ai_strategy") or {}
+    affiliate = ai_strategy.get("affiliate") or {}
+    products = ai_strategy.get("products") or []
 
+    product_url = affiliate.get("url") or (products[0].get("url") if isinstance(products, list) and products else None) or site
     prompt = (
         f"Write a single 1-line follow-up comment (<140 chars) on our own Facebook post. "
         f"Post topic: {topic}. Post excerpt: {fb_text}\n"
-        f"End with the link {site}. No hashtags. Plain text, 1-2 emojis max."
+        f"Use the product link {product_url} if it is relevant to the post. "
+        f"End with the link {product_url}. No hashtags. Plain text, 1-2 emojis max."
     )
     comment_text = _llm_generate(prompt, "Facebook self-comment")
     if not comment_text:

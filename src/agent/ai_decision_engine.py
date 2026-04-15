@@ -30,6 +30,53 @@ BUSINESS_PROFILE_PATH = BASE_DIR / "business_profile.json"
 KNOWLEDGE_BASE_PATH = BASE_DIR / "FDWA_KNOWLEDGE_BASE.md"
 PRODUCTS_CATALOG_PATH = BASE_DIR / "FDWA_PRODUCTS_CATALOG.md"
 MEMORY_PATH = BASE_DIR / "agent_memory.json"
+RECENT_PRODUCTS_PATH = BASE_DIR / ".recent_products.json"
+RECENT_PRODUCTS_WINDOW = 6  # keep last N runs worth of product picks
+
+
+def _load_recent_products() -> List[str]:
+    """Return list of product names picked in the last N runs (flat, deduped)."""
+    try:
+        if RECENT_PRODUCTS_PATH.exists():
+            data = json.loads(RECENT_PRODUCTS_PATH.read_text(encoding="utf-8"))
+            runs = data.get("runs", [])[-RECENT_PRODUCTS_WINDOW:]
+            names: List[str] = []
+            for r in runs:
+                names.extend(r.get("products", []))
+            return list(dict.fromkeys(names))  # preserve order, dedupe
+    except Exception as e:
+        logger.debug("recent-products load failed: %s", e)
+    return []
+
+
+def _save_recent_products(picked_names: List[str]) -> None:
+    """Append this run's picks to the ring buffer (keeps last N)."""
+    try:
+        data = {}
+        if RECENT_PRODUCTS_PATH.exists():
+            data = json.loads(RECENT_PRODUCTS_PATH.read_text(encoding="utf-8"))
+        runs = data.get("runs", [])
+        runs.append({"ts": datetime.utcnow().isoformat(), "products": picked_names})
+        data["runs"] = runs[-RECENT_PRODUCTS_WINDOW:]
+        RECENT_PRODUCTS_PATH.write_text(json.dumps(data), encoding="utf-8")
+    except Exception as e:
+        logger.debug("recent-products save failed: %s", e)
+
+
+def _name_matches_any(name: str, needles: List[str]) -> bool:
+    """Case-insensitive substring match (either direction) for product-name filters."""
+    if not name or not needles:
+        return False
+    nlo = name.lower()
+    for n in needles:
+        if not n:
+            continue
+        nl = str(n).lower().strip()
+        if not nl:
+            continue
+        if nl in nlo or nlo in nl:
+            return True
+    return False
 
 
 class AIDecisionEngine:
@@ -190,14 +237,24 @@ class AIDecisionEngine:
         except (ValueError, TypeError):
             return 0.0
 
-    def score_for_revenue(self, product: Dict, topic: str) -> float:
+    def score_for_revenue(self, product: Dict, topic: str,
+                           avoid: List[str] | None = None,
+                           exclude_recent: List[str] | None = None) -> float:
         """CFO-style revenue score: weight by price, tags, recency, lead-magnet potential.
 
-        Higher score = better revenue/funnel candidate for the topic.
+        Higher score = better revenue/funnel candidate for the topic. If the
+        product's name appears in ``avoid`` (hard skip from strategy brief) or
+        ``exclude_recent`` (soft skip — already posted in the last N runs),
+        returns ``-inf`` so it's only picked as a last resort.
         """
+        name = product.get("name", "")
+        if _name_matches_any(name, avoid or []):
+            return float("-inf")
+        if _name_matches_any(name, exclude_recent or []):
+            return float("-inf")
         score = 0.0
         topic_lower = topic.lower()
-        name_lower = product.get("name", "").lower()
+        name_lower = name.lower()
         tags = [t.lower() for t in product.get("tags", [])]
         category_lower = product.get("category", "").lower()
 
@@ -242,11 +299,21 @@ class AIDecisionEngine:
 
         return score
 
-    def select_relevant_products(self, topic: str, category: str | None = None, limit: int = 2) -> List[Dict]:
+    def select_relevant_products(self, topic: str, category: str | None = None,
+                                  limit: int = 2,
+                                  avoid: List[str] | None = None,
+                                  exclude_recent: List[str] | None = None,
+                                  persist_picks: bool = True) -> List[Dict]:
         """Select revenue-optimal products for the topic.
 
         Prefers structured products from business_profile.json (with price/tags/url),
         falls back to markdown catalog. Returns normalized dicts.
+
+        Args:
+            avoid: product-name substrings to hard-skip (from strategy brief).
+            exclude_recent: product-name substrings to soft-skip (picked recently).
+                If None, auto-loads from the on-disk ring buffer.
+            persist_picks: if True, append chosen product names to the ring buffer.
         """
         bp_products = self.business_profile.get("products", [])
         if bp_products:
@@ -265,15 +332,34 @@ class AIDecisionEngine:
                 if cat_lower in p["category"].lower() or any(cat_lower in t for t in p["tags"])
             ]
 
-        scored = [(self.score_for_revenue(p, topic), p) for p in products]
-        scored.sort(reverse=True, key=lambda x: x[0])
-        selected = [p for _, p in scored[:limit]]
+        avoid = avoid or []
+        if exclude_recent is None:
+            exclude_recent = _load_recent_products()
 
-        logger.info("🎯 Selected %d products for topic '%s': %s",
-                   len(selected), topic, [p["name"][:50] for p in selected])
+        scored = [(self.score_for_revenue(p, topic, avoid=avoid, exclude_recent=exclude_recent), p)
+                  for p in products]
+        scored.sort(reverse=True, key=lambda x: x[0])
+        selected = [p for s, p in scored[:limit] if s > float("-inf")]
+
+        # Last-resort fallback: if the avoid+recent filters killed everything,
+        # relax exclude_recent (keep avoid — that's a hard rule from the brief).
+        if not selected:
+            relaxed = [(self.score_for_revenue(p, topic, avoid=avoid, exclude_recent=[]), p)
+                       for p in products]
+            relaxed.sort(reverse=True, key=lambda x: x[0])
+            selected = [p for s, p in relaxed[:limit] if s > float("-inf")]
+
+        logger.info("🎯 Selected %d products for topic '%s' (avoid=%d, recent=%d): %s",
+                   len(selected), topic, len(avoid), len(exclude_recent),
+                   [p["name"][:50] for p in selected])
+
+        if persist_picks and selected:
+            _save_recent_products([p["name"] for p in selected])
+
         return selected
 
-    def cfo_pick_strategy(self, topic: str, products: List[Dict] | None = None) -> Dict:
+    def cfo_pick_strategy(self, topic: str, products: List[Dict] | None = None,
+                           avoid: List[str] | None = None) -> Dict:
         """CFO funnel pick: free lead magnet + paid upsell + framework angle + CTA.
 
         Returns:
@@ -287,7 +373,10 @@ class AIDecisionEngine:
             }
         """
         if products is None:
-            products = self.select_relevant_products(topic, limit=4)
+            products = self.select_relevant_products(topic, limit=4, avoid=avoid, persist_picks=False)
+
+        avoid = avoid or []
+        exclude_recent = _load_recent_products()
 
         free_guide = None
         paid_skill = None
@@ -305,18 +394,22 @@ class AIDecisionEngine:
             all_normalized = [self._normalize_product(p) for p in self.business_profile.get("products", [])]
             paid_candidates = [p for p in all_normalized if self._price_value(p.get("price")) > 0]
             if paid_candidates:
-                scored = [(self.score_for_revenue(p, topic), p) for p in paid_candidates]
+                scored = [(self.score_for_revenue(p, topic, avoid=avoid, exclude_recent=exclude_recent), p)
+                          for p in paid_candidates]
                 scored.sort(reverse=True, key=lambda x: x[0])
-                paid_skill = scored[0][1]
+                if scored and scored[0][0] > float("-inf"):
+                    paid_skill = scored[0][1]
 
         # Same for free guide
         if free_guide is None:
             all_normalized = [self._normalize_product(p) for p in self.business_profile.get("products", [])]
             free_candidates = [p for p in all_normalized if self._price_value(p.get("price")) == 0.0]
             if free_candidates:
-                scored = [(self.score_for_revenue(p, topic), p) for p in free_candidates]
+                scored = [(self.score_for_revenue(p, topic, avoid=avoid, exclude_recent=exclude_recent), p)
+                          for p in free_candidates]
                 scored.sort(reverse=True, key=lambda x: x[0])
-                free_guide = scored[0][1]
+                if scored and scored[0][0] > float("-inf"):
+                    free_guide = scored[0][1]
 
         frameworks = self.business_profile.get("frameworks_we_use_and_tag", [])
         topic_lower = topic.lower()
@@ -361,7 +454,7 @@ class AIDecisionEngine:
             "affiliate": affiliate,
         }
     
-    def get_content_strategy(self, trend_data: str) -> Dict:
+    def get_content_strategy(self, trend_data: str, brief: Dict | None = None) -> Dict:
         """Generate comprehensive content strategy based on ALL available data.
         
         This is the MAIN intelligence function that decides:
@@ -384,13 +477,18 @@ class AIDecisionEngine:
         
         logger.info("📊 Recent topics (last 7 days): %s", recent_topics[:5])
         
-        # 2. Determine primary topic from trend data
-        primary_topic = self._determine_topic(trend_data, recent_topics)
-        
-        # 3. Select relevant products (avoid over-promoting same products)
+        # 2. Determine primary topic from trend data.
+        #    Strategy brief (if provided) already picked the topic — honour it.
+        brief = brief or {}
+        brief_topic = str(brief.get("topic") or "").strip()
+        avoid_list = [str(a) for a in (brief.get("avoid") or []) if a]
+        primary_topic = brief_topic or self._determine_topic(trend_data, recent_topics)
+
+        # 3. Select relevant products (skip brief.avoid + recent picks)
         products_to_feature = self.select_relevant_products(
             topic=primary_topic,
-            limit=2
+            limit=2,
+            avoid=avoid_list,
         )
         
         # 4. Choose best CTA based on topic
@@ -435,7 +533,7 @@ class AIDecisionEngine:
             memory_examples = []
         
         # 7b. CFO monetization angle (free guide → paid upsell + framework tagging)
-        monetization_angle = self.cfo_pick_strategy(primary_topic, products_to_feature)
+        monetization_angle = self.cfo_pick_strategy(primary_topic, products_to_feature, avoid=avoid_list)
 
         strategy = {
             "topic": primary_topic,
