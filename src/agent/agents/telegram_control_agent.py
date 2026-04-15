@@ -148,44 +148,261 @@ async def _handle_status(chat_id: str) -> None:
     _reply(chat_id, text[:3800])
 
 
+def _collect_self_context(question: str = "") -> Dict[str, Any]:
+    """Gather live system context for /ask and /self — connections, LLMs, data.
+
+    Best-effort everywhere; any failing probe returns a short error string
+    instead of raising so the chat path never dies on a missing service.
+    """
+    ctx: Dict[str, Any] = {}
+
+    # Last agent status (from disk)
+    try:
+        if STATUS_FILE.exists():
+            ctx["last_run"] = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        ctx["last_run"] = f"read error: {e}"
+
+    # LLM health — which providers have keys set, gated by DEAD/COOLDOWN flags
+    try:
+        from src.agent.llm_provider import (
+            PROVIDER_REGISTRY,
+            DEAD_PROVIDERS,
+            COOLDOWN_PROVIDERS,
+            _effective_env_value,
+        )
+        live: list[str] = []
+        missing_keys: list[str] = []
+        enable_flags = {
+            "Cloudflare": os.getenv("CLOUDFLARE_ENABLE", "false").lower() in ("1", "true", "yes"),
+            "HuggingFace": os.getenv("HF_ENABLE", "false").lower() in ("1", "true", "yes"),
+            "Cerebras": os.getenv("CEREBRAS_ENABLE", "false").lower() in ("1", "true", "yes"),
+            "Moonshot": os.getenv("MOONSHOT_ENABLE", "false").lower() in ("1", "true", "yes"),
+            "Google": os.getenv("GOOGLE_ENABLE", "false").lower() in ("1", "true", "yes"),
+            "Qwen": os.getenv("QWEN_ENABLE", "false").lower() in ("1", "true", "yes"),
+        }
+        for name, env_key, _, _ in PROVIDER_REGISTRY:
+            if not _effective_env_value(env_key):
+                missing_keys.append(name)
+                continue
+            if name in DEAD_PROVIDERS and not enable_flags.get(name, False):
+                continue
+            if name in COOLDOWN_PROVIDERS and not enable_flags.get(name, False):
+                continue
+            live.append(name)
+        ctx["llms"] = {
+            "live": live,
+            "dead": list(DEAD_PROVIDERS.keys()),
+            "cooldown": list(COOLDOWN_PROVIDERS.keys()),
+            "missing_keys": missing_keys,
+        }
+    except Exception as e:
+        ctx["llms"] = f"probe error: {e}"
+
+    # Buffer channels (live query — uses in-process cache, cheap)
+    try:
+        from src.agent.agents import buffer_agent
+        if buffer_agent._token():
+            channels = buffer_agent.list_channels()
+            ctx["buffer_channels"] = [
+                {"service": c.get("service"), "name": c.get("name"), "id": (c.get("id") or "")[:10] + "…"}
+                for c in channels
+            ]
+        else:
+            ctx["buffer_channels"] = "BUFFER_API_KEY not set"
+    except Exception as e:
+        ctx["buffer_channels"] = f"probe error: {e}"
+
+    # Composio auth surface — which toolkits' entity_id is configured
+    comp: Dict[str, Any] = {}
+    for key in (
+        "COMPOSIO_ENTITY_ID", "COMPOSIO_USER_ID", "COMPOSIO_GOOGLE_DOCS_ACCOUNT_ID",
+        "GA_PROPERTY_ID", "GOOGLEDOCS_WEEKLY_DOC_ID",
+    ):
+        comp[key] = "set" if os.getenv(key) else "missing"
+    ctx["composio_env"] = comp
+
+    # Direct API keys — just presence flags, never values
+    keys: Dict[str, Any] = {}
+    for key in (
+        "BUFFER_API_KEY", "NVIDIA_API_KEY", "MISTRAL_API_KEY", "MISTRAL_IMAGE_API_KEY",
+        "MEM0_API_KEY", "OPENROUTER_API_KEY", "NEBIUS_API_KEY",
+        "TELEGRAM_BOT_TOKEN", "TELEGRAM_AI_OWNER_CHAT_ID",
+    ):
+        keys[key] = "set" if os.getenv(key) else "missing"
+    ctx["api_keys"] = keys
+
+    # GA prior snapshot (written by ga_snapshot_node each cycle)
+    try:
+        from src.agent.agents import strategy_agent
+        prev = strategy_agent._load_prev_ga()
+        ctx["ga_prev_prose"] = strategy_agent._ga_to_prose(prev) or "(no prior snapshot)"
+    except Exception as e:
+        ctx["ga_prev_prose"] = f"probe error: {e}"
+
+    # Engagement cache (6h TTL)
+    try:
+        cache_path = Path(os.getenv("ENGAGEMENT_CACHE_PATH", ".engagement_cache.json"))
+        if cache_path.exists():
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            ctx["engagement_summary"] = (payload.get("summary") or "")[:500]
+        else:
+            ctx["engagement_summary"] = "(not yet pulled this TTL window)"
+    except Exception as e:
+        ctx["engagement_summary"] = f"read error: {e}"
+
+    # Mem0 recall relevant to the question
+    try:
+        from src.agent import mem0_adapter
+        hits = mem0_adapter.recall_relevant(question or "recent activity", top_k=5) or []
+        ctx["memory"] = [
+            (h.get("memory") or h.get("text") or "")[:180]
+            for h in hits if isinstance(h, dict)
+        ]
+    except Exception as e:
+        ctx["memory"] = f"probe error: {e}"
+
+    # Graph capabilities — what nodes exist
+    try:
+        from src.agent.graph import workflow
+        ctx["graph_nodes"] = sorted(list(workflow.nodes.keys()))
+    except Exception as e:
+        ctx["graph_nodes"] = f"probe error: {e}"
+
+    return ctx
+
+
+def _format_self_dump(ctx: Dict[str, Any]) -> str:
+    """Render the context dict as a compact text block for Telegram."""
+    lines = ["🔎 FDWA self-introspection", ""]
+
+    llms = ctx.get("llms") or {}
+    if isinstance(llms, dict):
+        lines.append(f"LLMs live: {', '.join(llms.get('live', [])[:8]) or '(none)'}")
+        if llms.get("dead"):
+            lines.append(f"LLMs dead: {', '.join(llms['dead'])}")
+        if llms.get("cooldown"):
+            lines.append(f"LLMs cooldown: {', '.join(llms['cooldown'])}")
+
+    chans = ctx.get("buffer_channels")
+    if isinstance(chans, list):
+        if chans:
+            lines.append(f"Buffer channels ({len(chans)}):")
+            for c in chans[:12]:
+                lines.append(f"  • {c.get('service')}: {c.get('name')}")
+        else:
+            lines.append("Buffer channels: (none connected)")
+    else:
+        lines.append(f"Buffer: {chans}")
+
+    comp = ctx.get("composio_env") or {}
+    missing = [k for k, v in comp.items() if v == "missing"]
+    lines.append(f"Composio env: {len(comp) - len(missing)}/{len(comp)} set" + (f" — missing: {', '.join(missing)}" if missing else ""))
+
+    keys = ctx.get("api_keys") or {}
+    km = [k for k, v in keys.items() if v == "missing"]
+    lines.append(f"API keys: {len(keys) - len(km)}/{len(keys)} set" + (f" — missing: {', '.join(km)}" if km else ""))
+
+    lines.append(f"GA prior: {ctx.get('ga_prev_prose', '?')}")
+    lines.append(f"Engagement: {str(ctx.get('engagement_summary', '?'))[:240]}")
+
+    nodes = ctx.get("graph_nodes")
+    if isinstance(nodes, list):
+        lines.append(f"Graph nodes ({len(nodes)}): {', '.join(nodes[:20])}{'…' if len(nodes) > 20 else ''}")
+
+    mem = ctx.get("memory") or []
+    if isinstance(mem, list) and mem:
+        lines.append("Memory recall:")
+        for m in mem[:4]:
+            lines.append(f"  • {m}")
+
+    return "\n".join(lines)
+
+
+async def _handle_self(chat_id: str) -> None:
+    """Dump the raw introspection so the operator can see what the agent sees."""
+    try:
+        ctx = _collect_self_context(question="")
+        _reply(chat_id, _format_self_dump(ctx))
+    except Exception as e:
+        logger.exception("self failed")
+        _reply(chat_id, f"/self failed: {e}")
+
+
 async def _handle_ask(chat_id: str, question: str) -> None:
     if not question.strip():
-        _reply(chat_id, "Usage: /ask <question>")
+        _reply(chat_id, "Usage: /ask <question about connections, data, capabilities>")
         return
     try:
         from src.agent.llm_router import route
-        from src.agent import mem0_adapter
 
-        memories = []
-        try:
-            hits = mem0_adapter.recall_relevant(question, top_k=3) or []
-            for h in hits:
-                if isinstance(h, dict):
-                    memories.append((h.get("memory") or h.get("text") or "")[:200])
-        except Exception:
-            pass
+        ctx = _collect_self_context(question=question)
 
-        status_txt = ""
-        try:
-            if STATUS_FILE.exists():
-                status_txt = STATUS_FILE.read_text(encoding="utf-8")[:1500]
-        except Exception:
-            pass
-
-        prompt = (
-            "You are the FDWA agent answering the operator on Telegram. "
-            "Be concrete, short, reference real events when the data supports it.\n\n"
-            f"QUESTION: {question}\n\n"
-            f"AGENT STATUS:\n{status_txt or '(none)'}\n\n"
-            f"MEMORY:\n" + ("\n".join(f"- {m}" for m in memories) if memories else "(none)")
+        system = (
+            "You are the FDWA agent answering the operator on Telegram. You have "
+            "real introspection data below — connections, LLM health, Buffer channels, "
+            "GA traffic, engagement, memory. Answer from THAT DATA. Be concrete and "
+            "short. If the data doesn't answer the question, say so — don't hallucinate."
         )
+        data_block = json.dumps(ctx, default=str, indent=2)[:6000]
+        user = (
+            f"QUESTION: {question}\n\n"
+            f"LIVE SYSTEM DATA:\n{data_block}"
+        )
+
+        from langchain_core.messages import SystemMessage, HumanMessage
         llm = route(task="explain_self", needs_long_context=True)
-        resp = llm.invoke(prompt)
+        resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
         text = getattr(resp, "content", None) or str(resp)
-        _reply(chat_id, text.strip())
+        _reply(chat_id, text.strip()[:3800])
     except Exception as e:
         logger.exception("ask failed")
         _reply(chat_id, f"/ask failed: {e}")
+
+
+def _badge(val: str) -> str:
+    v = str(val or "").lower()
+    if not v or v in ("n/a", "missing"):
+        return "⚠️"
+    if "skipped" in v or "skip" in v:
+        return "⏭️"
+    if "fail" in v or "error" in v or "expired" in v:
+        return "❌"
+    return "✅"
+
+
+def _build_run_summary(result: dict, topic: str = "") -> str:
+    """Same structured per-platform summary used by the scheduler."""
+    fb = result.get("facebook_status") or (f"Posted: {result.get('facebook_post_id')}" if result.get("facebook_post_id") else "missing")
+    tw = "skipped_by_config" if result.get("twitter_post_id") == "skipped_by_config" else (f"Posted: {result.get('twitter_url')}" if result.get("twitter_url") else "missing")
+    li = result.get("linkedin_status") or "missing"
+    ig = result.get("instagram_status") or "missing"
+    tg = result.get("telegram_status") or "missing"
+    blog = result.get("blog_status") or "missing"
+    buf = result.get("buffer_status") or "missing"
+    gdoc_url = result.get("gdocs_url") or ""
+    gdoc_status = result.get("gdocs_status") or "missing"
+
+    header = f"🤖 FDWA Agent run — {datetime.utcnow().isoformat()}Z"
+    if topic:
+        header += f"\n📌 Topic: {topic[:100]}"
+    lines = [
+        header,
+        f"{_badge(fb)} facebook: {str(fb)[:120]}",
+        f"{_badge(tw)} twitter: {str(tw)[:120]}",
+        f"{_badge(li)} linkedin: {str(li)[:120]}",
+        f"{_badge(ig)} instagram: {str(ig)[:120]}",
+        f"{_badge(tg)} telegram: {str(tg)[:120]}",
+        f"{_badge(blog)} blog: {str(blog)[:120]}",
+        f"{_badge(buf)} buffer: {str(buf)[:120]}",
+    ]
+    if gdoc_url:
+        lines.append(f"📄 gdoc: {gdoc_url}")
+    else:
+        lines.append(f"📄 gdoc: {str(gdoc_status)[:120]}")
+    if result.get("error"):
+        lines.append(f"⚠️ graph_error: {str(result.get('error'))[:200]}")
+    return "\n".join(lines)
 
 
 async def _handle_post(chat_id: str, topic: str) -> None:
@@ -198,15 +415,7 @@ async def _handle_post(chat_id: str, topic: str) -> None:
         loop = asyncio.get_event_loop()
         state = {"topic_override": topic, "trend_data": topic}
         result = await loop.run_in_executor(None, lambda: graph.invoke(state))
-        summary = (
-            f"Run done at {datetime.utcnow().isoformat()}Z.\n"
-            f"twitter: {'✓' if result.get('twitter_url') else '×'}  "
-            f"fb: {'✓' if result.get('facebook_post_id') else '×'}  "
-            f"li: {str(result.get('linkedin_status',''))[:30]}  "
-            f"ig: {str(result.get('instagram_status',''))[:30]}  "
-            f"blog: {str(result.get('blog_status',''))[:30]}"
-        )
-        _reply(chat_id, summary)
+        _reply(chat_id, _build_run_summary(result, topic=topic))
     except Exception as e:
         logger.exception("forced post failed")
         _reply(chat_id, f"/post failed: {e}")
@@ -383,12 +592,61 @@ async def _handle_tools(chat_id: str, toolkit: str) -> None:
         _reply(chat_id, f"/tools failed: {e}")
 
 
+async def _handle_buffer_now(chat_id: str, text: str) -> None:
+    """Post immediately to every Buffer channel (routes by service type)."""
+    if not text.strip():
+        _reply(chat_id, "Usage: /buffer_now <text>")
+        return
+    try:
+        from src.agent.agents import buffer_agent
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: buffer_agent.post_now(text=text))
+        by_service = result.get("by_service") or {}
+        parts = [f"🎯 Buffer immediate post"]
+        if result.get("success"):
+            parts.append(f"✅ Queued {len(result.get('post_ids') or [])} post(s)")
+        else:
+            parts.append(f"❌ {result.get('error', 'unknown')[:200]}")
+        if by_service:
+            parts.append("Services: " + ", ".join(f"{k}={v}" for k, v in by_service.items()))
+        _reply(chat_id, "\n".join(parts))
+    except Exception as e:
+        logger.exception("buffer_now failed")
+        _reply(chat_id, f"/buffer_now failed: {e}")
+
+
+async def _handle_buffer_schedule(chat_id: str, text: str) -> None:
+    """Schedule a Buffer post. Usage: /buffer_schedule <ISO-8601> | <text>"""
+    if "|" not in text:
+        _reply(chat_id, "Usage: /buffer_schedule <ISO-8601 UTC> | <text>\nExample: /buffer_schedule 2026-04-16T15:00:00.000Z | Hello from the future")
+        return
+    when, _, body = text.partition("|")
+    when, body = when.strip(), body.strip()
+    if not when or not body:
+        _reply(chat_id, "Usage: /buffer_schedule <ISO-8601 UTC> | <text>")
+        return
+    try:
+        from src.agent.agents import buffer_agent
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: buffer_agent.schedule_post(text=body, when=when))
+        if result.get("success"):
+            by_service = result.get("by_service") or {}
+            svc = ", ".join(f"{k}={v}" for k, v in by_service.items())
+            _reply(chat_id, f"⏰ Scheduled for {when}\nServices: {svc}\nPost IDs: {len(result.get('post_ids') or [])}")
+        else:
+            _reply(chat_id, f"❌ Schedule failed: {result.get('error', 'unknown')[:200]}")
+    except Exception as e:
+        logger.exception("buffer_schedule failed")
+        _reply(chat_id, f"/buffer_schedule failed: {e}")
+
+
 _COMMANDS = {
     "/start": _handle_start,
     "/stop": _handle_stop,
     "/status": _handle_status,
     "/brief": _handle_brief,
     "/jobs": _handle_jobs,
+    "/self": _handle_self,
 }
 _ARG_COMMANDS = {
     "/ask": _handle_ask,
@@ -397,6 +655,8 @@ _ARG_COMMANDS = {
     "/unschedule": _handle_unschedule,
     "/exec": _handle_exec,
     "/tools": _handle_tools,
+    "/buffer_now": _handle_buffer_now,
+    "/buffer_schedule": _handle_buffer_schedule,
 }
 
 
@@ -421,14 +681,17 @@ async def _dispatch(text: str, chat_id: str) -> None:
         _reply(
             chat_id,
             "Commands:\n"
-            "/start /stop /status /brief /jobs\n"
-            "/ask <q>              — ask the agent about itself\n"
+            "/start /stop /status /brief /jobs /self\n"
+            "/ask <q>              — chat with the agent about connections, data, capabilities\n"
+            "/self                 — raw dump: LLMs, Buffer channels, Composio env, GA, memory\n"
             "/post <topic>         — run full graph with a topic\n"
             "/post_<platform> [caption]  — single-platform post (twitter/facebook/linkedin/instagram/telegram/blog)\n"
             "/schedule <nl>        — add a cron job from natural language\n"
             "/unschedule <id>      — remove a job\n"
             "/tools [toolkit]      — list Composio toolkits / tool slugs\n"
-            "/exec <SLUG> {json}   — call any Composio tool"
+            "/exec <SLUG> {json}   — call any Composio tool\n"
+            "/buffer_now <text>    — immediate Buffer post to every channel (routes images/video per service)\n"
+            "/buffer_schedule <ISO> | <text> — schedule a Buffer post (e.g. 2026-04-16T15:00:00.000Z | hello)"
         )
 
 

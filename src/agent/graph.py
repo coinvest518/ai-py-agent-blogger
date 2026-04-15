@@ -54,6 +54,7 @@ from src.agent.agents import onchain_agent
 from src.agent.agents import final_report_agent
 from src.agent.agents import engagement_reader_agent
 from src.agent.agents import supervisor_agent
+from src.agent.agents import strategy_agent
 from src.agent.middleware.retry import with_retry
 
 # ── Existing modules kept as-is ────────────────────────────────────────
@@ -133,11 +134,12 @@ def pull_engagement_node(state: AgentState) -> dict:
 
 @traceable(name="research_trends")
 def research_trends_node(state: AgentState) -> dict:
-    """Research trending topics."""
+    """Research trending topics. Honors state["topic_override"] from /post."""
     logger.info("──── RESEARCH ────")
     _broadcast_sync("start_step", "research", "Researching trends…")
 
-    result = research_agent.research_trends()
+    topic_override = (state.get("topic_override") or "").strip() or None
+    result = research_agent.research_trends(topic=topic_override)
     trend_data = result.get("trend_data", "")
 
     if not trend_data or len(trend_data) < 20:
@@ -151,6 +153,19 @@ def research_trends_node(state: AgentState) -> dict:
     return {"trend_data": trend_data}
 
 
+@traceable(name="strategy_brief")
+def strategy_brief_node(state: AgentState) -> dict:
+    """Synthesise engagement + prior-run GA + fresh trends into a content brief."""
+    logger.info("──── STRATEGY BRIEF ────")
+    _broadcast_sync("start_step", "strategy_brief", "Building content strategy from engagement+GA…")
+    result = strategy_agent.run(state)
+    brief = result.get("content_strategy_brief") or {}
+    _broadcast_sync("complete_step", "strategy_brief", {
+        "topic": brief.get("topic"), "angle": (brief.get("angle") or "")[:120],
+    })
+    return result
+
+
 @traceable(name="generate_content")
 def generate_content_node(state: AgentState) -> dict:
     """Generate platform-specific content via AI Decision Engine + content agents."""
@@ -161,6 +176,12 @@ def generate_content_node(state: AgentState) -> dict:
     base_insights = trend_data if trend_data and len(trend_data) > 20 else (
         f"AI automation is transforming business operations in {datetime.now().year}."
     )
+
+    # ── Strategy brief (engagement + GA-aware) goes on TOP so every LLM sees it first ──
+    strategy_brief = state.get("content_strategy_brief") or {}
+    brief_prose = strategy_agent.format_for_prompt(strategy_brief)
+    if brief_prose:
+        base_insights = f"{brief_prose}\n{base_insights}"
 
     # ── Inject shared FDWA knowledge so every agent knows the brand ──
     try:
@@ -174,6 +195,12 @@ def generate_content_node(state: AgentState) -> dict:
     try:
         engine = get_decision_engine()
         strategy = engine.get_content_strategy(trend_data=base_insights)
+        # Operator topic override + strategy brief beat the decision engine's topic pick
+        override_topic = strategy_brief.get("topic") or (state.get("topic_override") or "").strip()
+        if override_topic:
+            strategy["topic"] = override_topic
+        # Carry the strategy brief into downstream content generators
+        strategy["brief"] = strategy_brief
         logger.info("AI strategy: topic=%s, products=%s",
                      strategy.get("topic"), [p["name"][:30] for p in strategy.get("products", [])])
         _broadcast_sync("update", f"Topic: {strategy.get('topic')}")
@@ -549,6 +576,7 @@ workflow = StateGraph(AgentState)
 workflow.add_node("supervisor_plan", supervisor_plan_node)
 workflow.add_node("pull_engagement", pull_engagement_node)
 workflow.add_node("research_trends", research_trends_node)
+workflow.add_node("strategy_brief", strategy_brief_node)
 workflow.add_node("generate_content", generate_content_node)
 workflow.add_node("refine_content", refine_content_node)
 workflow.add_node("sentiment", sentiment_node)
@@ -580,7 +608,8 @@ workflow.set_entry_point("supervisor_plan")
 # Edges — sequential flow
 workflow.add_edge("supervisor_plan", "pull_engagement")
 workflow.add_edge("pull_engagement", "research_trends")
-workflow.add_edge("research_trends", "generate_content")
+workflow.add_edge("research_trends", "strategy_brief")
+workflow.add_edge("strategy_brief", "generate_content")
 workflow.add_edge("generate_content", "refine_content")
 workflow.add_edge("refine_content", "sentiment")
 workflow.add_edge("sentiment", "generate_image")

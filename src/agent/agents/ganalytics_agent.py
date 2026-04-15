@@ -9,11 +9,15 @@ Env:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+GA_PREV_PATH = Path(os.getenv("GA_PREV_SNAPSHOT_PATH", ".ga_prev_snapshot.json"))
 
 
 def _entity() -> Optional[str]:
@@ -92,6 +96,14 @@ def summary() -> Dict[str, Any]:
 
 
 def run(state: dict) -> dict:
-    """Graph entry — writes GA snapshot into state for downstream agents."""
+    """Graph entry — writes GA snapshot into state AND persists to disk.
+
+    The on-disk copy is picked up by strategy_agent on the NEXT cycle so the
+    next run's content is informed by traffic data this run observed.
+    """
     snap = summary()
+    try:
+        GA_PREV_PATH.write_text(json.dumps(snap, default=str), encoding="utf-8")
+    except Exception as e:
+        logger.debug("GA persist failed: %s", e)
     return {"ga_snapshot": snap}

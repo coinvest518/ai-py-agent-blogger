@@ -39,14 +39,22 @@ SEARCH_QUERIES = [
 ]
 
 
-def search_trends() -> dict:
+def search_trends(topic: str | None = None) -> dict:
     """Search for trending topics using SERPAPI (primary) → Tavily (fallback) → cache.
+
+    Args:
+        topic: When provided (e.g. from /post <topic> or strategy node), use it
+            as the search query instead of a random SEARCH_QUERIES entry. Keeps
+            research aligned with the operator's intent.
 
     Returns:
         dict with 'trend_data' (str) and 'source' (str), or 'error'.
     """
     current_year = datetime.now().year
-    query = random.choice(SEARCH_QUERIES).format(year=current_year)
+    if topic and topic.strip():
+        query = f"{topic.strip()} latest news {current_year}"
+    else:
+        query = random.choice(SEARCH_QUERIES).format(year=current_year)
     logger.info("Researching: %s", query)
 
     client = get_composio_client()

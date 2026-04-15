@@ -31,9 +31,15 @@ class AgentState(TypedDict, total=False):
     trend_data: str
     insight: str
 
+    # ── Operator inputs ──
+    topic_override: str  # set by /post <topic> or scheduled job — threads to research + strategy
+
     # ── AI Decision Engine ──
     ai_strategy: dict  # topic, products, cta, platform_guidance, memory_examples
     base_insights: str  # Enriched insights (trend_data + products + CTA)
+
+    # ── Strategy Brief (Phase 18 — engagement+GA-aware) ──
+    content_strategy_brief: dict  # topic, angle, avoid, tone, platform_priorities, reasoning
 
     # ── Platform-specific content (generated independently) ──
     tweet_text: str

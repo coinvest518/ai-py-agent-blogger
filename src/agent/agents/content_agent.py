@@ -75,6 +75,26 @@ _FRAMEWORK_HANDLES = {
 }
 
 
+def _brief_block(strategy: dict | None, platform: str) -> str:
+    """Render the strategy_agent brief (engagement+GA-derived) into the prompt.
+
+    The brief wins over generic insights — it's the cycle's marching order.
+    Empty string when no brief was produced (e.g. supervisor disabled).
+    """
+    if not strategy:
+        return ""
+    brief = strategy.get("brief") or {}
+    if not brief:
+        return ""
+    try:
+        from src.agent.agents.strategy_agent import format_for_prompt, format_platform_hint
+        head = format_for_prompt(brief)
+        tail = format_platform_hint(brief, platform)
+        return (head + tail) if head else ""
+    except Exception:
+        return ""
+
+
 def _monetization_block(strategy: dict | None, platform: str) -> str:
     """Render the CFO monetization angle into a prompt fragment.
 
@@ -141,11 +161,12 @@ def generate_twitter(insights: str, strategy: dict | None = None) -> str:
         elif isinstance(examples, str) and len(examples) > 10:
             memory_hint = f"\nPast high-performing posts:\n{examples[:300]}\n"
 
+    brief = _brief_block(strategy, "twitter")
     monetization = _monetization_block(strategy, "twitter")
     prompt = f"""Current year: {year}. Create a Twitter post based on this insight:
 
 {insights[:300]}
-{memory_hint}{monetization}
+{brief}{memory_hint}{monetization}
 HARD RULES:
 - MAXIMUM 250 characters (leave room for link)
 - Plain text only — NO Markdown
@@ -182,11 +203,12 @@ def generate_facebook(insights: str, strategy: dict | None = None) -> str:
     topic = (strategy or {}).get("topic", "general")
     site = get_site_for_topic(topic)
 
+    brief = _brief_block(strategy, "facebook")
     monetization = _monetization_block(strategy, "facebook")
     prompt = f"""Create a Facebook post based on this insight:
 
 {insights[:500]}
-{monetization}
+{brief}{monetization}
 Requirements:
 - Conversational, builder-to-builder tone
 - 400-600 characters
@@ -257,6 +279,7 @@ def generate_linkedin(insights: str, strategy: dict | None = None) -> str:
         elif isinstance(examples, str) and len(examples) > 10:
             memory_hint = f"\nPast high-performing posts:\n{examples[:300]}\n"
 
+    brief = _brief_block(strategy, "linkedin")
     monetization = _monetization_block(strategy, "linkedin")
     prompt = f"""You are Daniel Wray, founder of FDWA — we build OpenClaw skills and AI agent tooling.
 Write a LinkedIn post for {year}.
@@ -265,7 +288,7 @@ Context/insight:
 {insights[:400]}
 {product_lines}
 {formula}
-{memory_hint}{monetization}
+{brief}{memory_hint}{monetization}
 LINKEDIN RULES:
 - 600-1200 characters MAXIMUM (sweet spot for engagement — LinkedIn hard limit is 3000)
 - NEVER exceed 1200 characters — shorter performs better
@@ -306,11 +329,12 @@ def generate_instagram(insights: str, strategy: dict | None = None) -> str:
     year = datetime.now().year
     topic = (strategy or {}).get("topic", "general")
 
+    brief = _brief_block(strategy, "instagram")
     monetization = _monetization_block(strategy, "instagram")
     prompt = f"""Current year: {year}. Create an Instagram caption:
 
 {insights[:400]}
-{monetization}
+{brief}{monetization}
 Requirements:
 - Visual-first, builder/maker tone
 - 400-600 characters
@@ -355,6 +379,12 @@ def generate_telegram(insights: str, strategy: dict | None = None) -> dict:
     # Build internal briefing
     parts = ["🤖 FDWA Agent Briefing", ""]
     parts.append(f"• Researched: {topic}")
+
+    brief = strategy.get("brief") or {}
+    if brief.get("angle"):
+        parts.append(f"• Angle: {brief['angle'][:140]}")
+    if brief.get("reasoning"):
+        parts.append(f"• Why this: {brief['reasoning'][:140]}")
 
     if products:
         names = ", ".join(p.get("name", "?")[:40] for p in products[:2])

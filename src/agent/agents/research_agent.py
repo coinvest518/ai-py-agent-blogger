@@ -11,10 +11,16 @@ from src.agent.tools.search_tools import search_trends
 logger = logging.getLogger(__name__)
 
 
-def research_trends() -> dict:
-    """Run trend research. Returns dict with 'trend_data' and 'source'."""
-    logger.info("--- RESEARCH AGENT: Fetching trends ---")
-    result = search_trends()
+def research_trends(topic: str | None = None) -> dict:
+    """Run trend research. Returns dict with 'trend_data' and 'source'.
+
+    Args:
+        topic: Optional operator-provided topic (from /post, scheduled job, or
+            strategy brief). Passed into search_trends so SERPAPI/Tavily/Firecrawl
+            all query the actual requested subject instead of a random fallback.
+    """
+    logger.info("--- RESEARCH AGENT: Fetching trends (topic=%s) ---", topic or "random")
+    result = search_trends(topic=topic)
 
     # Enrich with live FDWA site data when Firecrawl is available
     try:
