@@ -259,10 +259,35 @@ def generate_image_with_fallback(
     Returns:
         Dict with success status, image_bytes, provider, model, or error
     """
-    logger.info("🎨 Attempting 3-tier image generation: POLLINATIONS → FREEPIK → HUGGINGFACE")
-    
-    # Step 1: Try Pollinations.ai (PRIMARY - Best quality, free tier)
-    logger.info("🌸 Trying Pollinations.ai first...")
+    logger.info("🎨 Attempting 4-tier image generation: NVIDIA FLUX → POLLINATIONS → FREEPIK → HUGGINGFACE")
+
+    # Step 0: Try NVIDIA FLUX (PRIMARY - free tier on existing NVIDIA_API_KEY, high quality, fast)
+    if os.getenv("NVIDIA_API_KEY"):
+        try:
+            from src.agent.nvidia_image_gen import generate_image_nvidia, refine_prompt_with_mistral
+
+            refined = refine_prompt_with_mistral(prompt)
+            nvidia_prompt = refined or prompt
+            if refined:
+                logger.info("🧠 Mistral refined image prompt (%d→%d chars)", len(prompt), len(refined))
+
+            nvidia_model = os.getenv("NVIDIA_IMAGE_MODEL", "flux-schnell")
+            nvidia_result = generate_image_nvidia(
+                prompt=nvidia_prompt,
+                model=nvidia_model,
+                width=width,
+                height=height,
+                timeout=timeout,
+            )
+            if nvidia_result.get("success"):
+                logger.info("✅ SUCCESS with NVIDIA FLUX!")
+                return nvidia_result
+            logger.warning("⚠️ NVIDIA FLUX failed: %s", nvidia_result.get("error"))
+        except Exception as e:
+            logger.warning("⚠️ NVIDIA FLUX error: %s", e)
+
+    # Step 1: Try Pollinations.ai (FIRST FALLBACK - Best quality, free tier)
+    logger.info("🌸 Trying Pollinations.ai...")
     result = generate_image_pollinations(
         prompt=prompt,
         model=model,
@@ -270,7 +295,7 @@ def generate_image_with_fallback(
         height=height,
         timeout=timeout
     )
-    
+
     if result["success"]:
         logger.info("✅ SUCCESS with Pollinations.ai!")
         result["provider"] = "Pollinations.ai"
