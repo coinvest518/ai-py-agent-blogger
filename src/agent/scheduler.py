@@ -60,40 +60,52 @@ async def run_agent_task() -> dict:
         await broadcaster.update("Initializing agent graph...")
         result = graph.invoke({})
 
-        # If any platform step was skipped/failed, send an immediate Telegram alert so operators see why the flow stopped
+        # Always send a full per-platform summary to Telegram (success or failure)
         try:
             from src.agent.tools.composio_tools import send_telegram_alert as send_telegram_text
 
-            problems = []
-            # platform-level checks (treat missing twitter/facebook IDs as failures)
-            checks = {
-                "telegram": str(result.get("telegram_status", "")).lower(),
-                "linkedin": str(result.get("linkedin_status", "")).lower(),
-                "instagram": str(result.get("instagram_status", "")).lower(),
-                "twitter": "ok" if result.get("twitter_url") else "missing",
-                "facebook": "ok" if result.get("facebook_post_id") else "missing",
-                "blog": str(result.get("blog_status", "")).lower(),
-            }
-            for name, val in checks.items():
-                if any(x in val for x in ("skipped", "failed", "error")) or val == "missing":
-                    problems.append(f"{name}: {result.get(name + ('_status' if name in ('telegram','linkedin','instagram','blog') else '_post_id'), val)}")
+            def _badge(val: str) -> str:
+                v = str(val or "").lower()
+                if not v or v in ("n/a", "missing"):
+                    return "⚠️"
+                if "skipped" in v or "skip" in v:
+                    return "⏭️"
+                if "fail" in v or "error" in v or "expired" in v:
+                    return "❌"
+                return "✅"
 
+            fb_status = result.get("facebook_status") or (f"Posted: {result.get('facebook_post_id')}" if result.get("facebook_post_id") else "missing")
+            tw_status = "skipped_by_config" if result.get("twitter_post_id") == "skipped_by_config" else (f"Posted: {result.get('twitter_url')}" if result.get("twitter_url") else "missing")
+            li_status = result.get("linkedin_status") or "missing"
+            ig_status = result.get("instagram_status") or "missing"
+            tg_status = result.get("telegram_status") or "missing"
+            blog_status = result.get("blog_status") or "missing"
+            buffer_status = result.get("buffer_status") or "missing"
+            gdoc_url = result.get("gdocs_url") or ""
+            gdoc_status = result.get("gdocs_status") or "missing"
+
+            lines = [
+                f"🤖 FDWA Agent run — {datetime.now().isoformat()}",
+                f"{_badge(fb_status)} facebook: {str(fb_status)[:120]}",
+                f"{_badge(tw_status)} twitter: {str(tw_status)[:120]}",
+                f"{_badge(li_status)} linkedin: {str(li_status)[:120]}",
+                f"{_badge(ig_status)} instagram: {str(ig_status)[:120]}",
+                f"{_badge(tg_status)} telegram: {str(tg_status)[:120]}",
+                f"{_badge(blog_status)} blog: {str(blog_status)[:120]}",
+                f"{_badge(buffer_status)} buffer: {str(buffer_status)[:120]}",
+            ]
+            if gdoc_url:
+                lines.append(f"📄 gdoc: {gdoc_url}")
+            else:
+                lines.append(f"📄 gdoc: {str(gdoc_status)[:120]}")
             if result.get("error"):
-                problems.append(f"graph_error: {result.get('error')}")
+                lines.append(f"⚠️ graph_error: {str(result.get('error'))[:200]}")
 
-            if problems:
-                summary = (
-                    "⚠️ FDWA Agent run completed with issues — some steps were skipped or failed.\n"
-                    f"Time: {datetime.now().isoformat()}\n"
-                    "Problems:\n" + "\n".join(problems)
-                )
-                # Best-effort send (safe if Telegram not configured)
-                try:
-                    send_telegram_text(summary)
-                except Exception:
-                    pass
+            try:
+                send_telegram_text("\n".join(lines))
+            except Exception:
+                pass
         except Exception:
-            # Don't let alerting interfere with normal run
             pass
 
         # Update status

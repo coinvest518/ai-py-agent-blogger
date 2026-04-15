@@ -70,7 +70,7 @@ def run(state: dict) -> dict:
     """
     logger.info("--- LINKEDIN AGENT ---")
 
-    daily_limit = int(os.getenv("LINKEDIN_DAILY_LIMIT", "1"))
+    daily_limit = int(os.getenv("LINKEDIN_DAILY_LIMIT", "3"))
     posted_today = _linkedin_posts_today()
     if posted_today >= daily_limit:
         logger.info("LinkedIn daily cap reached (%d/%d) — skipping", posted_today, daily_limit)

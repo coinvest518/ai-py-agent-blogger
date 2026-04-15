@@ -317,6 +317,9 @@ def generate_image_node(state: AgentState) -> dict:
 @traceable(name="post_twitter")
 @with_retry(max_attempts=2)
 def post_twitter_node(state: AgentState) -> dict:
+    if os.getenv("SKIP_TWITTER", "").lower() in ("1", "true", "yes"):
+        logger.info("post_twitter skipped by SKIP_TWITTER env")
+        return {"twitter_url": "", "twitter_post_id": "skipped_by_config"}
     if supervisor_agent.should_skip(state, "post_twitter"):
         logger.info("post_twitter skipped by supervisor plan")
         return {"twitter_url": "", "twitter_post_id": "skipped_by_supervisor"}

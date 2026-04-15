@@ -59,14 +59,32 @@ def run(state: dict) -> dict:
 
 
 def comment_on_post(state: dict) -> dict:
-    """Comment on our own Facebook post with CTA link."""
+    """Comment on our own Facebook post with LLM-generated CTA."""
     logger.info("--- FACEBOOK COMMENT ---")
     post_id = state.get("facebook_post_id")
     if not post_id:
         return {"comment_status": "Skipped: no post ID"}
 
+    from src.agent.core.config import get_site_for_topic
+    from src.agent.llm_router import route
+    from src.agent.agents.content_agent import _llm_generate
+
+    topic = (state.get("strategy") or {}).get("topic", "general")
+    site = get_site_for_topic(topic)
+    fb_text = state.get("facebook_text", "")[:400]
+
+    prompt = (
+        f"Write a single 1-line follow-up comment (<140 chars) on our own Facebook post. "
+        f"Post topic: {topic}. Post excerpt: {fb_text}\n"
+        f"End with the link {site}. No hashtags. Plain text, 1-2 emojis max."
+    )
+    comment_text = _llm_generate(prompt, "Facebook self-comment")
+    if not comment_text:
+        logger.warning("Facebook comment LLM empty — skipping self-comment")
+        return {"comment_status": "Skipped: LLM empty"}
+
     time.sleep(10)
-    result = comment_facebook(post_id, "Learn more at https://fdwa.site 🚀")
+    result = comment_facebook(post_id, comment_text)
 
     if result.get("success"):
         return {"comment_status": f"Commented: {result.get('comment_id', 'ok')}"}

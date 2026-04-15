@@ -422,12 +422,14 @@ def upload_to_imgbb(image_bytes: bytes, timeout: int = 30) -> Dict[str, Any]:
         data = response.json()
         
         if data.get("success"):
-            url = data["data"]["url"]
+            payload = data["data"]
+            # Prefer direct CDN file URL (image.url) over the generic url which can sometimes serve HTML
+            url = payload.get("image", {}).get("url") or payload["url"]
             logger.info(f"✅ Image uploaded to: {url}")
             return {
                 "success": True,
                 "url": url,
-                "delete_url": data["data"].get("delete_url")
+                "delete_url": payload.get("delete_url")
             }
         else:
             error = data.get("error", {}).get("message", "Unknown error")

@@ -737,23 +737,10 @@ def generate_and_send_blog(trend_data: str = None, image_url: str | None = None,
     if image_source:
         logger.info("Image URL for blog: %s", image_source[:60] if image_source else "None")
     
-    # Always require trend_data for unique blog content
+    # Always require trend_data for unique blog content — no hardcoded fallbacks
     if not trend_data or not trend_data.strip():
-        # Get current year for fallback trends
-        from datetime import datetime
-        current_year = datetime.now().year
-        
-        fallback_trends = [
-            "AI automation trends show 300% increase in small business adoption. Workflow automation saves 15+ hours per week.",
-            f"Digital product sales are booming in {current_year}, with entrepreneurs earning passive income from ebooks and guides.",
-            "Credit repair with AI is helping thousands improve their scores faster than ever before.",
-            "Business automation tools are saving SMBs 20+ hours per week and increasing revenue.",
-            "Financial empowerment through tech: more people are using AI to manage money and build wealth.",
-            "Social media marketing strategies are evolving with AI-powered content creation tools.",
-            "Entrepreneurs are building multiple income streams through digital products and automation.",
-            "The gig economy is transforming with AI tools that help freelancers scale their businesses."
-        ]
-        trend_data = random.choice(fallback_trends)
+        logger.warning("Blog agent received no trend_data — skipping blog (no hardcoded fallback)")
+        return {"blog_status": "skipped_no_trends", "email_status": "skipped_no_trends"}
 
     # Generate blog content with image URL embedded in HTML
     blog_result = generate_blog_content(trend_data, image_path=image_source, context=context)

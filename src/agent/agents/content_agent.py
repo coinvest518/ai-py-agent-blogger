@@ -159,8 +159,8 @@ Output ONLY the tweet text."""
 
     tweet = _llm_generate(prompt, "Twitter content")
     if not tweet:
-        first = insights.split("\n")[0][:100]
-        tweet = f"🚀 {first}\n\n#YBOT #AIAutomation"
+        logger.warning("Twitter LLM returned empty — skipping tweet (no hardcoded fallback)")
+        return ""
 
     # Append correct site link
     suffix = f" {site}"
@@ -202,13 +202,8 @@ Output ONLY the Facebook post text."""
 
     post = _llm_generate(prompt, "Facebook content")
     if not post:
-        first = insights.split("\n")[0][:150]
-        post = (
-            f"💡 {first}\n\n"
-            f"AI automation is changing everything for small businesses.\n\n"
-            f"Learn more: {site}\n\n"
-            f"#AIAutomation #BusinessGrowth"
-        )
+        logger.warning("Facebook LLM returned empty — skipping post (no hardcoded fallback)")
+        return ""
 
     if site not in post:
         post += f"\n\nLearn more: {site}"
@@ -289,16 +284,8 @@ Output ONLY the LinkedIn post text."""
 
     post = _llm_generate(prompt, "LinkedIn content")
     if not post:
-        first = insights.split("\n")[0][:120]
-        post = (
-            f"📊 {first}\n\n"
-            f"We're building AI automation tools that help SMBs save 20+ hours/week.\n\n"
-            f"✅ AI Stack Map — free workflow automation guide\n"
-            f"✅ ConsumerAI — credit report analyzer\n"
-            f"✅ Custom AI agents for any business need\n\n"
-            f"Learn more: {site}\n\n"
-            f"#AI #Automation #SmallBusiness #Entrepreneur"
-        )
+        logger.warning("LinkedIn LLM returned empty — skipping post (no hardcoded fallback)")
+        return ""
 
     if site not in post:
         post += f"\n\nLearn more: {site}"
@@ -338,15 +325,8 @@ Output ONLY the Instagram caption."""
 
     caption = _llm_generate(prompt, "Instagram content")
     if not caption:
-        first = insights.split("\n")[0][:80]
-        caption = (
-            f"✨ {first}\n\n"
-            f"🤖 AI automation isn't just for tech companies anymore\n"
-            f"💎 It's for entrepreneurs who want freedom\n"
-            f"🚀 It's for businesses ready to scale\n\n"
-            f"🔗 Link in bio\n\n"
-            f"#AIAutomation #FinancialFreedom #Entrepreneur #PassiveIncome"
-        )
+        logger.warning("Instagram LLM returned empty — skipping caption (no hardcoded fallback)")
+        return ""
 
     limit = PLATFORM_LIMITS["instagram"]
     if len(caption) > limit:

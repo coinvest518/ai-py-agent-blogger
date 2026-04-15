@@ -61,12 +61,12 @@ Consider:
 - Recent Mem0 entries (what the agent already did, what failed, what's been tried)
 - Known quotas:
   - upload_post: DISABLED (no video generator yet). Always include "post_upload_post" in `skips`.
-  - LinkedIn: daily soft-cap (LINKEDIN_DAILY_LIMIT). If already posted today, add "post_linkedin" to skips.
+  - LinkedIn: soft-cap is enforced inside the LinkedIn node itself (LINKEDIN_DAILY_LIMIT default 3). Do NOT add post_linkedin to skips — let the node decide.
 - Current UTC time
 
 HARD RULES for `skips`:
-- NEVER include post_facebook, post_instagram, or post_twitter — these core channels always run.
-- ONLY legitimate skips are: post_upload_post (always) and post_linkedin (only when daily limit hit).
+- NEVER include post_facebook, post_instagram, post_twitter, or post_linkedin — these core channels always run and enforce their own caps internally.
+- ONLY legitimate skip is: post_upload_post (always).
 - Do not invent new skip targets.
 
 Output ONLY a JSON object (no prose, no markdown fences) with this shape:
@@ -132,8 +132,9 @@ def plan(state: dict) -> dict:
     # Always force-skip upload_post (no video gen yet)
     if "post_upload_post" not in skips:
         skips.append("post_upload_post")
-    # Core channels must always run — strip if LLM put them in skips
-    for core in ("post_facebook", "post_instagram", "post_twitter"):
+    # Core channels must always run — strip if LLM put them in skips (LinkedIn
+    # enforces its own daily cap inside the node; supervisor must not skip it).
+    for core in ("post_facebook", "post_instagram", "post_twitter", "post_linkedin"):
         if core in skips:
             skips.remove(core)
     plan_obj["skips"] = skips

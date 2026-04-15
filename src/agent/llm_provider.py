@@ -87,17 +87,48 @@ def _effective_env_value(env_key: str) -> Optional[str]:
     return None
 
 PROVIDER_REGISTRY: List[Tuple[str, str, str, Optional[str]]] = [
-    ("Cloudflare", "CLOUDFLARE_AI_API_KEY", "CLOUDFLARE_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
+    # Primary (health-verified as of 2026-04-14): Nebius + NVIDIA are the only free providers with live quota.
     ("Nebius", "NEBIUS_API_KEY", "LLM_MODEL_NEBIUS", "meta-llama/Llama-3.3-70B-Instruct"),
-    ("Cerebras", "CEREBRAS_API_KEY", "LLM_MODEL_CEREBRAS", "gpt-oss-120b"),
     ("NVIDIA", "NVIDIA_API_KEY", "LLM_MODEL_NVIDIA", "meta/llama-3.3-70b-instruct"),
-    ("Qwen", "QWEN_API_KEY", "LLM_MODEL_QWEN", "qwen-2.1-mini"),
-    # Opt-in-only providers (disabled by default — require *_ENABLE=true in env):
-    ("Moonshot", "MOONSHOT_API_KEY", "LLM_MODEL_MOONSHOT", "moonshot-v1-8k"),
+    # Secondary (paid quota / legacy fallback) — used as primary now since the rest are dead:
+    ("Mistral", "MISTRAL_API_KEY", "LLM_MODEL_MISTRAL", "mistral-large-2512"),
+    ("OpenRouter", "OPENROUTER_API_KEY", "LLM_MODEL_OPENROUTER", "openrouter/free"),
+    # Cooldown (daily/monthly quota resets expected) — opt-in via *_ENABLE=true:
+    ("Cloudflare", "CLOUDFLARE_AI_API_KEY", "CLOUDFLARE_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
     ("HuggingFace", "HF_TOKEN", "LLM_MODEL_HF", "meta-llama/Meta-Llama-3.1-8B-Instruct"),
-    # Google goes LAST — free-tier daily quota exhausts fast, reserve it for true fallback.
+    # Dead providers (payment required / suspended) — must be explicitly re-enabled via *_ENABLE=true:
+    ("Cerebras", "CEREBRAS_API_KEY", "LLM_MODEL_CEREBRAS", "gpt-oss-120b"),
+    ("Moonshot", "MOONSHOT_API_KEY", "LLM_MODEL_MOONSHOT", "moonshot-v1-8k"),
     ("Google", "GOOGLE_AI_API_KEY", "LLM_MODEL_GOOGLE", "gemini-2.0-flash"),
+    ("Qwen", "QWEN_API_KEY", "LLM_MODEL_QWEN", "qwen-2.1-mini"),
 ]
+
+
+# Per-purpose provider preference — each task prefers a specific model to spread
+# rate-limit pressure across providers. Cascade still runs on failure.
+PURPOSE_PROVIDER_PREFERENCE: Dict[str, List[str]] = {
+    "facebook": ["Nebius", "NVIDIA", "Mistral", "OpenRouter"],
+    "linkedin": ["NVIDIA", "Nebius", "Mistral", "OpenRouter"],
+    "instagram": ["Mistral", "Nebius", "NVIDIA", "OpenRouter"],
+    "twitter": ["NVIDIA", "Nebius", "Mistral", "OpenRouter"],
+    "blog": ["Nebius", "Mistral", "NVIDIA", "OpenRouter"],
+    "briefing": ["OpenRouter", "Mistral", "Nebius", "NVIDIA"],
+    "strategy": ["Nebius", "NVIDIA", "Mistral", "OpenRouter"],
+    "image": ["NVIDIA", "Nebius", "Mistral", "OpenRouter"],
+    "comment": ["Mistral", "OpenRouter", "Nebius", "NVIDIA"],
+    "supervisor": ["OpenRouter", "Mistral", "Nebius", "NVIDIA"],
+    "chat": ["NVIDIA", "Nebius", "Mistral", "OpenRouter"],
+}
+
+
+# Providers explicitly in cooldown (quota reset expected). Logged at startup so
+# the main agent / operator knows to wait rather than troubleshoot.
+COOLDOWN_PROVIDERS = {"Cloudflare": "daily neurons quota — resets 00:00 UTC",
+                      "HuggingFace": "monthly inference credits — wait for billing reset"}
+DEAD_PROVIDERS = {"Cerebras": "402 payment required",
+                  "Moonshot": "account suspended (insufficient balance)",
+                  "Google": "429 quota exhausted",
+                  "Qwen": "QWEN_API_KEY not set / 404 endpoint"}
 
 
 class CascadingLLMWrapper:
@@ -116,33 +147,64 @@ class CascadingLLMWrapper:
         self.provider_names = []
         
     def _get_all_providers(self):
-        """Get list of all available LLM providers in priority order."""
+        """Get list of all available LLM providers in priority order.
+
+        Gating logic:
+          - DEAD_PROVIDERS are blocked unless their *_ENABLE=true flag is set.
+          - COOLDOWN_PROVIDERS (Cloudflare, HuggingFace) are blocked unless *_ENABLE=true.
+          - LLM_DISABLED_PROVIDERS env (comma list) forces-block any provider name.
+          - Purpose preference reorders the cascade so each task hits a different
+            primary first, spreading rate-limit pressure.
+        """
+        init_map = {
+            "Cloudflare": self._init_cloudflare,
+            "Nebius": self._init_nebius,
+            "Cerebras": self._init_cerebras,
+            "NVIDIA": self._init_nvidia,
+            "Moonshot": self._init_moonshot,
+            "HuggingFace": self._init_huggingface,
+            "Google": self._init_google,
+            "Qwen": self._init_qwen,
+            "Mistral": self._init_mistral,
+            "OpenRouter": self._init_openrouter,
+        }
+
+        disabled_env = {s.strip() for s in os.getenv("LLM_DISABLED_PROVIDERS", "").split(",") if s.strip()}
+        enable_flags = {
+            "Cloudflare": os.getenv("CLOUDFLARE_ENABLE", "false").lower() in ("1", "true", "yes"),
+            "HuggingFace": os.getenv("HF_ENABLE", "false").lower() in ("1", "true", "yes"),
+            "Cerebras": os.getenv("CEREBRAS_ENABLE", "false").lower() in ("1", "true", "yes"),
+            "Moonshot": os.getenv("MOONSHOT_ENABLE", "false").lower() in ("1", "true", "yes"),
+            "Google": os.getenv("GOOGLE_ENABLE", "false").lower() in ("1", "true", "yes"),
+            "Qwen": os.getenv("QWEN_ENABLE", "false").lower() in ("1", "true", "yes"),
+        }
+
         providers = []
-        for name, env_key, _, default_model in PROVIDER_REGISTRY:
+        for name, env_key, _, _default_model in PROVIDER_REGISTRY:
+            if name in disabled_env:
+                continue
             if not _effective_env_value(env_key):
                 continue
             if name == "Cloudflare" and not os.getenv("CLOUDFLARE_ACCOUNT_ID"):
                 continue
-            if name == "HuggingFace" and os.getenv("HF_ENABLE", "false").lower() not in ("1", "true", "yes"):
+            if name in DEAD_PROVIDERS and not enable_flags.get(name, False):
                 continue
-            if name == "Moonshot" and os.getenv("MOONSHOT_ENABLE", "false").lower() not in ("1", "true", "yes"):
+            if name in COOLDOWN_PROVIDERS and not enable_flags.get(name, False):
                 continue
-            if name == "Cloudflare":
-                providers.append((name, self._init_cloudflare))
-            elif name == "Google":
-                providers.append((name, self._init_google))
-            elif name == "Qwen":
-                providers.append((name, self._init_qwen))
-            elif name == "Nebius":
-                providers.append((name, self._init_nebius))
-            elif name == "Cerebras":
-                providers.append((name, self._init_cerebras))
-            elif name == "Moonshot":
-                providers.append((name, self._init_moonshot))
-            elif name == "NVIDIA":
-                providers.append((name, self._init_nvidia))
-            elif name == "HuggingFace":
-                providers.append((name, self._init_huggingface))
+            init = init_map.get(name)
+            if init is None:
+                continue
+            providers.append((name, init))
+
+        # Reorder by per-purpose preference (preferred primaries first, rest follow).
+        purpose_key = next((k for k in PURPOSE_PROVIDER_PREFERENCE if k in (self.purpose or "").lower()), None)
+        if purpose_key:
+            pref = PURPOSE_PROVIDER_PREFERENCE[purpose_key]
+            preferred = [p for p in providers if p[0] in pref]
+            preferred.sort(key=lambda p: pref.index(p[0]) if p[0] in pref else 99)
+            rest = [p for p in providers if p[0] not in pref]
+            providers = preferred + rest
+
         self.provider_names = [name for name, _ in providers]
         if not providers:
             providers.extend(self._legacy_fallback_providers())
@@ -541,6 +603,12 @@ def get_llm(purpose: str = "general", structured_output_schema=None):
         raise RuntimeError("No LLM providers configured. Set at least one API key: QWEN_API_KEY, CLOUDFLARE_AI_API_KEY, NEBIUS_API_KEY, CEREBRAS_API_KEY, MOONSHOT_API_KEY, NVIDIA_API_KEY, GOOGLE_AI_API_KEY, HF_TOKEN")
     
     logger.info(f"✓ Cascading LLM initialized for {purpose} with {len(providers)} providers: {', '.join([p[0] for p in providers])}")
+    cooldown_active = [n for n in COOLDOWN_PROVIDERS if n not in [p[0] for p in providers]]
+    dead_blocked = [n for n in DEAD_PROVIDERS if n not in [p[0] for p in providers]]
+    if cooldown_active:
+        logger.info("🧊 LLMs in cooldown (waiting for quota reset): %s", ", ".join(f"{n} ({COOLDOWN_PROVIDERS[n]})" for n in cooldown_active))
+    if dead_blocked:
+        logger.info("⛔ LLMs blocked as dead: %s", ", ".join(f"{n} ({DEAD_PROVIDERS[n]})" for n in dead_blocked))
     return wrapper
 
 

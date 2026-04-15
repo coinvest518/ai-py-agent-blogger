@@ -214,11 +214,23 @@ async def _handle_post(chat_id: str, topic: str) -> None:
 
 async def _handle_brief(chat_id: str) -> None:
     try:
-        from src.agent.agents import final_report_agent
+        from src.agent.agents import final_report_agent, gdocs_agent
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, lambda: final_report_agent.run({}))
         md = result.get("final_briefing_markdown", "(empty briefing)")
         _reply(chat_id, md[:3500])
+        try:
+            doc_result = await loop.run_in_executor(
+                None, lambda: gdocs_agent.run({"final_briefing_markdown": md})
+            )
+            doc_url = doc_result.get("gdocs_url")
+            if doc_url:
+                _reply(chat_id, f"📄 Google Doc: {doc_url}")
+            else:
+                _reply(chat_id, f"📄 {doc_result.get('gdocs_status', 'gdoc not written')}")
+        except Exception as doc_e:
+            logger.exception("brief gdoc failed")
+            _reply(chat_id, f"📄 gdoc failed: {doc_e}")
     except Exception as e:
         logger.exception("brief failed")
         _reply(chat_id, f"/brief failed: {e}")

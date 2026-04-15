@@ -164,13 +164,14 @@ def upload_to_imgbb(image_bytes: bytes, timeout: int = 30) -> Dict[str, Any]:
         if response.status_code == 200:
             result = response.json()
             if result.get("success"):
-                image_url = result["data"]["url"]
+                # Prefer the direct CDN file URL (image.url) over the generic url/display_url
+                data = result["data"]
+                image_url = data.get("image", {}).get("url") or data["url"]
                 logger.info(f"✅ Image uploaded to imgbb: {image_url}")
                 return {
                     "success": True,
                     "url": image_url,
-                    "delete_url": result["data"].get("delete_url"),
-                    "display_url": result["data"].get("display_url")
+                    "delete_url": data.get("delete_url"),
                 }
             else:
                 error_msg = result.get("error", {}).get("message", "Upload failed")

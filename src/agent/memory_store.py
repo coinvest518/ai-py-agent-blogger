@@ -428,13 +428,32 @@ class AgentMemoryStore:
             return False
 
     def _astra_create_collection(self, name: str) -> bool:
-        """Create a collection with vectorize enabled (best-effort)."""
+        """Create a collection with vectorize + filterable indexing (best-effort)."""
         try:
-            self._astra_db.create_collection(name)
+            from astrapy.info import (
+                CollectionDefinition,
+                CollectionVectorOptions,
+                VectorServiceOptions,
+            )
+            definition = CollectionDefinition(
+                vector=CollectionVectorOptions(
+                    service=VectorServiceOptions(
+                        provider="nvidia",
+                        model_name="NV-Embed-QA",
+                    ),
+                ),
+                indexing={"allow": ["_type", "topic", "platform", "timestamp", "token_symbol"]},
+            )
+            self._astra_db.create_collection(name, definition=definition)
             return True
         except Exception as e:
-            logger.debug("Astra create_collection('%s') failed: %s", name, e)
-            return False
+            logger.warning("Astra create_collection('%s') failed: %s", name, e)
+            try:
+                self._astra_db.create_collection(name)
+                return True
+            except Exception as e2:
+                logger.debug("Astra bare create_collection('%s') also failed: %s", name, e2)
+                return False
 
     def _astra_insert(self, doc: Dict) -> bool:
         """Insert a document into the appropriate Astra collection (by `_type`)."""
