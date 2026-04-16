@@ -9,7 +9,7 @@ import time
 
 import schedule
 
-from src.agent.graph import graph
+from src.agent.graph import execute
 
 # Configure logging
 logging.basicConfig(
@@ -27,7 +27,7 @@ def run_fdwa_agent():
         logging.info("🤖 Starting FDWA Agent execution...")
         
         # Run the autonomous agent
-        final_state = graph.invoke({})
+        final_state = execute({})
         
         # Log results
         tweet = final_state.get('tweet_text', 'N/A')

@@ -411,10 +411,10 @@ async def _handle_post(chat_id: str, topic: str) -> None:
         return
     _reply(chat_id, f"🚀 Launching graph run with topic override: {topic[:120]}")
     try:
-        from src.agent.graph import graph
+        from src.agent.graph import execute
         loop = asyncio.get_event_loop()
         state = {"topic_override": topic, "trend_data": topic}
-        result = await loop.run_in_executor(None, lambda: graph.invoke(state))
+        result = await loop.run_in_executor(None, lambda: execute(state))
         _reply(chat_id, _build_run_summary(result, topic=topic))
     except Exception as e:
         logger.exception("forced post failed")

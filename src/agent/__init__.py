@@ -1,11 +1,16 @@
 """New LangGraph Agent.
 
 This module defines a custom graph.
+
+Lazy-load `graph` to avoid importing the entire agent package during
+lightweight imports of submodules (prevents circular/expensive imports).
 """
 
-try:
-    from agent.graph import graph
-except ImportError:
-    from src.agent.graph import graph
-
 __all__ = ["graph"]
+
+def __getattr__(name: str):
+    if name == "graph":
+        from .graph import graph
+
+        return graph
+    raise AttributeError(f"module {__name__} has no attribute {name}")

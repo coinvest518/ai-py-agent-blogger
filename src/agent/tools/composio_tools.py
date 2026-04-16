@@ -10,18 +10,27 @@ import os
 import json
 from typing import Dict, List, Optional
 
-from composio import Composio
+try:
+    from composio import Composio
+    COMPOSIO_AVAILABLE = True
+except Exception as e:
+    Composio = None  # type: ignore[assignment]
+    COMPOSIO_AVAILABLE = False
+    logging.getLogger(__name__).warning("Composio import failed: %s", e)
 from dotenv import load_dotenv
 
-from src.agent.core.config import (
-    COMPOSIO_API_KEY,
-    COMPOSIO_ENTITY_ID,
-    FACEBOOK_PAGE_ID,
-    INSTAGRAM_USER_ID,
-    LINKEDIN_AUTHOR_URN,
-)
-
+# Load .env first so os.getenv will include values from the repo .env file
 load_dotenv()
+import os
+
+# Read key Composio-related env vars directly to avoid importing
+# src.agent.core.config at module import time (prevents import side-effects
+# when scripts load this module for lightweight checks).
+COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
+COMPOSIO_ENTITY_ID = os.getenv("COMPOSIO_ENTITY_ID") or os.getenv("COMPOSIO_USER_ID")
+FACEBOOK_PAGE_ID = os.getenv("FACEBOOK_PAGE_ID")
+INSTAGRAM_USER_ID = os.getenv("INSTAGRAM_USER_ID") or os.getenv("INSTAGRAM_USER_NAME")
+LINKEDIN_AUTHOR_URN = os.getenv("LINKEDIN_AUTHOR_URN")
 logger = logging.getLogger(__name__)
 
 # Shared cached client
@@ -58,13 +67,13 @@ def get_composio_client() -> Composio:
     provided, they are passed to the SDK so manual tool execution can succeed.
     """
     global _client
+    if not COMPOSIO_AVAILABLE:
+        raise RuntimeError("Composio is unavailable in this environment")
     if _client is None:
         dangerously = os.getenv("COMPOSIO_DANGEROUSLY_SKIP_VERSION_CHECK", "true").lower() in ("1", "true", "yes")
         toolkit_versions = _env_toolkit_versions() or None
         try:
             if dangerously:
-                # When skipping version check, don't pass toolkit_versions — the SDK
-                # otherwise still enforces a version on any toolkit NOT in the map.
                 logger.debug("Initializing Composio with dangerously_skip_version_check=True")
                 _client = Composio(
                     api_key=COMPOSIO_API_KEY,
@@ -111,12 +120,18 @@ def _execute_with_fallback(slug: str, arguments: dict, user_id: str) -> dict:
     err = resp.get("error", "")
     msg = json.dumps(err) if isinstance(err, (dict, list)) else str(err)
     msg_l = msg.lower()
+    # Consider additional error signatures that indicate a toolkit/version
+    # mismatch so we attempt the toolkit-version fallbacks below.
     should_fallback = (
         "not found" in msg_l
         or "toolnotfound" in msg_l
         or "tool_not_found" in msg_l
         or "tool not found" in msg_l
         or "toolkit version not specified" in msg_l
+        or "nonexistent_version" in msg_l
+        or "nonexistent version" in msg_l
+        or "requested version" in msg_l
+        or "not active" in msg_l
     )
 
     # Try canonical alias list first
@@ -457,6 +472,136 @@ def post_linkedin(author_urn: str | None, text: str) -> dict:
         )
         if resp.get("successful"):
             return {"success": True}
+        return {"success": False, "error": resp.get("error", "Unknown")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def post_linkedin_with_image(author_urn: str | None, text: str, image_url: str | None = None,
+                             image_bytes: bytes | None = None, mimetype: str = "image/jpeg",
+                             filename: str = "image.jpg") -> dict:
+    """Post to LinkedIn with an attached image.
+
+    Workflow:
+      1. Initialize image upload via LINKEDIN_INITIALIZE_IMAGE_UPLOAD
+      2. PUT bytes to the returned upload URL
+      3. Call LINKEDIN_CREATE_LINKED_IN_POST with the image URN
+
+    This is best-effort: Composio toolkit implementations vary, so we
+    try several likely response keys for upload URL / image URN.
+    """
+    urn = get_linkedin_author_urn(author_urn)
+    entity = _entity()
+    if not urn:
+        return {"success": False, "error": "LINKEDIN_AUTHOR_URN not set or discoverable from Composio"}
+    if not entity:
+        return {"success": False, "error": "COMPOSIO_ENTITY_ID not set"}
+
+    if not image_url and not image_bytes:
+        # Nothing to attach — fall back to text-only post
+        return post_linkedin(author_urn, text)
+
+    try:
+        # Acquire image bytes if only a URL was provided
+        if image_url and not image_bytes:
+            try:
+                import requests
+
+                r = requests.get(image_url, timeout=30)
+                if r.status_code != 200:
+                    return {"success": False, "error": f"Image download failed: HTTP {r.status_code}"}
+                image_bytes = r.content
+            except Exception as e:
+                return {"success": False, "error": f"Image download failed: {e}"}
+
+        # Initialize upload via Composio toolkit
+        init = _execute_with_fallback(
+            "LINKEDIN_INITIALIZE_IMAGE_UPLOAD",
+            {"owner": urn, "file_name": filename, "mimetype": mimetype},
+            entity,
+        )
+        if not init.get("successful"):
+            return {"success": False, "error": init.get("error", "Initialize upload failed")}
+
+        data = init.get("data") or {}
+        # Try common field names for upload URL and image URN
+        upload_url = _safe_get(data, "upload_url", "uploadUrl", "upload_uri", "uploadUri")
+        # include common field names like 'image' returned by some toolkits
+        image_urn = _safe_get(data, "image_urn", "imageUrn", "image", "urn", "id", "asset", "value")
+
+        # PUT bytes to the upload URL when provided
+        if upload_url and image_bytes:
+            try:
+                import requests
+
+                hdrs = {"Content-Type": mimetype}
+                put = requests.put(upload_url, data=image_bytes, headers=hdrs, timeout=60)
+                if put.status_code not in (200, 201, 204):
+                    return {"success": False, "error": f"Upload failed: HTTP {put.status_code}: {put.text[:300]}"}
+            except Exception as e:
+                return {"success": False, "error": f"Upload failed: {e}"}
+
+        # If image_urn not returned in init response, try nested locations
+        if not image_urn:
+            # Some toolkits return the URN in init.data.image or init.data.asset
+            if isinstance(data, dict):
+                image_urn = (
+                    data.get("image_urn")
+                    or data.get("imageUrn")
+                    or data.get("image")
+                    or data.get("urn")
+                    or data.get("asset")
+                )
+        if not image_urn:
+            # As a last resort, attempt to read from the top-level init response
+            image_urn = _safe_get(init, "image_urn", "imageUrn", "image", "urn", "id")
+
+        if not image_urn:
+            return {"success": False, "error": "Could not determine image URN after upload"}
+
+        # Create the post referencing the uploaded image URN
+        # Use the content.media.id form when possible (toolkits accept media URNs)
+        # to avoid treating the payload as a file-uploadable entry (s3key).
+        post_args = {
+            "author": urn,
+            "commentary": text,
+            "lifecycleState": "PUBLISHED",
+            "visibility": "PUBLIC",
+            "content": {"media": {"id": image_urn}},
+        }
+        resp = _execute_with_fallback("LINKEDIN_CREATE_LINKED_IN_POST", post_args, entity)
+        if resp.get("successful"):
+            return {"success": True}
+
+        # If the standard fallback returned a NONEXISTENT_VERSION / requested version
+        # error, attempt an explicit retry using a toolkit version from env vars.
+        err_str = str(resp.get("error", "") or "").lower()
+        if any(k in err_str for k in ("nonexistent_version", "requested version", "not active", "nonexistent version")):
+            try:
+                client = get_composio_client()
+                # Prefer explicit env var, fall back to parsed toolkit mappings
+                versions = _env_toolkit_versions() or {}
+                ver = (
+                    os.getenv("COMPOSIO_TOOLKIT_VERSION_LINKEDIN")
+                    or os.getenv("COMPOSIO_TOOLKIT_VERSION_linkedin")
+                    or versions.get("linkedin")
+                )
+                if ver:
+                    try:
+                        retry = client.tools.execute(
+                            "LINKEDIN_CREATE_LINKED_IN_POST",
+                            arguments=post_args,
+                            user_id=entity,
+                            version=ver,
+                        )
+                        if retry.get("successful"):
+                            return {"success": True}
+                        return {"success": False, "error": retry.get("error", str(retry))}
+                    except Exception as e:
+                        return {"success": False, "error": f"Create retry failed: {e}"}
+            except Exception:
+                pass
+
         return {"success": False, "error": resp.get("error", "Unknown")}
     except Exception as e:
         return {"success": False, "error": str(e)}

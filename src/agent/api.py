@@ -56,7 +56,7 @@ def _lazy_load_agents():
         return
     try:
         from src.agent.agents import (  # noqa: F401
-            research_agent, twitter_agent, facebook_agent,
+            research_agent, facebook_agent,
             blog_agent, memory_agent, content_agent, comment_agent,
             content_refiner_agent, sentiment_agent, analytics_agent,
             upload_post_agent, notion_agent, gdocs_agent, ganalytics_agent,
@@ -74,7 +74,7 @@ def _lazy_load_agents():
             "content": ("Generate Content", content_agent.run),
             "refine_content": ("Refine Content", content_refiner_agent.run),
             "sentiment": ("Sentiment", sentiment_agent.run),
-            "twitter": ("Twitter Post", twitter_agent.run),
+            "twitter": ("Twitter (via upload-post)", upload_post_agent.run),
             "facebook": ("Facebook Post", facebook_agent.run),
             "linkedin": ("LinkedIn Post", linkedin_agent.run),
             "instagram": ("Instagram Post", instagram_agent.run),

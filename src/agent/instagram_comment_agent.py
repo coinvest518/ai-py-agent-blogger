@@ -5,7 +5,7 @@ Monitors Instagram posts for comments and generates helpful replies.
 
 import logging
 
-from src.agent.llm_provider import get_llm
+from src.agent.llm_router import route
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def generate_instagram_reply(comment_text: str, commenter_username: str) -> str:
     
     # Try LLM-first approach with template fallback
     try:
-        llm = get_llm(purpose="Instagram comment reply")
+        llm = route(task="classification")
         
         prompt = f"""Generate a friendly, helpful reply to this Instagram comment:
 

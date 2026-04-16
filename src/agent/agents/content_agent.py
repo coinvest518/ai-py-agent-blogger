@@ -6,6 +6,7 @@ Each platform gets independently crafted content — NOT the same text adapted.
 
 import logging
 import re
+import os
 from datetime import datetime
 
 from src.agent.core.config import (
@@ -13,7 +14,7 @@ from src.agent.core.config import (
     get_site_for_topic,
     detect_topic,
 )
-from src.agent.llm_provider import get_llm
+from src.agent.llm_router import route
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,23 @@ def strip_markdown(text: str) -> str:
 def _llm_generate(prompt: str, purpose: str) -> str:
     """Call cascading LLM and return cleaned text."""
     try:
-        llm = get_llm(purpose=purpose)
-        resp = llm.invoke(prompt)
+        p = (purpose or "").lower()
+        if "blog" in p or "generation" in p or "long" in p:
+            task = "blog_generation"
+        elif "linkedin" in p:
+            task = "blog_generation"
+        elif any(k in p for k in ("twitter", "instagram", "facebook", "telegram")):
+            task = "classification"
+        else:
+            task = "default"
+        llm = route(task=task)
+        try:
+            from src.agent.middleware.retry import invoke_llm_with_retry
+            attempts = int(os.getenv("LLM_RETRY_ATTEMPTS", "2"))
+            resp = invoke_llm_with_retry(llm, prompt, max_attempts=attempts)
+        except Exception:
+            # Fallback to direct invoke if retry helper unavailable
+            resp = llm.invoke(prompt)
         text = resp.content if hasattr(resp, "content") else str(resp)
         return strip_markdown(text.strip())
     except Exception as e:

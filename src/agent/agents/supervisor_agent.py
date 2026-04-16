@@ -66,7 +66,7 @@ Consider:
 
 HARD RULES for `skips`:
 - NEVER include post_facebook, post_instagram, post_twitter, or post_linkedin — these core channels always run and enforce their own caps internally.
-- ONLY legitimate skip is: post_upload_post (always).
+- `post_upload_post` may be skipped only when Upload-Post is unavailable, not configured, or no compatible media exists.
 - Do not invent new skip targets.
 
 Output ONLY a JSON object (no prose, no markdown fences) with this shape:
@@ -100,17 +100,26 @@ def plan(state: dict) -> dict:
         (m.get("memory") or m.get("content") or "")[:160] for m in recent
     )[:1200]
 
+    def _upload_post_enabled() -> bool:
+        return bool(
+            os.getenv("UPLOAD_POST_ENABLE", "").lower() in ("1", "true", "yes")
+            or os.getenv("UPLOADPOST_API_KEY")
+            or os.getenv("UPLOAD_POST_API_KEY")
+        )
+
     try:
         from src.agent.agents.upload_post_agent import remaining_quota as _up_remaining
         upload_post_remaining = _up_remaining()
     except Exception:
         upload_post_remaining = None
+    upload_post_enabled = _upload_post_enabled()
     linkedin_daily_limit = os.getenv("LINKEDIN_DAILY_LIMIT", "1")
 
     now = datetime.utcnow().isoformat(timespec="minutes") + "Z"
     user_msg = (
         f"Time: {now}\n"
         f"Engagement: {engagement_summary[:600]}\n"
+        f"Upload-Post available: {upload_post_enabled}\n"
         f"Recent Mem0: {recent_brief or '(none)'}\n"
         f"Quotas: upload_post_weekly_remaining={upload_post_remaining}, "
         f"linkedin_daily_limit={linkedin_daily_limit}\n"
@@ -129,8 +138,8 @@ def plan(state: dict) -> dict:
 
     # Belt-and-suspenders: normalize skips regardless of what LLM returned.
     skips = plan_obj.setdefault("skips", [])
-    # Always force-skip upload_post (no video gen yet)
-    if "post_upload_post" not in skips:
+    # Only skip upload-post if the API is not configured.
+    if not upload_post_enabled and "post_upload_post" not in skips:
         skips.append("post_upload_post")
     # Core channels must always run — strip if LLM put them in skips (LinkedIn
     # enforces its own daily cap inside the node; supervisor must not skip it).

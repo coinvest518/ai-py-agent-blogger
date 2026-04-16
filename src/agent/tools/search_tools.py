@@ -10,7 +10,6 @@ import random
 from datetime import datetime
 
 from src.agent.core.config import SERPAPI_ACCOUNT_ID, TAVILY_ACCOUNT_ID, TREND_CACHE_FILE
-from src.agent.tools.composio_tools import get_composio_client
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +56,6 @@ def search_trends(topic: str | None = None) -> dict:
         query = random.choice(SEARCH_QUERIES).format(year=current_year)
     logger.info("Researching: %s", query)
 
-    client = get_composio_client()
     today = datetime.now().strftime("%Y-%m-%d")
 
     entity = os.getenv("COMPOSIO_ENTITY_ID") or os.getenv("COMPOSIO_USER_ID")
@@ -65,13 +63,14 @@ def search_trends(topic: str | None = None) -> dict:
     # 1) SERPAPI
     if entity:
         try:
-            from src.agent.tools.composio_tools import _execute_with_fallback
-            resp = _execute_with_fallback("SERPAPI_SEARCH", {"query": query}, entity)
-            data = resp.get("data", {})
-            text = _extract_search_insights(data)
-            if text and len(text) > 30:
-                logger.info("SERPAPI success: %d chars", len(text))
-                return {"trend_data": text, "source": "SERPAPI"}
+            from src.agent.tools.composio_tools import COMPOSIO_AVAILABLE, _execute_with_fallback
+            if COMPOSIO_AVAILABLE:
+                resp = _execute_with_fallback("SERPAPI_SEARCH", {"query": query}, entity)
+                data = resp.get("data", {})
+                text = _extract_search_insights(data)
+                if text and len(text) > 30:
+                    logger.info("SERPAPI success: %d chars", len(text))
+                    return {"trend_data": text, "source": "SERPAPI"}
         except Exception as e:
             logger.warning("SERPAPI failed: %s", e)
 

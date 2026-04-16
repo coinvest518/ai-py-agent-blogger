@@ -331,12 +331,12 @@ def generate_blog_content(trend_data: str, image_path: str | None = None, contex
     try:
         # LLM-first generation using centralized LLM provider
         try:
-            from src.agent.llm_provider import get_llm
-            
+            from src.agent.llm_router import route
+
             # Do NOT use structured_output_schema — it forces function-calling which
             # fails when the HTML content is large.  Plain text + delimiter parsing is
             # far more reliable for long-form HTML.
-            llm = get_llm(purpose="blog generation")
+            llm = route(task="blog_generation")
             
             require_llm = os.getenv("BLOG_REQUIRE_LLM", "false").lower() in ("1", "true", "yes")
             if not llm:

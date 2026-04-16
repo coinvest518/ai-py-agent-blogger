@@ -37,11 +37,17 @@ def _read_json(path: Path, default: Any) -> Any:
 
 
 def _today_posts() -> List[dict]:
-    hist = _read_json(SOCIAL_HISTORY, [])
-    if not isinstance(hist, list):
+    hist = _read_json(SOCIAL_HISTORY, {})
+    # Support both legacy list-format and current dict with a "posts" key
+    posts = []
+    if isinstance(hist, dict):
+        posts = hist.get("posts", []) or []
+    elif isinstance(hist, list):
+        posts = hist
+    else:
         return []
     today = datetime.utcnow().strftime("%Y-%m-%d")
-    return [p for p in hist if isinstance(p, dict) and str(p.get("timestamp", ""))[:10] == today]
+    return [p for p in posts if isinstance(p, dict) and str(p.get("timestamp", ""))[:10] == today]
 
 
 def _upload_post_quota() -> Dict[str, Any]:
@@ -132,7 +138,12 @@ def _synthesize(context: Dict[str, Any]) -> str:
     try:
         llm = route(task="final_analysis", needs_long_context=True)
         prompt = _SYSTEM_PROMPT + "\n\nCONTEXT:\n" + json.dumps(context, default=str)[:6000]
-        resp = llm.invoke(prompt)
+        try:
+            from src.agent.middleware.retry import invoke_llm_with_retry
+            attempts = int(os.getenv("LLM_RETRY_ATTEMPTS", "2"))
+            resp = invoke_llm_with_retry(llm, prompt, max_attempts=attempts)
+        except Exception:
+            resp = llm.invoke(prompt)
         text = getattr(resp, "content", None) or str(resp)
         if text and len(text.strip()) > 100:
             return text.strip()
@@ -229,9 +240,18 @@ def run(state: dict) -> dict:
     Gmail self-send fires here because there's no dedicated graph node for it.
     """
     md = build_briefing(state)
+    # Provide a plain-text fallback for channels that don't need Markdown (Telegram)
+    try:
+        from src.agent.agents.content_agent import strip_markdown
+        text = strip_markdown(md)
+    except Exception:
+        # best-effort fallback
+        text = md.replace("#", "").replace("**", "")[:3500]
+
     gmail_result = _send_gmail(md)
     return {
         "final_briefing_markdown": md,
+        "final_briefing_text": text[:3500],
         "briefing_title": f"FDWA run {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
         "briefing_gmail": gmail_result,
     }

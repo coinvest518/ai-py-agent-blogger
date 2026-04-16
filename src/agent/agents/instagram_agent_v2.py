@@ -10,7 +10,7 @@ import time
 from src.agent.agents.content_agent import generate_instagram
 from src.agent.core.config import COMPOSIO_ENTITY_ID, INSTAGRAM_USER_ID
 from src.agent.duplicate_detector import record_post
-from src.agent.tools.composio_tools import post_instagram
+from src.agent.tools.composio_tools import post_instagram, post_facebook
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +26,28 @@ def run(state: dict) -> dict:
     strategy = state.get("ai_strategy")
     image_url = state.get("image_url")
 
-    if not image_url or str(image_url).startswith("file://"):
-        logger.warning("Instagram requires a public HTTP image URL — skipping")
-        return {"instagram_caption": "", "instagram_status": "Skipped: no public image URL", "instagram_post_id": ""}
+    # Allow operator to force text-only posting fallback (for debugging)
+    skip_image_env = os.getenv("SKIP_INSTAGRAM_IMAGE", "false").lower() in ("1", "true", "yes")
+    if not image_url or str(image_url).startswith("file://") or skip_image_env:
+        logger.warning("Instagram image disabled or missing — using text-only fallback")
+        caption = generate_instagram(insights, strategy)
+        if not caption:
+            return {"instagram_caption": "", "instagram_status": "Skipped: empty caption", "instagram_post_id": ""}
+
+        # Try a safe fallback: post the caption to Facebook so the message still goes out.
+        try:
+            fb_res = post_facebook(None, caption)
+            if fb_res.get("success"):
+                post_id = fb_res.get("post_id", "")
+                record_post(caption, "instagram_fallback", post_id=post_id)
+                logger.info("Instagram text-only fallback posted to Facebook: %s", post_id)
+                return {"instagram_caption": caption, "instagram_status": "Posted (fb fallback)", "instagram_post_id": "" , "facebook_status": f"Posted: {post_id}"}
+            err = fb_res.get("error") or fb_res.get("raw") or "Unknown"
+            logger.warning("IG fallback to FB failed: %s", err)
+            return {"instagram_caption": caption, "instagram_status": f"Failed fallback: {err}", "instagram_post_id": ""}
+        except Exception as e:
+            logger.exception("IG fallback posting error: %s", e)
+            return {"instagram_caption": caption, "instagram_status": f"Failed: {e!s}", "instagram_post_id": ""}
 
     caption = generate_instagram(insights, strategy)
     if not caption:

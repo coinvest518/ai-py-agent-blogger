@@ -16,7 +16,11 @@ from pathlib import Path
 
 from src.agent.agents.content_agent import generate_linkedin, strip_markdown
 from src.agent.agents import upload_post_agent
-from src.agent.tools.composio_tools import get_linkedin_author_urn, post_linkedin as _composio_post
+from src.agent.tools.composio_tools import (
+    get_linkedin_author_urn,
+    post_linkedin as _composio_post,
+    post_linkedin_with_image,
+)
 from src.agent.duplicate_detector import record_post
 
 logger = logging.getLogger(__name__)
@@ -86,25 +90,43 @@ def run(state: dict) -> dict:
     # Defense-in-depth: strip any residual markdown before posting
     li_text = _clean_for_linkedin(li_text)
 
+    # Attach a short excerpt of the LinkedIn brain file so callers can diff
+    # the agent's output vs the formula/template used.
+    brain_snippet = ""
+    try:
+        from src.agent.core.config import LINKEDIN_BRAIN_PATH
+        if LINKEDIN_BRAIN_PATH.exists():
+            brain_snippet = LINKEDIN_BRAIN_PATH.read_text(encoding="utf-8")[:1000]
+    except Exception:
+        brain_snippet = ""
+
     author_urn = get_linkedin_author_urn(os.getenv("LINKEDIN_AUTHOR_URN"))
     composio_err = None
     if not author_urn:
         logger.error("LinkedIn creds missing: LINKEDIN_AUTHOR_URN not set or discoverable")
         composio_err = "creds missing"
     else:
-        result = _composio_post(author_urn, li_text)
+        image_url = state.get("image_url")
+        try:
+            if image_url:
+                result = post_linkedin_with_image(author_urn, li_text, image_url=image_url)
+            else:
+                result = _composio_post(author_urn, li_text)
+        except Exception as e:
+            result = {"success": False, "error": str(e)}
+
         if result.get("success"):
             record_post(li_text, "linkedin")
             logger.info("LinkedIn posted via Composio")
-            return {"linkedin_text": li_text, "linkedin_status": "Posted"}
+            return {"linkedin_text": li_text, "linkedin_status": "Posted", "linkedin_brain_snippet": brain_snippet}
         composio_err = result.get("error", "Unknown")
         logger.warning("LinkedIn Composio failed: %s — trying upload-post fallback", composio_err)
 
     image_url = state.get("image_url")
     if not image_url:
-        return {"linkedin_text": li_text, "linkedin_status": f"Failed: {composio_err} (no image for fallback)"}
+        return {"linkedin_text": li_text, "linkedin_status": f"Failed: {composio_err} (no image for fallback)", "linkedin_brain_snippet": brain_snippet}
     if upload_post_agent.remaining_quota() <= 0:
-        return {"linkedin_text": li_text, "linkedin_status": f"Failed: {composio_err} (upload-post cap reached)"}
+        return {"linkedin_text": li_text, "linkedin_status": f"Failed: {composio_err} (upload-post cap reached)", "linkedin_brain_snippet": brain_snippet}
 
     fb = upload_post_agent.upload(
         platforms=["linkedin"],
@@ -115,8 +137,8 @@ def run(state: dict) -> dict:
     if fb.get("success"):
         record_post(li_text, "linkedin")
         logger.info("LinkedIn posted via upload-post fallback")
-        return {"linkedin_text": li_text, "linkedin_status": "Posted (upload-post fallback)"}
+        return {"linkedin_text": li_text, "linkedin_status": "Posted (upload-post fallback)", "linkedin_brain_snippet": brain_snippet}
 
     err2 = fb.get("error", "Unknown")
     logger.error("LinkedIn fallback failed: %s", err2)
-    return {"linkedin_text": li_text, "linkedin_status": f"Failed: composio={composio_err}; uploadpost={err2[:80]}"}
+    return {"linkedin_text": li_text, "linkedin_status": f"Failed: composio={composio_err}; uploadpost={err2[:80]}", "linkedin_brain_snippet": brain_snippet}

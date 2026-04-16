@@ -9,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from src.agent.graph import graph
+from src.agent.graph import execute
 from src.agent.realtime_status import broadcaster
 
 JOBS_FILE = Path("scheduler_jobs.json")
@@ -58,7 +58,7 @@ async def run_agent_task() -> dict:
     try:
         # Run agent
         await broadcaster.update("Initializing agent graph...")
-        result = graph.invoke({})
+        result = execute({})
 
         # Always send a full per-platform summary to Telegram (success or failure)
         try:
@@ -199,7 +199,7 @@ async def _run_with_topic(topic: str | None = None) -> dict:
     init_state = {"topic_override": topic} if topic else {}
     await broadcaster.start_run(total_steps=11)
     try:
-        result = graph.invoke(init_state)
+        result = execute(init_state)
         return result
     except Exception as e:
         logger.exception("Scheduled run with topic=%s failed: %s", topic, e)

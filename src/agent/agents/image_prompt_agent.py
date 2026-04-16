@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 
 from src.agent.core.config import TEMP_IMAGES_DIR, detect_topic
-from src.agent.llm_provider import get_llm
+from src.agent.llm_router import route
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +253,7 @@ Translate the caption's specific idea into a product mockup, dashboard, or infog
 Colors: {topic_data['colors']}. No people, no faces, no characters."""
 
     try:
-        llm = get_llm(purpose="image prompt design")
+        llm = route(task="default")
         from langchain_core.messages import SystemMessage, HumanMessage
         
         response = llm.invoke([

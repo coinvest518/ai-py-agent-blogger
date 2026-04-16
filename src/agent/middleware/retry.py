@@ -122,3 +122,37 @@ def with_retry(max_attempts: int = 2) -> Callable:
 
         return wrapper
     return decorator
+
+
+def invoke_llm_with_retry(llm, prompt, max_attempts: int = 2):
+    """Invoke an LLM wrapper with Mem0-assisted retry.
+
+    This mirrors the node-level retry behavior but is scoped to LLM
+    invocations (so skill/tool calls and download middleware remain
+    separate). It recalls mem0 hints before retries and remembers
+    a successful fix when a retry succeeds.
+    """
+    last_err = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = llm.invoke(prompt)
+            content = getattr(resp, "content", None) if resp is not None else None
+            if content and str(content).strip():
+                if last_err and attempt > 1:
+                    _remember_fix(last_err, f"LLM retry succeeded on attempt {attempt}")
+                return resp
+            # Empty response treated as error
+            last_err = "empty response"
+            logger.warning("[llm_retry] attempt %d returned empty response", attempt)
+        except Exception as e:
+            last_err = f"exception: {e}"
+            logger.warning("[llm_retry] LLM invoke attempt %d failed: %s", attempt, e)
+
+        hint = _recall_fix(last_err)
+        if hint:
+            logger.info("[llm_retry] mem0 hint for LLM: %s", hint[:160])
+        if attempt < max_attempts:
+            logger.info("[llm_retry] retrying LLM (attempt %d/%d)", attempt + 1, max_attempts)
+
+    logger.error("[llm_retry] exhausted %d attempts: %s", max_attempts, last_err[:200])
+    raise RuntimeError(f"LLM invoke failed after {max_attempts} attempts: {last_err}")

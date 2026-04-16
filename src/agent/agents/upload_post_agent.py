@@ -1,20 +1,28 @@
-"""Upload-Post.com subagent — Pinterest, X, Google Business, Threads bundled posting.
+"""Upload-Post.com subagent — multi-platform photo/video uploads.
 
-Upload-Post.com aggregates OAuth connections for platforms that don't have a
-Composio connector in this project: Pinterest, Google Business Profile, Threads,
-and X (image-only). One API call → all four platforms → counts as one quota unit.
+This agent wraps Upload-Post.com's HTTP API (endpoints: `/api/upload` and
+`/api/upload_photos`) to publish media and text across multiple platforms in a
+single request. It is used for platforms without a dedicated Composio
+connector (Pinterest, Threads, Google Business Profile, X image flows, etc.).
+
+See the companion skill docs for full API reference and platform-specific
+behaviour:
+
+- skills/UPLOAD_PHOTOS.skill.md
+- skills/UPLOAD_TEXT.skill.md
 
 Free-tier policy for this agent: **2 uploads per ISO calendar week**. Supervisor
 reserves these for `promote_product=True` runs so routine content never drains them.
 
 Env:
-  UPLOADPOST_API_KEY (preferred) or UPLOAD_POST_API_KEY — bearer key
-  UPLOAD_POST_WEEKLY_CAP (optional) — default 2. Falls back to legacy
-    UPLOAD_POST_MONTHLY_CAP for one release for backwards compat.
+    UPLOADPOST_API_KEY (preferred) or UPLOAD_POST_API_KEY — bearer key
+    UPLOAD_POST_WEEKLY_CAP (optional) — default 2. Falls back to legacy
+        UPLOAD_POST_MONTHLY_CAP for one release only.
 
 Counter file: .upload_post_usage.json (gitignored). Week schema: `{"2026-W15": 2}`.
 Old month keys like `"2026-04"` from previous versions are ignored (count as 0).
 """
+
 
 from __future__ import annotations
 
@@ -54,6 +62,139 @@ WEEKLY_CAP = int(
 )
 
 
+# -----------------------------------------------------------------------------
+# Upload-Post discovery, capabilities and quota helpers
+# -----------------------------------------------------------------------------
+PLATFORM_CAPABILITIES = {
+    "linkedin": {"accepts_images": True, "accepts_videos": False, "accepts_text": True},
+    "x": {"accepts_images": True, "accepts_videos": True, "accepts_text": True},
+    "pinterest": {"accepts_images": True, "accepts_videos": True, "accepts_text": True},
+    "google_business": {"accepts_images": True, "accepts_videos": False, "accepts_text": True},
+    "youtube": {"accepts_images": False, "accepts_videos": True, "accepts_text": False},
+    "instagram": {"accepts_images": True, "accepts_videos": True, "accepts_text": False},
+    "threads": {"accepts_images": True, "accepts_videos": True, "accepts_text": True},
+    "bluesky": {"accepts_images": True, "accepts_videos": False, "accepts_text": True},
+    "reddit": {"accepts_images": True, "accepts_videos": False, "accepts_text": True},
+}
+
+
+def _call_uploadpost_get(path: str) -> dict:
+    """Generic GET helper for Upload-Post API with multiple path fallbacks."""
+    if not API_KEY:
+        return {"success": False, "error": "UPLOADPOST_API_KEY not set"}
+    headers = {"Authorization": f"Apikey {API_KEY}"}
+    last_exc = None
+    # Try a few common path forms
+    candidates = [f"{API_BASE}{path}", f"{API_BASE}/{path.lstrip('/')}", f"{API_BASE}/v1{path}", f"{API_BASE}/v1/{path.lstrip('/')}" ]
+    for url in candidates:
+        try:
+            r = requests.get(url, headers=headers, timeout=20)
+            if r.status_code == 200:
+                try:
+                    return {"success": True, "data": r.json()}
+                except Exception:
+                    return {"success": True, "data": {"raw": r.text}}
+            if r.status_code == 404:
+                continue
+            return {"success": False, "error": f"HTTP {r.status_code}: {r.text[:500]}"}
+        except Exception as e:
+            last_exc = e
+            continue
+    return {"success": False, "error": f"All attempts failed: {last_exc}"}
+
+
+def list_connected_uploadpost_accounts() -> dict:
+    """Attempt to discover which platforms/accounts an Upload-Post API key has connected.
+
+    Returns a mapping: {"success": True, "platforms": {platform: [account_info, ...]}}
+    or {"success": False, "error": msg}.
+    """
+    # Try a few likely endpoints that Upload-Post implementations expose
+    endpoints = ["/accounts", "/profiles", "/profile", "/me", "/connected_accounts", "/users/me/accounts"]
+    for ep in endpoints:
+        resp = _call_uploadpost_get(ep)
+        if not resp.get("success"):
+            continue
+        data = resp.get("data") or {}
+        # Normalize arrays found under common keys
+        arr = None
+        for k in ("accounts", "profiles", "connected_accounts", "items", "data"):
+            if isinstance(data, dict) and k in data and isinstance(data[k], list):
+                arr = data[k]
+                break
+        if arr is None and isinstance(data, list):
+            arr = data
+        if not arr:
+            # If we couldn't find a list, return raw data for inspection
+            return {"success": True, "raw": data}
+
+        mapping: Dict[str, List[dict]] = {}
+        for item in arr:
+            platform = None
+            if isinstance(item, dict):
+                for fk in ("platform", "service", "type", "provider", "slug"):
+                    v = item.get(fk)
+                    if isinstance(v, str) and v:
+                        platform = v.lower()
+                        break
+                # Inspect alias/display fields for hints
+                if not platform:
+                    alias = (item.get("alias") or item.get("name") or item.get("display_name") or "")
+                    if isinstance(alias, str):
+                        for p in ("linkedin", "instagram", "facebook", "x", "twitter", "tiktok", "pinterest", "youtube", "threads", "bluesky", "reddit", "google_business"):
+                            if p in alias.lower():
+                                platform = p
+                                break
+            if not platform:
+                platform = "unknown"
+            mapping.setdefault(platform, []).append(item if isinstance(item, dict) else {"value": item})
+
+        return {"success": True, "platforms": mapping}
+
+    return {"success": False, "error": "Could not discover connected accounts via Upload-Post API"}
+
+
+def _week_key_to_date(week_key: str):
+    try:
+        y, wk = week_key.split("-W")
+        y = int(y)
+        wk = int(wk)
+        from datetime import datetime
+
+        return datetime.fromisocalendar(y, wk, 1)
+    except Exception:
+        return None
+
+
+def get_quota_summary() -> dict:
+    """Return remaining weekly and monthly quota summary.
+
+    Uses existing `.upload_post_usage.json` weekly counters to approximate
+    monthly usage by summing weeks that fall within the same month.
+    """
+    monthly_cap = int(os.getenv("UPLOAD_POST_MONTHLY_CAP") or "10")
+    used_week = _load_usage().get(_week_key(), 0)
+    remaining_week = max(0, WEEKLY_CAP - used_week)
+
+    # Approximate monthly usage by summing weeks that start in the current month
+    from datetime import datetime
+
+    now = datetime.utcnow()
+    usage = _load_usage()
+    used_month = 0
+    for k, v in (usage or {}).items():
+        d = _week_key_to_date(k)
+        if d and d.month == now.month and d.year == now.year:
+            used_month += int(v)
+    remaining_month = max(0, monthly_cap - used_month)
+    return {
+        "weekly_cap": WEEKLY_CAP,
+        "remaining_weekly": remaining_week,
+        "monthly_cap": monthly_cap,
+        "remaining_monthly": remaining_month,
+    }
+
+
 def _week_key() -> str:
     """ISO-week key like '2026-W15'. Rolls over Monday 00:00 UTC."""
     iso = datetime.now(timezone.utc).isocalendar()
@@ -90,31 +231,57 @@ def _bump_usage() -> None:
 
 
 def upload(
-    platforms: List[str],
+    platforms: Optional[List[str]] = None,
     title: str = "",
     caption: str = "",
     video_url: Optional[str] = None,
     image_url: Optional[str] = None,
     video_path: Optional[str] = None,
     image_path: Optional[str] = None,
+    platform_overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Send a single multi-platform upload via upload-post.com.
 
-    Args:
-        platforms: list of platform slugs — e.g. ["pinterest", "x", "google_business"]
-        title: short headline (Pinterest title, GBP headline)
-        caption: body text / tweet text
-        video_url / image_url: public URL to media (preferred over path)
-        video_path / image_path: local file path (fallback)
+    If `platforms` is omitted, the function will attempt to discover connected
+    accounts via the Upload-Post API and select compatible platforms based on
+    media type and `PLATFORM_CAPABILITIES`.
 
-    Respects monthly cap. Returns dict with success + response or error.
+    `platform_overrides` is a mapping like `{"linkedin": {"title": ..., "target_linkedin_page_id": ...}}`
+    and will be flattened into form fields like `linkedin_title`.
     """
     if not API_KEY:
         return {"success": False, "error": "UPLOADPOST_API_KEY not set"}
-    if not platforms:
-        return {"success": False, "error": "platforms list required"}
 
-    logger.debug("Upload-Post payload: username=%s platforms=%s", UPLOAD_POST_PROFILE, platforms)
+    # Determine media type
+    is_photo_only = bool(image_url or image_path) and not (video_url or video_path)
+    is_video_only = bool(video_url or video_path) and not (image_url or image_path)
+
+    # Discover platforms when not explicitly provided
+    if not platforms:
+        disc = list_connected_uploadpost_accounts()
+        if disc.get("success") and disc.get("platforms"):
+            platforms = [p for p in disc.get("platforms", {}).keys() if p != "unknown"]
+        else:
+            platforms = []
+
+    # Filter platforms by capability
+    filtered: List[str] = []
+    for p in (platforms or []):
+        caps = PLATFORM_CAPABILITIES.get(p, {})
+        if is_photo_only and not caps.get("accepts_images", False):
+            continue
+        if is_video_only and not caps.get("accepts_videos", False):
+            continue
+        # If text-only, prefer platforms that accept text
+        if not is_photo_only and not is_video_only and caption:
+            if not caps.get("accepts_text", False):
+                continue
+        filtered.append(p)
+
+    if not filtered:
+        return {"success": False, "error": "No compatible target platforms found", "available": platforms, "quota": get_quota_summary()}
+
+    logger.debug("Upload-Post payload: username=%s platforms=%s", UPLOAD_POST_PROFILE, filtered)
     remaining = remaining_quota()
     if remaining <= 0:
         return {
@@ -123,26 +290,21 @@ def upload(
             "remaining": 0,
         }
 
-    # Route to the correct endpoint — upload-post.com has two:
-    #   /api/upload         → video path (requires video file or video_url)
-    #   /api/upload_photos  → image path (photos[] array, supports X, LinkedIn, etc.)
-    is_photo_only = bool(image_url or image_path) and not (video_url or video_path)
-
     headers = {"Authorization": f"Apikey {API_KEY}"}
     files = {}
 
-    if is_photo_only:
+    # Build base data payload
+    if bool(image_url or image_path) and not (video_url or video_path):
         endpoint = API_URL_PHOTOS
         data = {
             "title": title or caption[:90],
             "caption": caption,
             "description": caption,
-            "platform[]": platforms,
+            "platform[]": filtered,
         }
         if UPLOAD_POST_PROFILE:
             data["user"] = UPLOAD_POST_PROFILE.lstrip("@")
         if image_url:
-            # API accepts either `photos[]` array (URLs) or multipart `photos[]` file(s)
             data["photos[]"] = image_url
         if image_path and os.path.exists(image_path):
             files["photos[]"] = open(image_path, "rb")
@@ -151,7 +313,7 @@ def upload(
         data = {
             "title": title,
             "caption": caption,
-            "platform[]": platforms,
+            "platform[]": filtered,
         }
         if UPLOAD_POST_PROFILE:
             data["user"] = UPLOAD_POST_PROFILE.lstrip("@")
@@ -163,6 +325,17 @@ def upload(
             files["video"] = open(video_path, "rb")
         if image_path and os.path.exists(image_path):
             files["photo"] = open(image_path, "rb")
+
+    # Apply platform-specific overrides (flatten into form fields)
+    if platform_overrides and isinstance(platform_overrides, dict):
+        for p, ov in platform_overrides.items():
+            if not isinstance(ov, dict):
+                continue
+            for k, v in ov.items():
+                try:
+                    data[f"{p}_{k}"] = v
+                except Exception:
+                    pass
 
     try:
         resp = requests.post(endpoint, headers=headers, data=data, files=files or None, timeout=120)
@@ -183,11 +356,11 @@ def upload(
         except Exception:
             body = {"raw": resp.text[:500]}
         logger.info("upload-post OK to %s — %d/%d used this week (%s)",
-                    platforms, WEEKLY_CAP - (remaining - 1), WEEKLY_CAP, _week_key())
+                    filtered, WEEKLY_CAP - (remaining - 1), WEEKLY_CAP, _week_key())
         return {
             "success": True,
             "response": body,
-            "platforms": platforms,
+            "platforms": filtered,
             "remaining": remaining - 1,
         }
 
@@ -239,7 +412,7 @@ def _derive_task(state: dict) -> Optional[Dict[str, Any]]:
     # Use /api/upload_photos for image-only (supports X, pinterest, GBP, threads).
     # Only /api/upload is video-only. Routing is handled inside upload().
     return {
-        "platforms": ["pinterest", "x", "google_business", "threads"],
+        "platforms": ["pinterest", "x", "google_business", "threads", "linkedin"],
         "title": title,
         "caption": caption[:1500],
         "image_url": image_url,

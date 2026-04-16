@@ -180,21 +180,31 @@ class CascadingLLMWrapper:
         }
 
         providers = []
+        skipped: dict[str, str] = {}
         for name, env_key, _, _default_model in PROVIDER_REGISTRY:
+            reason: str | None = None
             if name in disabled_env:
-                continue
-            if not _effective_env_value(env_key):
-                continue
-            if name == "Cloudflare" and not os.getenv("CLOUDFLARE_ACCOUNT_ID"):
-                continue
-            if name in DEAD_PROVIDERS and not enable_flags.get(name, False):
-                continue
-            if name in COOLDOWN_PROVIDERS and not enable_flags.get(name, False):
-                continue
-            init = init_map.get(name)
-            if init is None:
-                continue
-            providers.append((name, init))
+                reason = "disabled via LLM_DISABLED_PROVIDERS"
+            elif not _effective_env_value(env_key):
+                reason = f"missing env key {env_key}"
+            elif name == "Cloudflare" and not os.getenv("CLOUDFLARE_ACCOUNT_ID"):
+                reason = "missing CLOUDFLARE_ACCOUNT_ID"
+            elif name in DEAD_PROVIDERS and not enable_flags.get(name, False):
+                reason = f"blocked (dead) — set {name.upper()}_ENABLE=true to override"
+            elif name in COOLDOWN_PROVIDERS and not enable_flags.get(name, False):
+                reason = f"blocked (cooldown) — set {name.upper()}_ENABLE=true to override"
+            else:
+                init = init_map.get(name)
+                if init is None:
+                    reason = "no init function"
+                else:
+                    providers.append((name, init))
+
+            if reason:
+                skipped[name] = reason
+
+        if skipped:
+            logger.debug("LLM providers skipped: %s", skipped)
 
         # Reorder by per-purpose preference (preferred primaries first, rest follow).
         purpose_key = next((k for k in PURPOSE_PROVIDER_PREFERENCE if k in (self.purpose or "").lower()), None)
@@ -209,6 +219,8 @@ class CascadingLLMWrapper:
         if not providers:
             providers.extend(self._legacy_fallback_providers())
             self.provider_names = [name for name, _ in providers]
+
+        logger.info("LLM provider order for purpose '%s': %s", self.purpose, ", ".join(self.provider_names))
         return providers
 
     def _legacy_fallback_providers(self):
@@ -542,11 +554,21 @@ class CascadingLLMWrapper:
         if not providers:
             raise RuntimeError(f"No LLM providers configured for: {self.purpose}")
         
-        logger.info(f"🔄 Cascading LLM for {self.purpose} - Available: {', '.join(self.provider_names)}")
-        
-        # Try last working provider first if we have one
-        if self.last_working_provider:
-            providers = [(self.last_working_provider, providers[0][1])] + [p for p in providers if p[0] != self.last_working_provider]
+        logger.info("🔄 Cascading LLM for %s - Available: %s", self.purpose, ", ".join(self.provider_names))
+
+        # Optionally bias toward the last successful provider (can be disabled)
+        use_bias = os.getenv("LLM_USE_LAST_PROVIDER_BIAS", "true").lower() in ("1", "true", "yes")
+        if self.last_working_provider and use_bias:
+            # find the provider tuple matching the last working provider and move it to the head
+            found = None
+            for p in providers:
+                if p[0] == self.last_working_provider:
+                    found = p
+                    break
+            if found:
+                providers = [found] + [p for p in providers if p[0] != self.last_working_provider]
+            else:
+                logger.debug("Last working provider '%s' not available for purpose '%s'", self.last_working_provider, self.purpose)
         
         last_error = None
         for provider_name, init_func in providers:

@@ -16,7 +16,12 @@ import os
 
 from src.agent.agents.content_agent import generate_telegram
 from src.agent.duplicate_detector import record_post
-
+ 
+try:
+    # optional helper used below; import here to avoid top-level circulars
+    from src.agent.duplicate_detector import is_duplicate_post
+except Exception:
+    is_duplicate_post = None
 logger = logging.getLogger(__name__)
 
 # Google Sheets integration (best-effort)
@@ -73,15 +78,42 @@ def run(state: dict) -> dict:
     insights = state.get("base_insights", "")
     strategy = state.get("ai_strategy")
 
-    tg_result = generate_telegram(insights, strategy)
-    message = tg_result.get("message", "") if isinstance(tg_result, dict) else str(tg_result)
-    crypto_analysis = tg_result.get("crypto_analysis", {}) if isinstance(tg_result, dict) else {}
+    # Allow upstream nodes (final_report) to override the telegram message
+    # by setting `telegram_message` in state. If present, use it directly.
+    if state and state.get("telegram_message"):
+        message = state.get("telegram_message")
+        crypto_analysis = state.get("crypto_analysis", {}) or {}
+    else:
+        tg_result = generate_telegram(insights, strategy)
+        message = tg_result.get("message", "") if isinstance(tg_result, dict) else str(tg_result)
+        crypto_analysis = tg_result.get("crypto_analysis", {}) if isinstance(tg_result, dict) else {}
+    # Prefer plain-text briefing if upstream provided it (final_report_agent)
+    if state.get("final_briefing_text"):
+        message = state.get("final_briefing_text")
 
     # Enrich with actual post statuses from this run
     message = _enrich_briefing(message, state)
 
+    # Ensure we post plain text to Telegram (strip Markdown if present)
+    try:
+        from src.agent.agents.content_agent import strip_markdown
+        message = strip_markdown(message)
+    except Exception:
+        # non-fatal — proceed with original message
+        pass
+
     if not message:
         return {"telegram_message": "", "telegram_status": "Skipped: empty", "crypto_analysis": {}}
+
+    # Duplicate-safety: skip posting if very similar content was posted recently
+    try:
+        if is_duplicate_post:
+            lookback = int(os.getenv("TELEGRAM_DUP_CHECK_DAYS", "1"))
+            if is_duplicate_post(message, "telegram", lookback_days=lookback):
+                logger.info("Telegram: duplicate detected (skipping send)")
+                return {"telegram_message": message, "telegram_status": "Skipped: duplicate_recent", "crypto_analysis": crypto_analysis}
+    except Exception:
+        logger.exception("Telegram duplicate-check failed; will attempt send")
 
     # Post — TEXT ONLY, never send_photo
     try:

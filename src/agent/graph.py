@@ -36,7 +36,6 @@ from src.agent.agents import content_agent
 from src.agent.agents import content_refiner_agent
 from src.agent.agents import sentiment_agent
 from src.agent.agents import analytics_agent
-from src.agent.agents import twitter_agent
 from src.agent.agents import facebook_agent
 from src.agent.agents import linkedin_agent_v2 as linkedin_agent
 from src.agent.agents import instagram_agent_v2 as instagram_agent
@@ -341,7 +340,6 @@ def generate_image_node(state: AgentState) -> dict:
 # ── Platform posting nodes ──────────────────────────────────────────────
 
 @traceable(name="post_twitter")
-@with_retry(max_attempts=2)
 def post_twitter_node(state: AgentState) -> dict:
     if os.getenv("SKIP_TWITTER", "").lower() in ("1", "true", "yes"):
         logger.info("post_twitter skipped by SKIP_TWITTER env")
@@ -349,19 +347,53 @@ def post_twitter_node(state: AgentState) -> dict:
     if supervisor_agent.should_skip(state, "post_twitter"):
         logger.info("post_twitter skipped by supervisor plan")
         return {"twitter_url": "", "twitter_post_id": "skipped_by_supervisor"}
-    logger.info("──── POST: TWITTER ────")
-    _broadcast_sync("start_step", "post_social", "Publishing to Twitter…")
-    result = twitter_agent.run(state)
-    _broadcast_sync("update", f"Twitter: {result.get('twitter_url', '?')[:60]}")
-    return result
+
+    logger.info("──── ROUTE: TWITTER (no Composio) ────")
+    _broadcast_sync("start_step", "post_social", "Routing to upload-post/buffer for Twitter…")
+
+    # Prefer upload-post when enabled and media/caption present (no Composio usage)
+    try:
+        from src.agent.agents import upload_post_agent
+
+        image_url = state.get("image_url")
+        video_url = state.get("video_url")
+        caption = state.get("tweet_text") or state.get("facebook_text") or state.get("linkedin_text") or ""
+
+        # Prefer Upload-Post when an API key is present, or when explicitly enabled.
+        uploadpost_enabled = getattr(upload_post_agent, "API_KEY", None) or os.getenv("UPLOAD_POST_ENABLE", "").lower() in ("1", "true", "yes")
+        if uploadpost_enabled:
+            res = upload_post_agent.upload(
+                platforms=["x"],
+                title=(caption.split("\n", 1)[0] or "FDWA Update")[:90],
+                caption=caption[:1500],
+                image_url=image_url,
+                video_url=video_url,
+            )
+            if res.get("success"):
+                _broadcast_sync("update", "Twitter: queued via upload-post")
+                return {"twitter_status": "Posted (upload-post)", "twitter_post_id": "", "twitter_url": ""}
+            err = res.get("error", "Unknown")
+            logger.warning("Upload-post failed for Twitter: %s", err)
+            return {"twitter_status": f"Failed: uploadpost={err}", "twitter_post_id": ""}
+    except Exception as e:
+        logger.warning("upload_post_agent unavailable or failed: %s", e)
+
+    # No upload-post available or enabled — mark as routed for buffer (post_buffer_node runs later)
+    logger.info("Twitter posting routed to buffer/queued by later nodes (no direct Composio calls).")
+    return {"twitter_status": "Routed: upload-post or buffer", "twitter_post_id": ""}
 
 
 @traceable(name="post_facebook")
-@with_retry(max_attempts=2)
 def post_facebook_node(state: AgentState) -> dict:
     if supervisor_agent.should_skip(state, "post_facebook"):
         logger.info("post_facebook skipped by supervisor plan")
         return {"facebook_status": "skipped_by_supervisor"}
+    # If an earlier agent already recorded a facebook_status indicating
+    # the post was created (eg. IG fallback), skip to avoid duplicates.
+    existing_fb = state.get("facebook_status") or ""
+    if isinstance(existing_fb, str) and existing_fb.lower().startswith("posted"):
+        logger.info("post_facebook skipped: facebook_status already present in state")
+        return {"facebook_status": existing_fb, "facebook_post_id": state.get("facebook_post_id", "")}
     logger.info("──── POST: FACEBOOK ────")
     _broadcast_sync("update", "Publishing to Facebook…")
     result = facebook_agent.run(state)
@@ -371,7 +403,6 @@ def post_facebook_node(state: AgentState) -> dict:
 
 
 @traceable(name="post_linkedin")
-@with_retry(max_attempts=2)
 def post_linkedin_node(state: AgentState) -> dict:
     if supervisor_agent.should_skip(state, "post_linkedin"):
         logger.info("post_linkedin skipped by supervisor plan")
@@ -384,7 +415,6 @@ def post_linkedin_node(state: AgentState) -> dict:
 
 
 @traceable(name="post_telegram")
-@with_retry(max_attempts=2)
 def post_telegram_node(state: AgentState) -> dict:
     """Post to Telegram — prefer the final-report briefing when available."""
     if supervisor_agent.should_skip(state, "post_telegram"):
@@ -403,7 +433,6 @@ def post_telegram_node(state: AgentState) -> dict:
 
 
 @traceable(name="post_instagram")
-@with_retry(max_attempts=2)
 def post_instagram_node(state: AgentState) -> dict:
     if supervisor_agent.should_skip(state, "post_instagram"):
         logger.info("post_instagram skipped by supervisor plan")
@@ -633,6 +662,101 @@ workflow.add_edge("supervisor_reflect", "__end__")
 graph = workflow.compile()
 
 
+def execute(initial_state: dict | None = None) -> dict:
+    """Run the agent using the supervisor-driven executor by default."""
+    use_smart = os.getenv("SMART_EXECUTE", "true").lower() in ("1", "true", "yes")
+    if use_smart:
+        return smart_execute(initial_state or {})
+    return graph.invoke(initial_state or {})
+
+
+def smart_execute(initial_state: dict | None = None) -> dict:
+    """Optional smart executor: honor supervisor plan.subagent_order when enabled.
+
+    Controlled by the `SMART_EXECUTE` env var (true by default). When enabled,
+    we run the `supervisor_plan` first, then execute the ordered list of
+    subagents returned in `plan['subagent_order']` (skipping any nodes in
+    `plan['skips']`). This lets the supervisor decide exactly which subagents
+    to run and in what order, rather than executing the full static DAG.
+    """
+    import os
+    state: dict = initial_state.copy() if isinstance(initial_state, dict) else (initial_state or {})
+
+    # Always run supervisor plan first so the plan is available in state.
+    try:
+        plan_res = supervisor_plan_node(state)
+        if isinstance(plan_res, dict):
+            state.update(plan_res)
+    except Exception:
+        logger.exception("Supervisor plan failed in smart_execute")
+
+    plan_obj = (state.get("plan") or {})
+    order = plan_obj.get("subagent_order") or []
+    skips = set(plan_obj.get("skips") or [])
+
+    # Default static order (fallback when supervisor didn't provide an order)
+    default_order = [
+        "pull_engagement", "research_trends", "strategy_brief", "generate_content",
+        "refine_content", "sentiment", "generate_image", "generate_video",
+        "post_twitter", "post_facebook", "post_linkedin", "post_instagram",
+        "post_buffer", "post_upload_post", "ga_snapshot", "onchain_snapshot",
+        "final_report", "post_telegram", "post_notion", "post_gdocs",
+        "comment_facebook", "generate_blog", "analytics", "record_memory",
+        "supervisor_reflect",
+    ]
+
+    exec_order = order if order else default_order
+
+    # Node name -> callable mapping
+    NODE_MAP = {
+        "pull_engagement": pull_engagement_node,
+        "research_trends": research_trends_node,
+        "strategy_brief": strategy_brief_node,
+        "generate_content": generate_content_node,
+        "refine_content": refine_content_node,
+        "sentiment": sentiment_node,
+        "generate_image": generate_image_node,
+        "generate_video": generate_video_node,
+        "post_twitter": post_twitter_node,
+        "post_facebook": post_facebook_node,
+        "post_linkedin": post_linkedin_node,
+        "post_instagram": post_instagram_node,
+        "post_buffer": post_buffer_node,
+        "post_upload_post": post_upload_post_node,
+        "ga_snapshot": ga_snapshot_node,
+        "onchain_snapshot": onchain_snapshot_node,
+        "final_report": final_report_node,
+        "post_telegram": post_telegram_node,
+        "post_notion": post_notion_node,
+        "post_gdocs": post_gdocs_node,
+        "comment_facebook": comment_facebook_node,
+        "generate_blog": generate_blog_node,
+        "analytics": analytics_node,
+        "record_memory": record_memory_node,
+        "supervisor_reflect": supervisor_reflect_node,
+    }
+
+    for node_name in exec_order:
+        if node_name in skips:
+            logger.info("smart_execute: skipping %s (plan.skips)", node_name)
+            continue
+        fn = NODE_MAP.get(node_name)
+        if not fn:
+            logger.debug("smart_execute: unknown node %s — skipping", node_name)
+            continue
+        logger.info("smart_execute: running node %s", node_name)
+        try:
+            res = fn(state) or {}
+            if isinstance(res, dict):
+                state.update(res)
+        except Exception as e:
+            logger.exception("Node %s failed in smart_execute: %s", node_name, e)
+            state.update({"error": f"Node {node_name} failed: {e}"})
+
+    return state
+
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════════════
@@ -642,7 +766,12 @@ if __name__ == "__main__":
     logger.info("Starting FDWA Autonomous Social Media AI Agent (v2 — restructured)…")
 
     try:
-        final = graph.invoke({})
+        use_smart = os.getenv("SMART_EXECUTE", "true").lower() in ("1", "true", "yes")
+        if use_smart:
+            logger.info("SMART_EXECUTE enabled — running supervisor-driven smart executor")
+            final = smart_execute({})
+        else:
+            final = graph.invoke({})
 
         logger.info("\n════ EXECUTION COMPLETE ════")
         for key in [

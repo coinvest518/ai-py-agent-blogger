@@ -44,6 +44,15 @@ ASTRA_COLLECTIONS: Dict[str, str] = {
     "supervisor_reflection": os.getenv("ASTRA_COLL_REFLECTION", "fdwa_reflections"),
 }
 
+ASTRA_VECTOR_COLLECTIONS: Dict[str, str | None] = {
+    "content_performance": os.getenv("ASTRA_COLL_CONTENT_V2"),
+    "products": os.getenv("ASTRA_COLL_PRODUCTS_V2"),
+    "crypto_insights": os.getenv("ASTRA_COLL_CRYPTO_V2"),
+    "general_memory": os.getenv("ASTRA_COLL_GENERAL_V2"),
+    "engagement_snapshot": os.getenv("ASTRA_COLL_ENGAGEMENT_V2"),
+    "supervisor_reflection": os.getenv("ASTRA_COLL_REFLECTION_V2"),
+}
+
 
 def _astra_env() -> tuple[str | None, str | None, str]:
     """Resolve Astra endpoint + token from env, supporting both naming styles."""
@@ -355,11 +364,10 @@ class AgentMemoryStore:
         # If Astra is configured, prefer durable store
         if self._astra_db:
             try:
-                coll = self._astra_db.get_collection(ASTRA_COLLECTION)
                 query = {"_type": "content_performance", "success": True}
                 if platform:
                     query["platform"] = platform
-                rows = coll.find(filter=query, limit=limit * 5)
+                rows = self._astra_find(filter_dict=query, limit=limit * 5)
                 posts = [r for r in rows]
                 posts.sort(key=lambda p: (p.get("engagement", 0), p.get("timestamp", "")), reverse=True)
                 # dedupe by topic and return top `limit`
@@ -400,6 +408,11 @@ class AgentMemoryStore:
         if doc_type and doc_type in ASTRA_COLLECTIONS:
             return ASTRA_COLLECTIONS[doc_type]
         return ASTRA_COLLECTION
+
+    def _vector_collection_name(self, doc_type: str | None) -> str:
+        if doc_type and doc_type in ASTRA_VECTOR_COLLECTIONS and ASTRA_VECTOR_COLLECTIONS[doc_type]:
+            return ASTRA_VECTOR_COLLECTIONS[doc_type]  # type: ignore[return-value]
+        return self._collection_name(doc_type)
 
     def _astra_ensure_collection(self, name: str) -> bool:
         """Ensure a specific Astra collection exists (create if missing)."""
@@ -502,17 +515,92 @@ class AgentMemoryStore:
             return []
         doc_type = (filter_dict or {}).get("_type")
         name = self._collection_name(doc_type)
+
+        def _matches_filter(doc: Dict, query: Dict) -> bool:
+            def _matches(value: Any, expected: Any) -> bool:
+                if isinstance(expected, dict):
+                    if not isinstance(value, dict):
+                        return False
+                    for key, sub in expected.items():
+                        if key == "$and":
+                            return all(_matches(doc, item) for item in sub)
+                        if key == "$or":
+                            return any(_matches(doc, item) for item in sub)
+                        if not _matches(value.get(key), sub):
+                            return False
+                    return True
+                return value == expected
+
+            return _matches(doc, query)
+
+        def _try_local_filter(coll, query):
+            try:
+                raw_rows = list(coll.find(filter={}, limit=max(limit * 20, 200)))
+                if not query:
+                    return raw_rows
+                return [row for row in raw_rows if _matches_filter(row, query)]
+            except Exception as e:
+                logger.debug("Astra local fallback filtering failed on '%s': %s", name, e)
+                return []
+
+        original_query = dict(filter_dict or {})
+        query = dict(original_query)
+        local_filter = {}
+        if doc_type and name != ASTRA_COLLECTION:
+            query.pop("_type", None)
+            if query:
+                local_filter = dict(query)
+                query = {}
+
+        if vector_query:
+            vector_name = self._vector_collection_name(doc_type)
+            if not self._astra_ensure_collection(vector_name):
+                if name != vector_name and not self._astra_ensure_collection(name):
+                    return []
+                vector_name = name
+            try:
+                coll = self._astra_db.get_collection(vector_name)
+                rows = coll.find(filter=query, sort={"$vectorize": vector_query}, limit=limit)
+                rows = [r for r in rows]
+                if local_filter:
+                    return [r for r in rows if _matches_filter(r, local_filter)]
+                return rows
+            except Exception as e:
+                err = str(e).lower()
+                logger.debug("Astra vector search on '%s' failed: %s", vector_name, e)
+                if "filter_path_unindexed" in err or "filter clause not indexed" in err:
+                    return _try_local_filter(coll, local_filter)
+                try:
+                    if vector_name != name:
+                        if not self._astra_ensure_collection(name):
+                            return []
+                        coll = self._astra_db.get_collection(name)
+                    rows = coll.find(filter=query, limit=limit)
+                    rows = [r for r in rows]
+                    if local_filter:
+                        return [r for r in rows if _matches_filter(r, local_filter)]
+                    return rows
+                except Exception as e2:
+                    err2 = str(e2).lower()
+                    logger.debug("Astra non-vector fallback find on '%s' failed: %s", name, e2)
+                    if "filter_path_unindexed" in err2 or "filter clause not indexed" in err2:
+                        return _try_local_filter(coll, local_filter)
+                    return []
+
         if not self._astra_ensure_collection(name):
             return []
         try:
             coll = self._astra_db.get_collection(name)
-            if vector_query:
-                rows = coll.find(filter=filter_dict or {}, sort={"$vectorize": vector_query}, limit=limit)
-            else:
-                rows = coll.find(filter=filter_dict or {}, limit=limit)
-            return [r for r in rows]
+            rows = coll.find(filter=query, limit=limit)
+            rows = [r for r in rows]
+            if local_filter:
+                return [r for r in rows if _matches_filter(r, local_filter)]
+            return rows
         except Exception as e:
+            err = str(e).lower()
             logger.debug("Astra find on '%s' failed: %s", name, e)
+            if "filter_path_unindexed" in err or "filter clause not indexed" in err:
+                return _try_local_filter(coll, local_filter)
             return []
     
     # ================ CRYPTO INSIGHTS ================
@@ -619,8 +707,9 @@ class AgentMemoryStore:
         """Search memory with optional semantic query and filters.
 
         If `query` is provided and Astra is configured, use Astra's vector search
-        (server-side vectorize) against the `memory_vectors` collection as a
-        semantic fallback. Otherwise, fall back to the LangGraph store search.
+        (server-side vectorize) against a vector-enabled Astra collection if one
+        is configured. If the collection does not support vector search, this
+        falls back to a normal Astra query or the LangGraph store search.
         """
         ns = namespace or (*NAMESPACE_GENERAL, self.user_id)
 
