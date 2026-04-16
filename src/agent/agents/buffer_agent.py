@@ -12,7 +12,8 @@ State keys read:
   buffer_text           — post body (falls back to tweet_text / linkedin_text)
   image_url             — public image URL attached as `assets.images[]`
   buffer_scheduled_at   — ISO-8601; if present, uses `schedulingType: custom`
-                          otherwise `mode: addToQueue` (appends to profile queue)
+                          otherwise the agent creates a post immediately
+                          via `mode: customScheduled`.
 
 Returns state keys:
   buffer_status, buffer_post_ids
@@ -33,10 +34,9 @@ API_URL = "https://api.buffer.com"
 _channels_cache: Optional[List[Dict[str, Any]]] = None
 
 # Default posting mode when state["buffer_scheduled_at"] is NOT provided.
-# Values:
-#   "immediate"  (default) — customScheduled with dueAt ≈ now + IMMEDIATE_DELAY_SECS
-#                             so Buffer publishes as soon as its scheduler picks it up
-#   "queue"                 — addToQueue; Buffer uses the channel's posting schedule
+# By default this creates a Buffer post immediately (via customScheduled),
+# rather than appending it to the channel queue. This avoids queue-only
+# behavior and lets Buffer publish as soon as it processes the item.
 BUFFER_DEFAULT_MODE = os.getenv("BUFFER_DEFAULT_MODE", "immediate").lower()
 IMMEDIATE_DELAY_SECS = int(os.getenv("BUFFER_IMMEDIATE_DELAY_SECS", "90"))
 
@@ -182,13 +182,11 @@ def create_post_on_channel(
 
     # Mode resolution:
     #   1. Explicit scheduled_at (ISO-8601) → customScheduled at that time
-    #   2. BUFFER_DEFAULT_MODE=immediate   → customScheduled at now+IMMEDIATE_DELAY_SECS
-    #   3. BUFFER_DEFAULT_MODE=queue       → addToQueue (uses channel's posting schedule)
+    #   2. Otherwise, use customScheduled at now+IMMEDIATE_DELAY_SECS.
+    #      This avoids Buffer queueing and creates a post immediately.
     if scheduled_at:
         input_obj["mode"] = "customScheduled"
         input_obj["dueAt"] = scheduled_at
-    elif BUFFER_DEFAULT_MODE == "queue":
-        input_obj["mode"] = "addToQueue"
     else:
         input_obj["mode"] = "customScheduled"
         input_obj["dueAt"] = _now_plus_iso(IMMEDIATE_DELAY_SECS)
@@ -265,7 +263,7 @@ def create_update(
             continue
         if res.get("success") and res.get("post_id"):
             post_ids.append(res["post_id"])
-            by_service[svc] = "queued"
+            by_service[svc] = "posted"
         else:
             err = str(res.get("error", "unknown"))[:80]
             errors.append(f"{svc}:{cid[:6]}: {err}")
@@ -371,7 +369,7 @@ def run(state: dict) -> dict:
         ids = result.get("post_ids") or []
         partial = result.get("partial_errors")
         skipped = result.get("skipped") or []
-        status = f"Queued {len(ids)}: {svc_summary}"
+        status = f"Posted {len(ids)}: {svc_summary}"
         if partial:
             status += f" | partial-fail: {len(partial)}"
         if skipped:

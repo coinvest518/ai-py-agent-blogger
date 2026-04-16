@@ -533,7 +533,7 @@ def post_buffer_node(state: AgentState) -> dict:
     logger.info("──── POST: BUFFER ────")
     if supervisor_agent.should_skip(state, "post_buffer"):
         return {"buffer_status": "skipped_by_supervisor"}
-    _broadcast_sync("start_step", "post_buffer", "Queuing to Buffer channels…")
+    _broadcast_sync("start_step", "post_buffer", "Posting to Buffer channels…")
     result = buffer_agent.run(state)
     _broadcast_sync("complete_step", "post_buffer", result)
     return result

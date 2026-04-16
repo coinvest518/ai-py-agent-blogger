@@ -66,6 +66,20 @@ def _astra_env() -> tuple[str | None, str | None, str]:
     return endpoint, token, keyspace
 
 
+def _normalize_doc_type(doc_type: str | None) -> str | None:
+    """Normalize an Astra doc type for collection routing."""
+    if not doc_type:
+        return None
+    normalized = str(doc_type).strip().lower()
+    if normalized == "general":
+        return "general_memory"
+    if normalized in ("engagement", "engagement_snapshot"):
+        return "engagement_snapshot"
+    if normalized in ("reflection", "supervisor_reflection"):
+        return "supervisor_reflection"
+    return normalized
+
+
 class AgentMemoryStore:
     """Manages long-term memory for the AI agent using LangGraph store.
 
@@ -405,14 +419,87 @@ class AgentMemoryStore:
     # Callers pass a `doc_type` that maps to a collection name.
 
     def _collection_name(self, doc_type: str | None) -> str:
-        if doc_type and doc_type in ASTRA_COLLECTIONS:
-            return ASTRA_COLLECTIONS[doc_type]
+        # Prefer using an explicit collection name when provided. If the caller
+        # passed a full collection name (eg. 'fdwa_general_memory_v2'), use it
+        # directly so existing collections are respected.
+        if doc_type and isinstance(doc_type, str):
+            dt = doc_type.strip()
+            # If it looks like a full collection name (common prefix) or it
+            # matches one of the configured values, return it unchanged.
+            if dt.lower().startswith("fdwa_"):
+                return dt
+            # Also accept when the doc_type matches any configured collection value
+            vals = set()
+            for v in ASTRA_COLLECTIONS.values():
+                if not v:
+                    continue
+                if isinstance(v, str) and "," in v:
+                    for sv in v.split(","):
+                        vals.add(sv.strip().lower())
+                else:
+                    vals.add(str(v).lower())
+            for v in ASTRA_VECTOR_COLLECTIONS.values():
+                if not v:
+                    continue
+                if isinstance(v, str) and "," in v:
+                    for sv in v.split(","):
+                        vals.add(sv.strip().lower())
+                else:
+                    vals.add(str(v).lower())
+            if dt.lower() in vals:
+                return dt
+
+        normalized = _normalize_doc_type(doc_type)
+        if normalized and normalized in ASTRA_COLLECTIONS:
+            val = ASTRA_COLLECTIONS[normalized]
+            if isinstance(val, str) and "," in val:
+                return val.split(",")[0].strip()
+            return val or ASTRA_COLLECTION
+        if doc_type and normalized != doc_type:
+            logger.debug("Astra doc_type normalized from %r to %r", doc_type, normalized)
+            if normalized and normalized in ASTRA_COLLECTIONS:
+                val = ASTRA_COLLECTIONS[normalized]
+                if isinstance(val, str) and "," in val:
+                    return val.split(",")[0].strip()
+                return val or ASTRA_COLLECTION
         return ASTRA_COLLECTION
 
+    def _collection_names(self, doc_type: str | None) -> List[str]:
+        """Return a list of candidate collection names for a given doc_type.
+
+        Supports explicit collection names (eg. 'fdwa_general_memory_v2') and
+        comma-separated values in the ASTRA_COLLECTIONS env variables.
+        """
+        if not doc_type:
+            return [ASTRA_COLLECTION]
+        if isinstance(doc_type, str):
+            dt = doc_type.strip()
+            if dt.lower().startswith("fdwa_"):
+                return [dt]
+        normalized = _normalize_doc_type(doc_type)
+        if normalized and normalized in ASTRA_COLLECTIONS:
+            val = ASTRA_COLLECTIONS[normalized]
+            if not val:
+                return [ASTRA_COLLECTION]
+            if isinstance(val, str) and "," in val:
+                return [v.strip() for v in val.split(",") if v.strip()]
+            return [val]
+        return [ASTRA_COLLECTION]
+
     def _vector_collection_name(self, doc_type: str | None) -> str:
-        if doc_type and doc_type in ASTRA_VECTOR_COLLECTIONS and ASTRA_VECTOR_COLLECTIONS[doc_type]:
-            return ASTRA_VECTOR_COLLECTIONS[doc_type]  # type: ignore[return-value]
-        return self._collection_name(doc_type)
+        # If caller passed a concrete collection name that looks vector-enabled
+        # (eg. contains 'v2' or 'minindex'), prefer that name directly.
+        if doc_type and isinstance(doc_type, str):
+            dt = doc_type.strip()
+            if dt.lower().startswith("fdwa_") and ("v2" in dt.lower() or "minindex" in dt.lower()):
+                return dt
+        normalized = _normalize_doc_type(doc_type)
+        val = ASTRA_VECTOR_COLLECTIONS.get(normalized)
+        if val:
+            if isinstance(val, str) and "," in val:
+                return val.split(",")[0].strip()
+            return val  # type: ignore[return-value]
+        return self._collection_name(normalized)
 
     def _astra_ensure_collection(self, name: str) -> bool:
         """Ensure a specific Astra collection exists (create if missing)."""
@@ -472,7 +559,21 @@ class AgentMemoryStore:
         """Insert a document into the appropriate Astra collection (by `_type`)."""
         if not self._astra_db:
             return False
-        name = self._collection_name(doc.get("_type"))
+        doc_type = doc.get("_type")
+        # Allow document to explicitly specify a target collection
+        explicit = doc.get("_collection")
+        if explicit and isinstance(explicit, str):
+            name = explicit
+        else:
+            # pick the first candidate collection for this doc_type
+            names = self._collection_names(doc_type)
+            name = names[0] if names else ASTRA_COLLECTION
+        if doc_type and _normalize_doc_type(doc_type) not in ASTRA_COLLECTIONS:
+            logger.warning(
+                "Astra insert falling back to default collection %r for unknown _type %r",
+                name,
+                doc_type,
+            )
         if not self._astra_ensure_collection(name):
             return False
         # Retry loop with exponential backoff to handle transient Astra errors
@@ -514,7 +615,8 @@ class AgentMemoryStore:
         if not self._astra_db:
             return []
         doc_type = (filter_dict or {}).get("_type")
-        name = self._collection_name(doc_type)
+        names = self._collection_names(doc_type)
+        name = names[0] if names else ASTRA_COLLECTION
 
         def _matches_filter(doc: Dict, query: Dict) -> bool:
             def _matches(value: Any, expected: Any) -> bool:
@@ -553,55 +655,77 @@ class AgentMemoryStore:
                 query = {}
 
         if vector_query:
-            vector_name = self._vector_collection_name(doc_type)
-            if not self._astra_ensure_collection(vector_name):
-                if name != vector_name and not self._astra_ensure_collection(name):
-                    return []
-                vector_name = name
-            try:
-                coll = self._astra_db.get_collection(vector_name)
-                rows = coll.find(filter=query, sort={"$vectorize": vector_query}, limit=limit)
-                rows = [r for r in rows]
-                if local_filter:
-                    return [r for r in rows if _matches_filter(r, local_filter)]
-                return rows
-            except Exception as e:
-                err = str(e).lower()
-                logger.debug("Astra vector search on '%s' failed: %s", vector_name, e)
-                if "filter_path_unindexed" in err or "filter clause not indexed" in err:
-                    return _try_local_filter(coll, local_filter)
+            # Build a list of candidate vector collections to try. This allows
+            # projects that have multiple 'general_memory' collections (eg. v2,
+            # minindex) to be respected without assuming all collections are
+            # vector-enabled.
+            candidates: List[str] = []
+            normalized = _normalize_doc_type(doc_type)
+            vval = ASTRA_VECTOR_COLLECTIONS.get(normalized)
+            if vval:
+                if isinstance(vval, str) and "," in vval:
+                    candidates.extend([v.strip() for v in vval.split(",") if v.strip()])
+                else:
+                    candidates.append(vval)
+            # If caller passed an explicit fdwa_ collection, try that first
+            if isinstance(doc_type, str) and doc_type.lower().startswith("fdwa_"):
+                candidates.insert(0, doc_type)
+
+            # Try each candidate vector collection until one succeeds
+            last_exc = None
+            for vector_name in candidates:
+                if not self._astra_ensure_collection(vector_name):
+                    continue
                 try:
-                    if vector_name != name:
-                        if not self._astra_ensure_collection(name):
-                            return []
-                        coll = self._astra_db.get_collection(name)
-                    rows = coll.find(filter=query, limit=limit)
+                    coll = self._astra_db.get_collection(vector_name)
+                    rows = coll.find(filter=query, sort={"$vectorize": vector_query}, limit=limit)
                     rows = [r for r in rows]
                     if local_filter:
                         return [r for r in rows if _matches_filter(r, local_filter)]
                     return rows
-                except Exception as e2:
-                    err2 = str(e2).lower()
-                    logger.debug("Astra non-vector fallback find on '%s' failed: %s", name, e2)
-                    if "filter_path_unindexed" in err2 or "filter clause not indexed" in err2:
-                        return _try_local_filter(coll, local_filter)
-                    return []
+                except Exception as e:
+                    last_exc = e
+                    err = str(e).lower()
+                    logger.debug("Astra vector search on '%s' failed: %s", vector_name, e)
+                    if "filter_path_unindexed" in err or "filter clause not indexed" in err:
+                        try:
+                            return _try_local_filter(coll, local_filter)
+                        except Exception:
+                            pass
 
-        if not self._astra_ensure_collection(name):
-            return []
-        try:
-            coll = self._astra_db.get_collection(name)
-            rows = coll.find(filter=query, limit=limit)
-            rows = [r for r in rows]
-            if local_filter:
-                return [r for r in rows if _matches_filter(r, local_filter)]
-            return rows
-        except Exception as e:
-            err = str(e).lower()
-            logger.debug("Astra find on '%s' failed: %s", name, e)
-            if "filter_path_unindexed" in err or "filter clause not indexed" in err:
-                return _try_local_filter(coll, local_filter)
-            return []
+            # If we couldn't perform a vector search on any candidate, fall back
+            # to non-vector searches across the configured collection names.
+            if last_exc:
+                logger.debug("Astra vector search failed for all candidates: %s", last_exc)
+
+        # Query across all candidate collection names and merge results.
+        results: List[Dict] = []
+        for cname in names:
+            if not self._astra_ensure_collection(cname):
+                continue
+            try:
+                coll = self._astra_db.get_collection(cname)
+                rows = coll.find(filter=query, limit=limit)
+                rows = [r for r in rows]
+                if local_filter:
+                    rows = [r for r in rows if _matches_filter(r, local_filter)]
+                results.extend(rows)
+            except Exception as e:
+                logger.debug("Astra find on '%s' failed: %s", cname, e)
+                continue
+
+        # Dedupe by _id and limit
+        out: List[Dict] = []
+        seen_ids = set()
+        for r in results:
+            rid = r.get("_id")
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+            out.append(r)
+            if len(out) >= limit:
+                break
+        return out
     
     # ================ CRYPTO INSIGHTS ================
     
@@ -816,9 +940,9 @@ class AgentMemoryStore:
             logger.error(f"Migration failed: {e}")
 
     def migrate_to_astra(self) -> bool:
-        """Copy in-memory/LangGraph memory into the single Astra collection (best-effort).
+        """Copy in-memory/LangGraph memory into the mapped Astra collections (best-effort).
 
-        All documents go into ASTRA_COLLECTION with a `_type` discriminator field.
+        Each document is migrated into its own typed collection via `_type`.
         Returns True if the migration was attempted; raises/logs on failure.
         """
         if not self._astra_db:

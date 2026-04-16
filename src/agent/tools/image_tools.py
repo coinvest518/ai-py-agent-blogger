@@ -77,15 +77,43 @@ def generate_image(prompt: str, width: int = 1024, height: int = 1024, timeout: 
 
 
 def upload_image(image_bytes: bytes) -> dict:
-    """Upload image bytes to imgbb for public HTTP URL.
+    """Upload image bytes to a preferred hosting service (Imgur -> IMGBB -> fallback).
 
     Returns dict with 'success', 'url', or 'error'.
     """
+    # Preferred order: Imgur, IMGBB, Pollinations fallback
     try:
-        from src.agent.pollinations_image_gen import upload_to_imgbb
-        return upload_to_imgbb(image_bytes)
+        from src.agent.hf_image_gen import upload_to_imgur, upload_to_imgbb as hf_imgbb
+    except Exception:
+        upload_to_imgur = None
+        hf_imgbb = None
+
+    # Try Imgur first
+    if upload_to_imgur:
+        try:
+            res = upload_to_imgur(image_bytes)
+            if res.get("success") and res.get("url"):
+                return res
+        except Exception as e:
+            logger.debug("Imgur upload failed: %s", e)
+
+    # Try HF/IMGBB next
+    if hf_imgbb:
+        try:
+            res = hf_imgbb(image_bytes)
+            if res.get("success") and res.get("url"):
+                return res
+        except Exception as e:
+            logger.debug("HF IMGBB upload failed: %s", e)
+
+    # Fallback to pollinations upload if available
+    try:
+        from src.agent.pollinations_image_gen import upload_to_imgbb as poll_upload
+        return poll_upload(image_bytes)
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        logger.debug("Pollinations imgbb upload failed: %s", e)
+
+    return {"success": False, "error": "All upload attempts failed"}
 
 
 def save_image_locally(image_bytes: bytes, provider: str = "pollinations") -> str:

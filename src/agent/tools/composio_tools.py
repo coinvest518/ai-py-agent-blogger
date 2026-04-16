@@ -8,6 +8,10 @@ so per-platform account IDs are no longer required.
 import logging
 import os
 import json
+import time
+import random
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional
 
 try:
@@ -59,6 +63,58 @@ def _env_toolkit_versions() -> Dict[str, str]:
     return versions
 
 
+# Status cache helpers -----------------------------------------------------
+_STATUS_PATH = Path(__file__).resolve().parents[3] / "agent_status.json"
+
+def _read_status_cache() -> Dict:
+    try:
+        if not _STATUS_PATH.exists():
+            return {}
+        with _STATUS_PATH.open("r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _write_status_cache(data: Dict) -> None:
+    try:
+        _STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _STATUS_PATH.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception:
+        logger.debug("Failed to write status cache to %s", _STATUS_PATH)
+
+
+def _get_cached_linkedin_urn() -> Optional[str]:
+    cfg = _read_status_cache()
+    comp = cfg.get("composio", {}) or {}
+    urn = comp.get("linkedin_author_urn")
+    if not urn:
+        return None
+    ts = comp.get("linkedin_author_urn_ts")
+    try:
+        ttl_days = int(os.getenv("COMPOSIO_URN_CACHE_TTL_DAYS", "30"))
+    except Exception:
+        ttl_days = 30
+    if ts:
+        try:
+            t = datetime.fromisoformat(ts)
+            if datetime.now(timezone.utc) - t > timedelta(days=ttl_days):
+                return None
+        except Exception:
+            pass
+    return urn
+
+
+def _cache_linkedin_author_urn(urn: str) -> None:
+    cfg = _read_status_cache()
+    comp = cfg.get("composio", {}) or {}
+    comp["linkedin_author_urn"] = urn
+    comp["linkedin_author_urn_ts"] = datetime.now(timezone.utc).isoformat()
+    cfg["composio"] = comp
+    _write_status_cache(cfg)
+
+
 def get_composio_client() -> Composio:
     """Get or create the shared Composio client.
 
@@ -101,15 +157,73 @@ def _execute_with_fallback(slug: str, arguments: dict, user_id: str) -> dict:
     env_toolkit_versions = _env_toolkit_versions()
     skip_version = os.getenv("COMPOSIO_DANGEROUSLY_SKIP_VERSION_CHECK", "true").lower() in ("1", "true", "yes")
     def _execute(slug_to_execute: str, args: dict, version_override: str | None = None) -> dict:
-        kwargs = {"arguments": args, "user_id": user_id}
-        if version_override:
-            kwargs["version"] = version_override
-        elif skip_version:
-            kwargs["dangerously_skip_version_check"] = True
-        return client.tools.execute(slug_to_execute, **kwargs)
+        # Retry/backoff wrapper for Composio calls. Handles 429 / rate-limit
+        # responses by retrying with exponential backoff and jitter. The
+        # environment variables `COMPOSIO_MAX_RETRIES` and
+        # `COMPOSIO_RETRY_BACKOFF_BASE` control retry behavior.
+        max_retries = int(os.getenv("COMPOSIO_MAX_RETRIES", "3"))
+        backoff_base = float(os.getenv("COMPOSIO_RETRY_BACKOFF_BASE", "1.0"))
+        last_resp = None
+        for attempt in range(max_retries):
+            try:
+                kwargs = {"arguments": args, "user_id": user_id}
+                if version_override:
+                    kwargs["version"] = version_override
+                elif skip_version:
+                    kwargs["dangerously_skip_version_check"] = True
+                resp = client.tools.execute(slug_to_execute, **kwargs)
+                last_resp = resp
+                # If the call succeeded, return immediately
+                if resp.get("successful"):
+                    return resp
 
+                # Check for rate-limit indications in the response
+                data = resp.get("data") or {}
+                http_err = str(data.get("http_error") or "").lower()
+                err_msg = str(resp.get("error") or "").lower()
+                status_code = data.get("status_code") or data.get("status")
+                is_rate_limited = False
+                try:
+                    if int(status_code) == 429:  # type: ignore[arg-type]
+                        is_rate_limited = True
+                except Exception:
+                    pass
+                if "too many requests" in http_err or "too many requests" in err_msg or "429" in http_err or "429" in err_msg:
+                    is_rate_limited = True
+
+                if is_rate_limited and attempt < max_retries - 1:
+                    sleep_time = backoff_base * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.warning("Composio rate-limited on %s; retrying after %.2fs (attempt %d/%d)", slug_to_execute, sleep_time, attempt + 1, max_retries)
+                    time.sleep(sleep_time)
+                    continue
+
+                # Not a rate-limit condition or no more retries: return response
+                return resp
+
+            except Exception as e:
+                last_resp = {"successful": False, "error": str(e)}
+                err = str(e).lower()
+                if ("too many requests" in err or "429" in err or "rate limit" in err) and attempt < max_retries - 1:
+                    sleep_time = backoff_base * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.warning("Composio call exception looks like rate-limit: %s; retrying after %.2fs (attempt %d/%d)", e, sleep_time, attempt + 1, max_retries)
+                    time.sleep(sleep_time)
+                    continue
+                return last_resp
+        return last_resp or {"successful": False, "error": "Composio call failed after retries"}
+
+    # Try an initial execution using any explicit toolkit version pinned via
+    # environment variables (COMPOSIO_TOOLKIT_VERSION_*). This avoids hitting
+    # Composio tool runtime fallbacks when a specific toolkit version is required.
     try:
-        resp = _execute(slug, arguments)
+        versions = env_toolkit_versions or {}
+        # Guess toolkit key from the slug (e.g. 'LINKEDIN_CREATE_LINKED_IN_POST' -> 'linkedin')
+        slug_key = (slug.split("_")[0] if slug and isinstance(slug, str) else "").lower()
+        explicit_ver = (
+            versions.get(slug_key)
+            or os.getenv(f"COMPOSIO_TOOLKIT_VERSION_{slug_key.upper()}")
+            or os.getenv(f"COMPOSIO_TOOLKIT_VERSION_{slug_key.lower()}")
+        )
+        resp = _execute(slug, arguments, explicit_ver)
     except Exception as e:
         resp = {"successful": False, "error": str(e)}
 
@@ -281,6 +395,11 @@ def _looks_like_linkedin_urn(value: str) -> bool:
     return isinstance(value, str) and value.startswith("urn:li:")
 
 
+def _is_person_urn(value: str) -> bool:
+    """Return True when the value is a LinkedIn person URN (urn:li:person:...)."""
+    return isinstance(value, str) and value.startswith("urn:li:person:")
+
+
 def _find_linkedin_author_urn_from_connected_accounts(user_id: str) -> Optional[str]:
     try:
         client = get_composio_client()
@@ -291,16 +410,20 @@ def _find_linkedin_author_urn_from_connected_accounts(user_id: str) -> Optional[
                 continue
             alias = _safe_get(item, "alias")
             if alias and _looks_like_linkedin_urn(alias):
+                _cache_linkedin_author_urn(alias)
                 return alias
             word_id = _safe_get(item, "word_id")
             if word_id and _looks_like_linkedin_urn(word_id):
+                _cache_linkedin_author_urn(word_id)
                 return word_id
             state = _safe_get(item, "state")
             account_url = _safe_get(state, "account_url")
             if account_url and "linkedin" in account_url.lower() and _looks_like_linkedin_urn(account_url):
+                _cache_linkedin_author_urn(account_url)
                 return account_url
             account_id = _safe_get(state, "account_id")
             if account_id and _looks_like_linkedin_urn(account_id):
+                _cache_linkedin_author_urn(account_id)
                 return account_id
     except Exception as e:
         logger.debug("Failed to discover LinkedIn author URN from Composio connected accounts: %s", e)
@@ -310,22 +433,31 @@ def _find_linkedin_author_urn_from_connected_accounts(user_id: str) -> Optional[
 def _find_linkedin_author_urn_from_linkedin_tool(user_id: str) -> Optional[str]:
     try:
         client = get_composio_client()
-        resp = client.tools.execute(
-            "LINKEDIN_GET_MY_INFO",
-            arguments={},
-            user_id=user_id,
-            version="20260413_00",
+        # Use the configured LinkedIn toolkit version when available to avoid
+        # experiencing NONEXISTENT_VERSION errors from Composio/LinkedIn.
+        versions = _env_toolkit_versions() or {}
+        ver = (
+            os.getenv("COMPOSIO_TOOLKIT_VERSION_LINKEDIN")
+            or os.getenv("COMPOSIO_TOOLKIT_VERSION_linkedin")
+            or versions.get("linkedin")
         )
+        exec_kwargs = {"arguments": {}, "user_id": user_id}
+        if ver:
+            exec_kwargs["version"] = ver
+        resp = client.tools.execute("LINKEDIN_GET_MY_INFO", **exec_kwargs)
         if resp.get("successful"):
             data = resp.get("data") or {}
             for field in ("urn", "id", "personUrn", "memberUrn", "profileUrn"):  # heuristic
                 value = data.get(field)
                 if value and _looks_like_linkedin_urn(value):
+                    _cache_linkedin_author_urn(value)
                     return value
             # If the tool returns raw person id, build the URN
             person_id = data.get("id")
             if person_id and isinstance(person_id, str) and person_id.isalnum():
-                return f"urn:li:person:{person_id}"
+                urn = f"urn:li:person:{person_id}"
+                _cache_linkedin_author_urn(urn)
+                return urn
     except Exception as e:
         logger.debug("Failed to resolve LinkedIn author URN from LINKEDIN_GET_MY_INFO: %s", e)
     return None
@@ -333,8 +465,19 @@ def _find_linkedin_author_urn_from_linkedin_tool(user_id: str) -> Optional[str]:
 
 def get_linkedin_author_urn(author_urn: str | None = None) -> Optional[str]:
     urn = author_urn or LINKEDIN_AUTHOR_URN
+    # Only accept explicit URNs that are person URNs. Activity URNs are not
+    # valid for use as an author identifier and should not be returned here.
     if urn:
-        return urn
+        if _is_person_urn(urn):
+            return urn
+        logger.warning("Configured LINKEDIN_AUTHOR_URN is not a person URN: %r", urn)
+
+    # Check cached URN before making network calls
+    cached = _get_cached_linkedin_urn()
+    if cached:
+        if _is_person_urn(cached):
+            return cached
+        logger.debug("Cached LinkedIn URN is not a person URN, ignoring: %r", cached)
     entity = _entity()
     if entity:
         found = _find_linkedin_author_urn_from_connected_accounts(entity)
@@ -611,32 +754,130 @@ def post_linkedin_with_image(author_urn: str | None, text: str, image_url: str |
 # Instagram
 # =============================================================================
 
-def _ensure_publishable_image_url(image_url: str) -> tuple[str, str]:
+def _ensure_publishable_image_url(image_url: str) -> tuple[str, str, str | None]:
     """Re-host image on a fresh CDN URL so Meta doesn't reject stale/blocked URLs.
 
-    Returns (new_url, source) where source is "reuploaded" if we downloaded
-    and re-uploaded, or "as-is" if the original URL was kept.
+    Tries a list of preferred hosts (env `PREFERRED_IMAGE_HOSTS` or
+    default `imgbb,imgur,cloudinary,s3`) and validates a candidate URL by
+    attempting to create an Instagram media container via Composio. Returns
+    a tuple `(new_url, source, container_id)` where `container_id` may be
+    provided if validation already created the media container.
     """
     if not image_url:
-        return "", "missing"
-    # Local-file URLs can never be passed to Meta — always re-upload
-    is_local = image_url.startswith("file://") or image_url.startswith("file:///")
-    if not is_local:
-        # For remote URLs, still re-upload: Meta aggressively rejects repeat URLs.
-        pass
+        return "", "missing", None
+
+    # Always attempt to download the image bytes first
     try:
-        from src.agent.tools.image_tools import download_image, upload_image
+        from src.agent.tools.image_tools import download_image
         local = download_image(image_url)
         if not local:
-            return image_url, "as-is"  # couldn't download — let Meta try anyway
+            return image_url, "as-is", None  # couldn't download — let Meta try
         import pathlib
         data = pathlib.Path(local).read_bytes()
-        up = upload_image(data)
-        if up.get("success") and up.get("url"):
-            return up["url"], "reuploaded"
     except Exception as e:
-        logger.warning("IG image re-host failed: %s", e)
-    return image_url, "as-is"
+        logger.warning("IG image download failed: %s", e)
+        return image_url, "as-is", None
+
+    # Determine preferred hosts (comma-separated env var)
+    pref = os.getenv("PREFERRED_IMAGE_HOSTS")
+    if pref:
+        hosts = [h.strip().lower() for h in pref.split(",") if h.strip()]
+    else:
+        hosts = ["imgur", "imgbb", "cloudinary", "s3"]
+
+    # Prepare uploader callables (best-effort; skip if not available)
+    uploaders = {}
+    try:
+        from src.agent.hf_image_gen import upload_to_imgbb as _hf_imgbb, upload_to_imgur as _hf_imgur
+        uploaders["imgbb"] = _hf_imgbb
+        uploaders["imgur"] = _hf_imgur
+    except Exception:
+        # fall back to the generic helper
+        try:
+            from src.agent.tools.image_tools import upload_image as _img_default
+            uploaders.setdefault("imgbb", _img_default)
+        except Exception:
+            pass
+
+    # Optional Cloudinary uploader (if cloudinary package & env configured)
+    def _upload_cloudinary(bytes_data: bytes) -> dict:
+        try:
+            import cloudinary
+            import cloudinary.uploader
+            # cloudinary config may come from CLOUDINARY_URL or env vars
+            res = cloudinary.uploader.upload(bytes_data)
+            url = res.get("secure_url") or res.get("url")
+            if url:
+                return {"success": True, "url": url}
+        except Exception as e:
+            logger.debug("Cloudinary upload unavailable: %s", e)
+        return {"success": False, "error": "cloudinary upload failed"}
+
+    uploaders["cloudinary"] = _upload_cloudinary
+
+    # Optional S3 uploader (if boto3 & AWS env configured)
+    def _upload_s3(bytes_data: bytes) -> dict:
+        try:
+            import boto3
+            bucket = os.getenv("AWS_S3_BUCKET")
+            region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+            if not bucket:
+                return {"success": False, "error": "S3 bucket not configured"}
+            s3 = boto3.client("s3")
+            key = f"fdwa_images/{int(time.time())}_{os.getpid()}.jpg"
+            s3.put_object(Bucket=bucket, Key=key, Body=bytes_data, ACL="public-read", ContentType="image/jpeg")
+            if region:
+                url = f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+            else:
+                url = f"https://{bucket}.s3.amazonaws.com/{key}"
+            return {"success": True, "url": url}
+        except Exception as e:
+            logger.debug("S3 upload failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+    uploaders["s3"] = _upload_s3
+
+    entity = _entity()
+    for host in hosts:
+        uploader = uploaders.get(host)
+        if not uploader:
+            logger.debug("No uploader for host '%s', skipping", host)
+            continue
+        try:
+            up = uploader(data)
+        except Exception as e:
+            logger.debug("Uploader '%s' raised: %s", host, e)
+            up = {"success": False, "error": str(e)}
+
+        if not up or not up.get("success") or not up.get("url"):
+            logger.debug("Upload to %s failed: %s", host, up.get("error") if up else "no-result")
+            continue
+
+        candidate_url = up.get("url")
+
+        # If we cannot call Composio to validate, accept first successful upload
+        if not entity:
+            return candidate_url, "reuploaded", None
+
+        # Try to validate via Composio by attempting to create a media container
+        try:
+            resp = _execute_with_fallback(
+                "INSTAGRAM_CREATE_MEDIA_CONTAINER",
+                {"ig_user_id": INSTAGRAM_USER_ID, "image_url": candidate_url, "caption": "", "content_type": "photo"},
+                entity,
+            )
+            if resp.get("successful"):
+                cid = resp.get("data", {}).get("id") or None
+                return candidate_url, "reuploaded", cid
+            else:
+                logger.debug("Composio rejected URL from %s: %s", host, resp.get("error"))
+                continue
+        except Exception as e:
+            logger.debug("Composio validation failed for %s: %s", host, e)
+            continue
+
+    # Nothing validated — fall back to original
+    return image_url, "as-is", None
 
 
 def post_instagram(caption: str, image_url: str) -> dict:
@@ -654,26 +895,29 @@ def post_instagram(caption: str, image_url: str) -> dict:
     if not image_url:
         return {"error": "Image required for Instagram"}
 
-    publishable_url, source = _ensure_publishable_image_url(image_url)
+    publishable_url, source, container_id = _ensure_publishable_image_url(image_url)
     if not publishable_url:
         return {"error": "Could not produce a publishable image URL"}
     logger.info("IG image URL (%s): %s", source, publishable_url)
 
     client = get_composio_client()
     try:
-        container = _execute_with_fallback(
-            "INSTAGRAM_CREATE_MEDIA_CONTAINER",
-            {
-                "ig_user_id": INSTAGRAM_USER_ID,
-                "image_url": publishable_url,
-                "caption": caption,
-                "content_type": "photo",
-            },
-            entity,
-        )
-        if not container.get("successful"):
-            return {"error": container.get("error", "Container failed")}
-        container_id = container.get("data", {}).get("id", "")
+        # If we already validated and received a container id, reuse it.
+        if not container_id:
+            container = _execute_with_fallback(
+                "INSTAGRAM_CREATE_MEDIA_CONTAINER",
+                {
+                    "ig_user_id": INSTAGRAM_USER_ID,
+                    "image_url": publishable_url,
+                    "caption": caption,
+                    "content_type": "photo",
+                },
+                entity,
+            )
+            if not container.get("successful"):
+                return {"error": container.get("error", "Container failed")}
+            container_id = container.get("data", {}).get("id", "")
+
         import time
         time.sleep(10)
         pub = _execute_with_fallback(
