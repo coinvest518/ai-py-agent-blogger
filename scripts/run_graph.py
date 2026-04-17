@@ -1,12 +1,17 @@
 import os
 import logging
 import json
-
-os.chdir(r"C:\Users\mildh\Downloads\ai-studio\ai-agent")
+from pathlib import Path
 import sys
-# ensure project root (ai-agent) is on sys.path so `src` imports work
-sys.path.insert(0, os.getcwd())
+
+# Ensure we're running from the repository root and load envs if present
+REPO_ROOT = Path(__file__).resolve().parent.parent
+os.chdir(REPO_ROOT)
+sys.path.insert(0, str(REPO_ROOT))
 logging.basicConfig(level=logging.INFO)
+from dotenv import load_dotenv
+load_dotenv(REPO_ROOT / ".env")
+
 from src.agent.graph import execute
 
 print('--- START: graph.execute() ---')

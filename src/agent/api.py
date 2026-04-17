@@ -15,7 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from langserve import add_routes
 
 # Load environment variables FIRST before importing graph
-load_dotenv()
+repo_root = Path(__file__).resolve().parents[3]
+load_dotenv(repo_root / ".env")
 
 from src.agent.blog_email_agent import (  # noqa: E402
     _load_business_profile,

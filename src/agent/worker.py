@@ -12,10 +12,12 @@ import asyncio
 import logging
 import os
 import signal
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+repo_root = Path(__file__).resolve().parents[3]
+load_dotenv(repo_root / ".env")
 
 from src.agent.scheduler import start_scheduler  # noqa: E402
 from src.agent.agents import telegram_control_agent  # noqa: E402

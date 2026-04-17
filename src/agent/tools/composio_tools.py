@@ -23,9 +23,8 @@ except Exception as e:
     logging.getLogger(__name__).warning("Composio import failed: %s", e)
 from dotenv import load_dotenv
 
-# Load .env first so os.getenv will include values from the repo .env file
-load_dotenv()
-import os
+repo_root = Path(__file__).resolve().parents[3]
+load_dotenv(repo_root / ".env")
 
 # Read key Composio-related env vars directly to avoid importing
 # src.agent.core.config at module import time (prevents import side-effects
@@ -129,14 +128,28 @@ def get_composio_client() -> Composio:
         dangerously = os.getenv("COMPOSIO_DANGEROUSLY_SKIP_VERSION_CHECK", "true").lower() in ("1", "true", "yes")
         toolkit_versions = _env_toolkit_versions() or None
         try:
-            if dangerously:
+            if toolkit_versions:
+                logger.debug(
+                    "Initializing Composio with toolkit_versions=%s dangerously_skip_version_check=%s",
+                    toolkit_versions,
+                    dangerously,
+                )
+                try:
+                    _client = Composio(
+                        api_key=COMPOSIO_API_KEY,
+                        toolkit_versions=toolkit_versions,
+                        dangerously_skip_version_check=dangerously,
+                    )
+                except TypeError:
+                    _client = Composio(api_key=COMPOSIO_API_KEY, toolkit_versions=toolkit_versions)
+            elif dangerously:
                 logger.debug("Initializing Composio with dangerously_skip_version_check=True")
                 _client = Composio(
                     api_key=COMPOSIO_API_KEY,
                     dangerously_skip_version_check=True,
                 )
             else:
-                _client = Composio(api_key=COMPOSIO_API_KEY, toolkit_versions=toolkit_versions)
+                _client = Composio(api_key=COMPOSIO_API_KEY)
         except TypeError:
             _client = Composio(api_key=COMPOSIO_API_KEY)
     return _client
@@ -156,7 +169,16 @@ def _execute_with_fallback(slug: str, arguments: dict, user_id: str) -> dict:
     client = get_composio_client()
     env_toolkit_versions = _env_toolkit_versions()
     skip_version = os.getenv("COMPOSIO_DANGEROUSLY_SKIP_VERSION_CHECK", "true").lower() in ("1", "true", "yes")
+    logger.debug(
+        "Composio execute init slug=%s user_id=%s explicit_versions=%s skip_version=%s",
+        slug,
+        user_id,
+        env_toolkit_versions,
+        skip_version,
+    )
     def _execute(slug_to_execute: str, args: dict, version_override: str | None = None) -> dict:
+        if version_override:
+            logger.debug("Composio executing %s with explicit version_override=%s", slug_to_execute, version_override)
         # Retry/backoff wrapper for Composio calls. Handles 429 / rate-limit
         # responses by retrying with exponential backoff and jitter. The
         # environment variables `COMPOSIO_MAX_RETRIES` and
@@ -171,7 +193,33 @@ def _execute_with_fallback(slug: str, arguments: dict, user_id: str) -> dict:
                     kwargs["version"] = version_override
                 elif skip_version:
                     kwargs["dangerously_skip_version_check"] = True
-                resp = client.tools.execute(slug_to_execute, **kwargs)
+
+                # Instrument Composio execute with an OTEL span when available.
+                # This creates a `composio.execute` span with useful attributes
+                # visible in LangSmith traces / OTEL collector.
+                tracer_ctx = None
+                try:
+                    from opentelemetry import trace as _ot_trace
+                    _tracer = _ot_trace.get_tracer(__name__)
+                    tracer_ctx = _tracer.start_as_current_span("composio.execute", attributes={
+                        "composio.slug": slug_to_execute,
+                        "composio.user_id": str(user_id) if user_id else "",
+                        "composio.version_override": str(version_override) if version_override else "",
+                    })
+                except Exception:
+                    tracer_ctx = None
+
+                if tracer_ctx:
+                    with tracer_ctx as _span:
+                        resp = client.tools.execute(slug_to_execute, **kwargs)
+                        try:
+                            # Attach response metadata for observability
+                            _span.set_attribute("composio.successful", bool(resp.get("successful")))
+                            _span.set_attribute("composio.error", str(resp.get("error", ""))[:1024])
+                        except Exception:
+                            pass
+                else:
+                    resp = client.tools.execute(slug_to_execute, **kwargs)
                 last_resp = resp
                 # If the call succeeded, return immediately
                 if resp.get("successful"):

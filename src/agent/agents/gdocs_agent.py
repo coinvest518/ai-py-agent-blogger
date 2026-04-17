@@ -45,9 +45,12 @@ def create_document(title: str, markdown: str) -> Dict[str, Any]:
             args[key] = markdown
             tried.append((slug, key))
             resp = _execute_with_fallback(slug, args, entity)
+            logger.debug("GOOGLEDOCS create attempt: slug=%s key=%s successful=%s error=%s", slug, key, resp.get("successful"), resp.get("error"))
             if resp.get("successful"):
                 data = resp.get("data", {}) or {}
                 doc_id = data.get("documentId") or data.get("document_id") or data.get("id") or ""
+                if not doc_id:
+                    logger.warning("GOOGLEDOCS create succeeded without document_id: slug=%s data=%s", slug, data)
 
                 # Verify the body — fetch document body if possible
                 body = _get_body(doc_id) if doc_id else ""
@@ -67,11 +70,13 @@ def create_document(title: str, markdown: str) -> Dict[str, Any]:
                         {"document_id": doc_id, "markdown": markdown},
                         entity,
                     )
+                    logger.debug("GOOGLEDOCS update-after-create body-empty attempt: result=%s", upd.get("successful"))
                     if upd.get("successful"):
                         return {"success": True, "document_id": doc_id,
                                 "url": f"https://docs.google.com/document/d/{doc_id}/edit"}
-                except Exception:
-                    pass
+                    logger.warning("GOOGLEDOCS update-after-create failed: %s", upd.get("error"))
+                except Exception as e:
+                    logger.warning("GOOGLEDOCS update-after-create exception: %s", e)
 
                 return {"success": True, "document_id": doc_id,
                         "url": f"https://docs.google.com/document/d/{doc_id}/edit"}

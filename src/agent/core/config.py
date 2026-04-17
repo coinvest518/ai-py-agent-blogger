@@ -9,12 +9,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR = Path(__file__).parent.parent.parent.parent  # ai-agent/
+ENV_PATH = BASE_DIR / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
 
 # =============================================================================
 # Directory paths
 # =============================================================================
-BASE_DIR = Path(__file__).parent.parent.parent.parent  # ai-agent/
 SRC_DIR = BASE_DIR / "src"
 AGENT_DIR = SRC_DIR / "agent"
 

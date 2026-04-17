@@ -662,6 +662,7 @@ workflow.add_edge("supervisor_reflect", "__end__")
 graph = workflow.compile()
 
 
+@traceable(name="run_cycle")
 def execute(initial_state: dict | None = None) -> dict:
     """Run the agent using the supervisor-driven executor by default."""
     use_smart = os.getenv("SMART_EXECUTE", "true").lower() in ("1", "true", "yes")
