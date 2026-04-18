@@ -339,19 +339,16 @@ async def diag():
         "telegram": {
             "bot_token_set": bool(os.getenv("TELEGRAM_BOT_TOKEN")),
             "owner_chat_id": os.getenv("TELEGRAM_AI_OWNER_CHAT_ID") or os.getenv("TELEGRAM_GROUP_CHAT_ID"),
-            "poll_task_alive": False,
+            "mode": "send-only",
+        },
+        "notion_control": {
+            "db_id_set": bool(os.getenv("NOTION_CONTROL_DB_ID")),
         },
         "composio": {
             "api_key_set": bool(os.getenv("COMPOSIO_API_KEY")),
             "entity_id": os.getenv("COMPOSIO_ENTITY_ID"),
         },
     }
-    try:
-        from src.agent.agents import telegram_control_agent
-        t = telegram_control_agent._task
-        info["telegram"]["poll_task_alive"] = bool(t and not t.done())
-    except Exception:
-        pass
     return info
 
 
@@ -777,17 +774,17 @@ async def startup():
         scheduler = start_scheduler()
         logger.info("✅ Scheduler started (role=%s)", role or "standalone")
         try:
-            from src.agent.agents import telegram_control_agent
-            task = telegram_control_agent.start_background_task()
-            owner = os.getenv("TELEGRAM_AI_OWNER_CHAT_ID") or os.getenv("TELEGRAM_GROUP_CHAT_ID")
-            token = os.getenv("TELEGRAM_BOT_TOKEN")
-            if task is not None:
-                logger.info("✅ Telegram control bot polling (owner_chat=%s, token=%s)",
-                            owner, "set" if token else "MISSING")
+            from src.agent.agents import notion_control_agent
+            from datetime import datetime, timedelta
+            if os.getenv("NOTION_CONTROL_DB_ID"):
+                next_run = datetime.utcnow() + timedelta(minutes=int(os.getenv("AGENT_TICK_MINUTES", "180")))
+                notion_control_agent.boot_notification(next_run.isoformat() + "Z")
+                logger.info("✅ Notion boot notification sent (DB=%s...)",
+                            (os.getenv("NOTION_CONTROL_DB_ID") or "")[:8])
             else:
-                logger.warning("⚠️ Telegram control bot NOT started — check TELEGRAM_AI_OWNER_CHAT_ID / TELEGRAM_BOT_TOKEN")
+                logger.info("Notion control disabled — NOTION_CONTROL_DB_ID not set")
         except Exception as e:
-            logger.warning("Telegram control bot failed to start (non-critical): %s", e)
+            logger.warning("Notion boot notification failed (non-critical): %s", e)
 
     try:
         from src.agent.sheets_agent import initialize_google_sheets
@@ -799,11 +796,6 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     """Cleanup on shutdown."""
-    try:
-        from src.agent.agents import telegram_control_agent
-        await telegram_control_agent.stop_background_task()
-    except Exception as e:
-        logger.debug("Telegram control stop error: %s", e)
     if scheduler is not None:
         scheduler.shutdown()
 

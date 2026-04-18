@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -282,7 +283,6 @@ def start_scheduler() -> AsyncIOScheduler:
     _scheduler = scheduler
 
     # Default 3h agent tick
-    import os
     default_minutes = int(os.getenv("AGENT_TICK_MINUTES", "180"))
     scheduler.add_job(
         run_agent_task,
@@ -293,6 +293,23 @@ def start_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
         next_run_time=datetime.now(),
     )
+
+    # Notion inbox poll (only if NOTION_CONTROL_DB_ID is set)
+    if os.getenv("NOTION_CONTROL_DB_ID"):
+        try:
+            from src.agent.agents import notion_control_agent
+            poll_minutes = int(os.getenv("NOTION_POLL_MINUTES", "2"))
+            scheduler.add_job(
+                notion_control_agent.poll_inbox,
+                'interval',
+                minutes=poll_minutes,
+                id='notion_inbox',
+                name='Notion inbox poll',
+                replace_existing=True,
+            )
+            logger.info("Notion inbox poll scheduled every %d min", poll_minutes)
+        except Exception as e:
+            logger.warning("Notion inbox poll NOT scheduled: %s", e)
 
     # Restore any persisted custom jobs
     for spec in _load_jobs_file():

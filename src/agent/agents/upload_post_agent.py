@@ -45,6 +45,7 @@ USAGE_FILE = REPO_ROOT / ".upload_post_usage.json"
 API_BASE = "https://api.upload-post.com/api"
 API_URL_VIDEO = f"{API_BASE}/upload"
 API_URL_PHOTOS = f"{API_BASE}/upload_photos"
+API_URL_TEXT = f"{API_BASE}/upload_text"
 # Back-compat alias (external imports)
 API_URL = API_URL_VIDEO
 API_KEY = os.getenv("UPLOADPOST_API_KEY") or os.getenv("UPLOAD_POST_API_KEY")
@@ -68,12 +69,14 @@ WEEKLY_CAP = int(
 PLATFORM_CAPABILITIES = {
     "linkedin": {"accepts_images": True, "accepts_videos": False, "accepts_text": True},
     "x": {"accepts_images": True, "accepts_videos": True, "accepts_text": True},
-    "pinterest": {"accepts_images": True, "accepts_videos": True, "accepts_text": True},
+    "facebook": {"accepts_images": True, "accepts_videos": True, "accepts_text": True},
+    "pinterest": {"accepts_images": True, "accepts_videos": True, "accepts_text": False},
     "google_business": {"accepts_images": True, "accepts_videos": False, "accepts_text": True},
     "youtube": {"accepts_images": False, "accepts_videos": True, "accepts_text": False},
     "instagram": {"accepts_images": True, "accepts_videos": True, "accepts_text": False},
+    "tiktok": {"accepts_images": True, "accepts_videos": True, "accepts_text": False},
     "threads": {"accepts_images": True, "accepts_videos": True, "accepts_text": True},
-    "bluesky": {"accepts_images": True, "accepts_videos": False, "accepts_text": True},
+    "bluesky": {"accepts_images": True, "accepts_videos": True, "accepts_text": True},
     "reddit": {"accepts_images": True, "accepts_videos": False, "accepts_text": True},
 }
 
@@ -253,8 +256,11 @@ def upload(
         return {"success": False, "error": "UPLOADPOST_API_KEY not set"}
 
     # Determine media type
-    is_photo_only = bool(image_url or image_path) and not (video_url or video_path)
-    is_video_only = bool(video_url or video_path) and not (image_url or image_path)
+    has_image = bool(image_url or image_path)
+    has_video = bool(video_url or video_path)
+    is_photo_only = has_image and not has_video
+    is_video_only = has_video and not has_image
+    is_text_only = not has_image and not has_video
 
     # Discover platforms when not explicitly provided
     if not platforms:
@@ -294,7 +300,16 @@ def upload(
     files = {}
 
     # Build base data payload
-    if bool(image_url or image_path) and not (video_url or video_path):
+    if is_text_only:
+        endpoint = API_URL_TEXT
+        data = {
+            "title": title or caption[:90],
+            "caption": caption,
+            "platform[]": filtered,
+        }
+        if UPLOAD_POST_PROFILE:
+            data["user"] = UPLOAD_POST_PROFILE.lstrip("@")
+    elif is_photo_only:
         endpoint = API_URL_PHOTOS
         data = {
             "title": title or caption[:90],
@@ -401,22 +416,33 @@ def _derive_task(state: dict) -> Optional[Dict[str, Any]]:
     """
     image_url = state.get("image_url")
     video_url = state.get("video_url")
-    if not image_url and not video_url:
-        return None
     strat = state.get("ai_strategy") or {}
     topic = (strat.get("topic") or "").strip() if isinstance(strat, dict) else ""
     title = (topic[:58] if topic else "FDWA Update")
     caption = state.get("tweet_text") or state.get("linkedin_text") or state.get("facebook_text") or ""
     if not caption:
         return None
-    # Use /api/upload_photos for image-only (supports X, pinterest, GBP, threads).
-    # Only /api/upload is video-only. Routing is handled inside upload().
+
+    if image_url:
+        # Photo route — Upload-Post /api/upload_photos supported platforms.
+        return {
+            "platforms": ["linkedin", "facebook", "x", "instagram", "threads", "pinterest", "bluesky"],
+            "title": title,
+            "caption": caption[:1500],
+            "image_url": image_url,
+        }
+    if video_url:
+        return {
+            "platforms": ["x", "pinterest", "threads", "instagram", "youtube"],
+            "title": title,
+            "caption": caption[:1500],
+            "video_url": video_url,
+        }
+    # Text-only fallback via /api/upload_text
     return {
-        "platforms": ["pinterest", "x", "google_business", "threads", "linkedin"],
+        "platforms": ["x", "threads", "linkedin", "bluesky"],
         "title": title,
         "caption": caption[:1500],
-        "image_url": image_url,
-        "video_url": video_url,
     }
 
 

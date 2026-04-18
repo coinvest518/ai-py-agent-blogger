@@ -46,6 +46,7 @@ from src.agent.agents import memory_agent
 from src.agent.agents import upload_post_agent
 from src.agent.agents import buffer_agent
 from src.agent.agents import notion_agent
+from src.agent.agents import notion_control_agent
 from src.agent.agents import gdocs_agent
 from src.agent.agents import ganalytics_agent
 from src.agent.agents import onchain_agent
@@ -471,7 +472,15 @@ def final_report_node(state: AgentState) -> dict:
 @traceable(name="post_notion")
 def post_notion_node(state: AgentState) -> dict:
     logger.info("──── POST: NOTION ────")
-    return notion_agent.run(state)
+    if not os.getenv("NOTION_CONTROL_DB_ID"):
+        return {"notion_status": "Skipped: NOTION_CONTROL_DB_ID not set"}
+    md = state.get("final_briefing_markdown") or state.get("briefing_markdown")
+    if not md:
+        return {"notion_status": "Skipped: no briefing in state"}
+    result = notion_control_agent.write_briefing(md, state.get("briefing_title"))
+    if result.get("success"):
+        return {"notion_status": "Briefing posted to FDWA Control DB"}
+    return {"notion_status": f"Failed: {result.get('error', '?')[:120]}"}
 
 
 @traceable(name="post_gdocs")
@@ -608,6 +617,7 @@ workflow.add_node("post_buffer", post_buffer_node)
 workflow.add_node("ga_snapshot", ga_snapshot_node)
 workflow.add_node("onchain_snapshot", onchain_snapshot_node)
 workflow.add_node("final_report", final_report_node)
+workflow.add_node("post_notion", post_notion_node)
 workflow.add_node("post_gdocs", post_gdocs_node)
 workflow.add_node("comment_facebook", comment_facebook_node)
 workflow.add_node("generate_blog", generate_blog_node)
@@ -648,6 +658,7 @@ workflow.add_edge("post_upload_post", "ga_snapshot")
 workflow.add_edge("ga_snapshot", "onchain_snapshot")
 workflow.add_edge("onchain_snapshot", "final_report")
 workflow.add_edge("final_report", "post_telegram")
+workflow.add_edge("final_report", "post_notion")
 workflow.add_edge("final_report", "post_gdocs")
 workflow.add_edge("post_facebook", "comment_facebook")
 workflow.add_edge("comment_facebook", "generate_blog")
@@ -663,7 +674,7 @@ graph = workflow.compile()
 @traceable(name="run_cycle")
 def execute(initial_state: dict | None = None) -> dict:
     """Run the agent using the supervisor-driven executor by default."""
-    use_smart = os.getenv("SMART_EXECUTE", "true").lower() in ("1", "true", "yes")
+    use_smart = os.getenv("SMART_EXECUTE", "false").lower() in ("1", "true", "yes")
     if use_smart:
         return smart_execute(initial_state or {})
     return graph.invoke(initial_state or {})
@@ -699,7 +710,7 @@ def smart_execute(initial_state: dict | None = None) -> dict:
         "refine_content", "sentiment", "generate_image", "generate_video",
         "post_twitter", "post_facebook", "post_linkedin", "post_instagram",
         "post_buffer", "post_upload_post", "ga_snapshot", "onchain_snapshot",
-        "final_report", "post_telegram", "post_gdocs",
+        "final_report", "post_telegram", "post_notion", "post_gdocs",
         "comment_facebook", "generate_blog", "analytics", "record_memory",
         "supervisor_reflect",
     ]

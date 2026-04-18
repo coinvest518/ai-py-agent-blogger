@@ -131,7 +131,7 @@ def route(
 
     original_invoke = wrapper.invoke
 
-    @traceable(name=f"llm:{task}")
+    @traceable(name=f"llm:{task}", run_type="llm")
     def _traced_invoke(prompt: Any):
         return original_invoke(prompt)
 

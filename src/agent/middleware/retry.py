@@ -25,6 +25,14 @@ from typing import Any, Callable, Dict
 
 from src.agent import mem0_adapter
 
+try:
+    from langsmith import traceable
+except Exception:
+    def traceable(*_a, **_kw):
+        def _decor(fn):
+            return fn
+        return _decor
+
 logger = logging.getLogger(__name__)
 
 ERROR_USER_ID = "agent-errors"
@@ -124,6 +132,7 @@ def with_retry(max_attempts: int = 2) -> Callable:
     return decorator
 
 
+@traceable(name="llm_retry", run_type="chain")
 def invoke_llm_with_retry(llm, prompt, max_attempts: int = 2):
     """Invoke an LLM wrapper with Mem0-assisted retry.
 
