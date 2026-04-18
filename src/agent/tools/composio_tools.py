@@ -271,6 +271,12 @@ def _execute_with_fallback(slug: str, arguments: dict, user_id: str) -> dict:
             or os.getenv(f"COMPOSIO_TOOLKIT_VERSION_{slug_key.upper()}")
             or os.getenv(f"COMPOSIO_TOOLKIT_VERSION_{slug_key.lower()}")
         )
+        logger.debug(
+            "Composio execute initial attempt slug=%s user_id=%s explicit_version=%s",
+            slug,
+            user_id,
+            explicit_ver,
+        )
         resp = _execute(slug, arguments, explicit_ver)
     except Exception as e:
         resp = {"successful": False, "error": str(e)}
@@ -480,32 +486,22 @@ def _find_linkedin_author_urn_from_connected_accounts(user_id: str) -> Optional[
 
 def _find_linkedin_author_urn_from_linkedin_tool(user_id: str) -> Optional[str]:
     try:
-        client = get_composio_client()
-        # Use the configured LinkedIn toolkit version when available to avoid
-        # experiencing NONEXISTENT_VERSION errors from Composio/LinkedIn.
-        versions = _env_toolkit_versions() or {}
-        ver = (
-            os.getenv("COMPOSIO_TOOLKIT_VERSION_LINKEDIN")
-            or os.getenv("COMPOSIO_TOOLKIT_VERSION_linkedin")
-            or versions.get("linkedin")
-        )
-        exec_kwargs = {"arguments": {}, "user_id": user_id}
-        if ver:
-            exec_kwargs["version"] = ver
-        resp = client.tools.execute("LINKEDIN_GET_MY_INFO", **exec_kwargs)
-        if resp.get("successful"):
-            data = resp.get("data") or {}
-            for field in ("urn", "id", "personUrn", "memberUrn", "profileUrn"):  # heuristic
-                value = data.get(field)
-                if value and _looks_like_linkedin_urn(value):
-                    _cache_linkedin_author_urn(value)
-                    return value
-            # If the tool returns raw person id, build the URN
-            person_id = data.get("id")
-            if person_id and isinstance(person_id, str) and person_id.isalnum():
-                urn = f"urn:li:person:{person_id}"
-                _cache_linkedin_author_urn(urn)
-                return urn
+        resp = _execute_with_fallback("LINKEDIN_GET_MY_INFO", {}, user_id)
+        if not resp.get("successful"):
+            logger.debug("LinkedIn author URN discovery failed via LINKEDIN_GET_MY_INFO: %s", resp.get("error"))
+            return None
+        data = resp.get("data") or {}
+        for field in ("urn", "id", "personUrn", "memberUrn", "profileUrn"):  # heuristic
+            value = data.get(field)
+            if value and _looks_like_linkedin_urn(value):
+                _cache_linkedin_author_urn(value)
+                return value
+        # If the tool returns raw person id, build the URN
+        person_id = data.get("id")
+        if person_id and isinstance(person_id, str) and person_id.isalnum():
+            urn = f"urn:li:person:{person_id}"
+            _cache_linkedin_author_urn(urn)
+            return urn
     except Exception as e:
         logger.debug("Failed to resolve LinkedIn author URN from LINKEDIN_GET_MY_INFO: %s", e)
     return None
