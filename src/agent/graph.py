@@ -608,7 +608,6 @@ workflow.add_node("post_buffer", post_buffer_node)
 workflow.add_node("ga_snapshot", ga_snapshot_node)
 workflow.add_node("onchain_snapshot", onchain_snapshot_node)
 workflow.add_node("final_report", final_report_node)
-workflow.add_node("post_notion", post_notion_node)
 workflow.add_node("post_gdocs", post_gdocs_node)
 workflow.add_node("comment_facebook", comment_facebook_node)
 workflow.add_node("generate_blog", generate_blog_node)
@@ -649,7 +648,6 @@ workflow.add_edge("post_upload_post", "ga_snapshot")
 workflow.add_edge("ga_snapshot", "onchain_snapshot")
 workflow.add_edge("onchain_snapshot", "final_report")
 workflow.add_edge("final_report", "post_telegram")
-workflow.add_edge("final_report", "post_notion")
 workflow.add_edge("final_report", "post_gdocs")
 workflow.add_edge("post_facebook", "comment_facebook")
 workflow.add_edge("comment_facebook", "generate_blog")
@@ -701,7 +699,7 @@ def smart_execute(initial_state: dict | None = None) -> dict:
         "refine_content", "sentiment", "generate_image", "generate_video",
         "post_twitter", "post_facebook", "post_linkedin", "post_instagram",
         "post_buffer", "post_upload_post", "ga_snapshot", "onchain_snapshot",
-        "final_report", "post_telegram", "post_notion", "post_gdocs",
+        "final_report", "post_telegram", "post_gdocs",
         "comment_facebook", "generate_blog", "analytics", "record_memory",
         "supervisor_reflect",
     ]

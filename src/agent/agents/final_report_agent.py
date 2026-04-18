@@ -113,20 +113,43 @@ def gather_context(state: dict) -> Dict[str, Any]:
     }
 
 
-_SYSTEM_PROMPT = """You are the FDWA agent's end-of-run analyst. Build a concise
-intelligence briefing in markdown with these sections (use ## headings):
+_SYSTEM_PROMPT = """You are the FDWA agent's end-of-run analyst. Build a comprehensive
+post-run briefing in markdown that fully documents what THIS run did. Use ## headings
+in this exact order:
 
-## Posts today
-## Engagement / analytics
-## Trends captured
-## What's missing
+## Run summary
+One-paragraph narrative: what the agent set out to do, what topic/angle it chose,
+and the outcome at a glance.
+
+## Platforms posted
+Per platform (Twitter, Facebook, LinkedIn, Instagram, Telegram, Upload-Post, Buffer,
+Blog), list: status, URL if available, and a short preview of what was posted.
+
+## Sources & data pulled
+List every source this run pulled from: trend research APIs (SerpAPI/Tavily),
+engagement reader (yesterday's FB/LI/IG/TG numbers), Mem0 recall, CoinMarketCap,
+on-chain wallet snapshot, Google Analytics. For each, state exactly what was
+retrieved (topics, counts, key figures).
+
+## Google Analytics snapshot
+Pull the GA metrics from context (sessions, top pages, conversions). If empty,
+say "no GA data this run".
+
+## Wallet + on-chain
+Address, balance, network, any notable tx from the snapshot.
+
+## Engagement learned
+What yesterday's engagement told us and how it shaped today's content/topic pick.
+
+## What's missing / failed
+Every error or skipped step, with the cause from context.
+
 ## Next actions
-## Wallet + crypto signals
+3-6 concrete, specific next steps based on gaps in this run.
 
-Keep it under 800 words. Use bullet points. Lead with what actually happened
-(real numbers from the context), then what was missed, then concrete next
-actions. Do not invent metrics — if a number isn't in the context, say
-"no data yet"."""
+Use bullet points under each heading. Use REAL numbers from context only — if a
+number isn't in the context, say "no data yet". No word limit, but be dense and
+skimmable, not padded."""
 
 
 def _synthesize(context: Dict[str, Any]) -> str:
@@ -137,7 +160,7 @@ def _synthesize(context: Dict[str, Any]) -> str:
 
     try:
         llm = route(task="final_analysis", needs_long_context=True)
-        prompt = _SYSTEM_PROMPT + "\n\nCONTEXT:\n" + json.dumps(context, default=str)[:6000]
+        prompt = _SYSTEM_PROMPT + "\n\nCONTEXT:\n" + json.dumps(context, default=str)[:12000]
         try:
             from src.agent.middleware.retry import invoke_llm_with_retry
             attempts = int(os.getenv("LLM_RETRY_ATTEMPTS", "2"))
@@ -211,9 +234,9 @@ def build_briefing(state: dict) -> str:
 def _send_gmail(md: str) -> Dict[str, Any]:
     """Self-send the briefing via Gmail (Composio). Silent on missing creds."""
     entity = os.getenv("COMPOSIO_ENTITY_ID") or os.getenv("COMPOSIO_USER_ID")
-    to_addr = os.getenv("BRIEFING_EMAIL_TO") or os.getenv("BLOGGER_EMAIL")
+    to_addr = os.getenv("BRIEFING_EMAIL_TO")
     if not entity or not to_addr:
-        return {"skipped": True}
+        return {"skipped": True, "reason": "BRIEFING_EMAIL_TO not set"}
     try:
         from src.agent.tools.composio_tools import get_composio_client, _execute_with_fallback
         client = get_composio_client()

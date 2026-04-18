@@ -163,26 +163,18 @@ def append_section(document_id: str, markdown: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-def create_or_append_weekly(markdown: str) -> Dict[str, Any]:
-    """Append to the pinned weekly doc if `GOOGLEDOCS_WEEKLY_DOC_ID` is set,
-    otherwise create a new weekly doc and log the id."""
-    doc_id = os.getenv("GOOGLEDOCS_WEEKLY_DOC_ID")
-    if doc_id:
-        return append_section(doc_id, markdown)
-    title = f"FDWA Weekly Report {datetime.utcnow().strftime('%Y-W%W')}"
-    result = create_document(title, markdown)
-    if result.get("success"):
-        logger.info("Weekly GDoc created — set GOOGLEDOCS_WEEKLY_DOC_ID=%s in .env to reuse",
-                    result.get("document_id"))
-    return result
+def create_per_run(markdown: str, briefing_title: str | None = None) -> Dict[str, Any]:
+    """Create a new Google Doc for each run's briefing."""
+    title = briefing_title or f"FDWA Run Briefing {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+    return create_document(title, markdown)
 
 
 def run(state: dict) -> dict:
-    """Graph entry — appends `final_briefing_markdown` to the weekly doc."""
+    """Graph entry — creates a new Google Doc per run with the full briefing."""
     md = state.get("final_briefing_markdown") or state.get("briefing_markdown")
     if not md:
         return {"gdocs_status": "Skipped: no briefing in state"}
-    result = create_or_append_weekly(md)
+    result = create_per_run(md, state.get("briefing_title"))
     if result.get("success"):
         return {
             "gdocs_status": f"Appended: {result.get('document_id', '')[:32]}",

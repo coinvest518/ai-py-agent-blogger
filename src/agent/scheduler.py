@@ -281,14 +281,17 @@ def start_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
     _scheduler = scheduler
 
-    # Default 6h agent tick (preserved)
+    # Default 3h agent tick
+    import os
+    default_minutes = int(os.getenv("AGENT_TICK_MINUTES", "180"))
     scheduler.add_job(
         run_agent_task,
         'interval',
-        minutes=360,
+        minutes=default_minutes,
         id='agent_task',
         name='Run FDWA Agent',
-        replace_existing=True
+        replace_existing=True,
+        next_run_time=datetime.now(),
     )
 
     # Restore any persisted custom jobs
@@ -301,7 +304,7 @@ def start_scheduler() -> AsyncIOScheduler:
             logger.warning("Could not restore job %s: %s", spec.get("id"), e)
 
     scheduler.start()
-    logger.info("Scheduler started - default tick every 6h, %d custom jobs restored", len(_load_jobs_file()))
+    logger.info("Scheduler started - default tick every %dmin, first run immediate, %d custom jobs restored", default_minutes, len(_load_jobs_file()))
 
     load_status()
     return scheduler
