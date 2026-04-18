@@ -3,7 +3,15 @@
 Single source of truth for all keys flowing through the graph.
 """
 
+from typing import Annotated
 from typing_extensions import TypedDict
+
+
+def _last_nonempty(old: str, new: str) -> str:
+    """Reducer: keep the most recent non-empty value; tolerates concurrent writes."""
+    if new:
+        return new
+    return old or ""
 
 
 class AgentState(TypedDict, total=False):
@@ -56,12 +64,12 @@ class AgentState(TypedDict, total=False):
     twitter_url: str
     twitter_post_id: str
     twitter_reply_status: str
-    facebook_status: str
-    facebook_post_id: str
-    linkedin_status: str
-    instagram_status: str
-    instagram_post_id: str
-    instagram_comment_status: str
+    facebook_status: Annotated[str, _last_nonempty]
+    facebook_post_id: Annotated[str, _last_nonempty]
+    linkedin_status: Annotated[str, _last_nonempty]
+    instagram_status: Annotated[str, _last_nonempty]
+    instagram_post_id: Annotated[str, _last_nonempty]
+    instagram_comment_status: Annotated[str, _last_nonempty]
     comment_status: str
     telegram_status: str
 

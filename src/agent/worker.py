@@ -20,7 +20,6 @@ repo_root = Path(__file__).resolve().parents[3]
 load_dotenv(repo_root / ".env")
 
 from src.agent.scheduler import start_scheduler  # noqa: E402
-from src.agent.agents import telegram_control_agent  # noqa: E402
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -40,7 +39,6 @@ async def main() -> None:
     print("FDWA worker main(): starting")
     logger.info("🚀 FDWA worker starting (scheduler + telegram control)…")
     scheduler = start_scheduler()
-    telegram_task = telegram_control_agent.start_background_task()
     heartbeat_task = asyncio.create_task(_heartbeat(), name="heartbeat")
 
     stop_event = asyncio.Event()
@@ -63,7 +61,6 @@ async def main() -> None:
         await stop_event.wait()
     finally:
         heartbeat_task.cancel()
-        await telegram_control_agent.stop_background_task()
         try:
             scheduler.shutdown(wait=False)
         except Exception:
