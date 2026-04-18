@@ -109,8 +109,6 @@ envVarGroups:
       # Composio toolkit versions — safe defaults
       - key: COMPOSIO_TOOLKIT_VERSION_FACEBOOK
         value: "20260413_00"
-      - key: COMPOSIO_TOOLKIT_VERSION_LINKEDIN
-        value: "20260413_00"
       - key: COMPOSIO_TOOLKIT_VERSION_INSTAGRAM
         value: "20260413_00"
       - key: COMPOSIO_TOOLKIT_VERSION_TELEGRAM
