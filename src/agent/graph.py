@@ -490,63 +490,61 @@ def post_gdocs_node(state: AgentState) -> dict:
     return gdocs_agent.run(state)
 
 
-@traceable(name="generate_video")
-def generate_video_node(state: AgentState) -> dict:
-    """Optional video generation for promote-product runs.
-
-    Only fires when `ai_strategy.video == True`. Writes `video_url` + `video_path`
-    to state; safe to skip entirely (image-only posts still work).
-    """
-    # Global operator switch to entirely disable video generation/uploads
-    if os.getenv("DISABLE_VIDEO_GEN", "false").lower() in ("1", "true", "yes"):
-        return {"video_url": None, "video_path": None}
-
-    strat = state.get("ai_strategy") or {}
-    if not (isinstance(strat, dict) and strat.get("video")):
-        return {"video_url": None, "video_path": None}
-
-    prompt = state.get("tweet_text", "")[:220] or state.get("base_insights", "")[:220]
-    if not prompt:
-        return {"video_url": None, "video_path": None}
-
-    logger.info("──── VIDEO ────")
-    _broadcast_sync("start_step", "generate_video", "Generating video (CogVideoX)…")
-    try:
-        from src.agent.video_gen.cascade import generate_with_cascade
-        result = generate_with_cascade(prompt=prompt)
-    except Exception as e:
-        logger.warning("Video cascade crashed: %s", e)
-        return {"video_url": None, "video_path": None}
-
-    if result.get("success"):
-        path = result.get("path")
-        video_url = None
-        if path:
-            try:
-                from src.agent.video_gen.gdrive_upload import upload_and_share
-                up = upload_and_share(path)
-                if up.get("success"):
-                    video_url = up.get("direct_link")
-                    logger.info("Video uploaded to Drive: %s", up.get("web_link"))
-                else:
-                    logger.warning("Drive upload skipped: %s", up.get("error"))
-            except Exception as e:
-                logger.warning("Drive upload crashed: %s", e)
-        _broadcast_sync("complete_step", "generate_video", {"path": path, "url": video_url})
-        return {"video_path": path, "video_url": video_url}
-    return {"video_url": None, "video_path": None}
-
-
 @traceable(name="post_buffer")
 def post_buffer_node(state: AgentState) -> dict:
-    """Buffer fan-out — schedules to every connected Buffer channel (YT/TikTok/Pinterest/etc.)."""
+    """Buffer fan-out — explicit inputs to every connected Buffer channel.
+
+    Buffer's connected services: Pinterest (image required), YouTube/TikTok
+    (video required). Here we unpack state and hand the caption + image_url
+    explicitly so the trace shows exactly what was sent.
+    """
     logger.info("──── POST: BUFFER ────")
     if supervisor_agent.should_skip(state, "post_buffer"):
-        return {"buffer_status": "skipped_by_supervisor"}
-    _broadcast_sync("start_step", "post_buffer", "Posting to Buffer channels…")
-    result = buffer_agent.run(state)
-    _broadcast_sync("complete_step", "post_buffer", result)
-    return result
+        return {"buffer_status": "skipped_by_supervisor", "buffer_post_ids": []}
+
+    caption = (
+        state.get("buffer_text")
+        or state.get("tweet_text")
+        or state.get("linkedin_text")
+        or state.get("facebook_text")
+        or ""
+    ).strip()
+    image_url = state.get("image_url") or None
+    if image_url and str(image_url).startswith("file://"):
+        image_url = None
+    video_url = state.get("video_url") or None
+
+    logger.info(
+        "Buffer payload → caption_len=%d image_url=%s video_url=%s",
+        len(caption), image_url or "NONE", video_url or "NONE",
+    )
+    _broadcast_sync(
+        "start_step",
+        "post_buffer",
+        f"Posting to Buffer: caption={len(caption)}c image={'y' if image_url else 'n'} video={'y' if video_url else 'n'}",
+    )
+
+    if not caption:
+        return {"buffer_status": "Skipped: no caption", "buffer_post_ids": []}
+
+    result = buffer_agent.post_now(
+        text=caption[:2000],
+        image_url=image_url,
+        video_url=video_url,
+    )
+    by_service = result.get("by_service") or {}
+    svc_summary = ", ".join(f"{k}={v}" for k, v in by_service.items()) or "no channels"
+    ids = result.get("post_ids") or []
+    if result.get("success"):
+        status = f"Posted {len(ids)}: {svc_summary}"
+        if result.get("skipped"):
+            status += f" | skipped: {len(result['skipped'])}"
+    else:
+        status = f"Failed: {svc_summary} | {str(result.get('error', ''))[:180]}"
+
+    out = {"buffer_status": status[:500], "buffer_post_ids": ids}
+    _broadcast_sync("complete_step", "post_buffer", out)
+    return out
 
 
 @traceable(name="post_upload_post")
@@ -612,7 +610,6 @@ workflow.add_node("post_facebook", post_facebook_node)
 workflow.add_node("post_linkedin", post_linkedin_node)
 workflow.add_node("post_telegram", post_telegram_node)
 workflow.add_node("post_instagram", post_instagram_node)
-workflow.add_node("generate_video", generate_video_node)
 workflow.add_node("post_upload_post", post_upload_post_node)
 workflow.add_node("post_buffer", post_buffer_node)
 workflow.add_node("ga_snapshot", ga_snapshot_node)
@@ -637,16 +634,14 @@ workflow.add_edge("strategy_brief", "generate_content")
 workflow.add_edge("generate_content", "refine_content")
 workflow.add_edge("refine_content", "sentiment")
 workflow.add_edge("sentiment", "generate_image")
-# Optional video step runs in parallel with social posts (only fires when
-# `ai_strategy.video == True`; otherwise returns no-op dict).
-workflow.add_edge("generate_image", "generate_video")
-# Fan-out: all 4 social platforms + upload-post aggregator after image is ready.
-# Telegram runs LAST (joins on all branches) so its briefing reflects actual statuses.
+# Fan-out: all social platforms + upload-post aggregator after image is ready.
+# Video generation has been removed — image + text are the only media the
+# agent produces. YouTube/TikTok Buffer channels will self-skip (no video).
 workflow.add_edge("generate_image", "post_twitter")
 workflow.add_edge("generate_image", "post_facebook")
 workflow.add_edge("generate_image", "post_linkedin")
 workflow.add_edge("generate_image", "post_instagram")
-workflow.add_edge("generate_video", "post_upload_post")
+workflow.add_edge("generate_image", "post_upload_post")
 workflow.add_edge("generate_image", "post_buffer")
 workflow.add_edge("post_buffer", "ga_snapshot")
 # Barrier: ga_snapshot waits for all 5 parallel social branches, then we
@@ -708,7 +703,7 @@ def smart_execute(initial_state: dict | None = None) -> dict:
     # Default static order (fallback when supervisor didn't provide an order)
     default_order = [
         "pull_engagement", "research_trends", "strategy_brief", "generate_content",
-        "refine_content", "sentiment", "generate_image", "generate_video",
+        "refine_content", "sentiment", "generate_image",
         "post_twitter", "post_facebook", "post_linkedin", "post_instagram",
         "post_buffer", "post_upload_post", "ga_snapshot", "onchain_snapshot",
         "final_report", "post_telegram", "post_notion", "post_gdocs",
@@ -727,7 +722,6 @@ def smart_execute(initial_state: dict | None = None) -> dict:
         "refine_content": refine_content_node,
         "sentiment": sentiment_node,
         "generate_image": generate_image_node,
-        "generate_video": generate_video_node,
         "post_twitter": post_twitter_node,
         "post_facebook": post_facebook_node,
         "post_linkedin": post_linkedin_node,

@@ -35,7 +35,6 @@ DEFAULT_MODE = os.getenv("BUFFER_DEFAULT_MODE", "shareNow")
 PINTEREST_SOURCE_URL = os.getenv(
     "BUFFER_PINTEREST_SOURCE_URL", "https://futuristicwealth.gumroad.com/"
 )
-FALLBACK_IMAGE_URL = os.getenv("BUFFER_FALLBACK_IMAGE_URL", "").strip() or None
 IMMEDIATE_DELAY_SECS = int(os.getenv("BUFFER_IMMEDIATE_DELAY_SECS", "90"))
 
 VIDEO_REQUIRED_SERVICES = {"tiktok", "youtube"}
@@ -396,9 +395,6 @@ def run(state: dict) -> dict:
     if image_url and str(image_url).startswith("file://"):
         logger.warning("Buffer: dropping local file:// image_url (need public HTTPS)")
         image_url = None
-    if not image_url and FALLBACK_IMAGE_URL:
-        logger.info("Buffer: using BUFFER_FALLBACK_IMAGE_URL so Pinterest can still post")
-        image_url = FALLBACK_IMAGE_URL
     video_url = state.get("video_url") or None
     scheduled_at = state.get("buffer_scheduled_at")
     logger.info(
