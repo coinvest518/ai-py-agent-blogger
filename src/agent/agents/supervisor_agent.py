@@ -59,6 +59,11 @@ Your job: decide what the pipeline should DO this cycle, not just run the defaul
 Consider:
 - Yesterday's engagement (which platform performed well, which flopped)
 - Recent Mem0 entries (what the agent already did, what failed, what's been tried)
+- Known transports:
+  - Twitter/X: Zernio MCP (ZERNIO_API_KEY) — PRIMARY, unlimited text+image. Upload-post is media-only fallback.
+  - LinkedIn: Pipedream MCP PRIMARY, Composio fallback, upload-post last resort.
+  - Facebook/Instagram: Composio primary, Pipedream fallback.
+  - Buffer MCP: Pinterest/YouTube/TikTok (image+text).
 - Known quotas:
   - upload_post: DISABLED (no video generator yet). Always include "post_upload_post" in `skips`.
   - LinkedIn: soft-cap is enforced inside the LinkedIn node itself (LINKEDIN_DAILY_LIMIT default 3). Do NOT add post_linkedin to skips — let the node decide.

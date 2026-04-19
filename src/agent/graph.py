@@ -37,6 +37,7 @@ from src.agent.agents import content_refiner_agent
 from src.agent.agents import sentiment_agent
 from src.agent.agents import analytics_agent
 from src.agent.agents import facebook_agent
+from src.agent.agents import twitter_agent
 from src.agent.agents import linkedin_agent_v2 as linkedin_agent
 from src.agent.agents import instagram_agent_v2 as instagram_agent
 from src.agent.agents import telegram_agent_v2 as telegram_agent
@@ -349,20 +350,23 @@ def post_twitter_node(state: AgentState) -> dict:
         logger.info("post_twitter skipped by supervisor plan")
         return {"twitter_url": "", "twitter_post_id": "skipped_by_supervisor"}
 
-    logger.info("──── ROUTE: TWITTER (no Composio) ────")
-    _broadcast_sync("start_step", "post_social", "Routing to upload-post/buffer for Twitter…")
+    logger.info("──── ROUTE: TWITTER (Zernio MCP primary) ────")
+    _broadcast_sync("start_step", "post_social", "Posting to X via Zernio MCP…")
 
-    # Prefer upload-post when enabled and media/caption present (no Composio usage)
+    result = twitter_agent.run(state)
+    pid = result.get("twitter_post_id", "")
+    if pid.startswith("zernio:"):
+        result["twitter_status"] = "Posted (zernio)"
+        _broadcast_sync("update", "Twitter: posted via Zernio")
+        return result
+
+    # Fallback: upload-post (image/video only, 10/mo cap)
     try:
-        from src.agent.agents import upload_post_agent
-
         image_url = state.get("image_url")
         video_url = state.get("video_url")
         caption = state.get("tweet_text") or state.get("facebook_text") or state.get("linkedin_text") or ""
-
-        # Prefer Upload-Post when an API key is present, or when explicitly enabled.
         uploadpost_enabled = getattr(upload_post_agent, "API_KEY", None) or os.getenv("UPLOAD_POST_ENABLE", "").lower() in ("1", "true", "yes")
-        if uploadpost_enabled:
+        if uploadpost_enabled and (image_url or video_url):
             res = upload_post_agent.upload(
                 platforms=["x"],
                 title=(caption.split("\n", 1)[0] or "FDWA Update")[:90],
@@ -371,17 +375,15 @@ def post_twitter_node(state: AgentState) -> dict:
                 video_url=video_url,
             )
             if res.get("success"):
-                _broadcast_sync("update", "Twitter: queued via upload-post")
-                return {"twitter_status": "Posted (upload-post)", "twitter_post_id": "", "twitter_url": ""}
+                _broadcast_sync("update", "Twitter: queued via upload-post fallback")
+                return {"twitter_status": "Posted (upload-post fallback)", "twitter_post_id": "", "twitter_url": ""}
             err = res.get("error", "Unknown")
-            logger.warning("Upload-post failed for Twitter: %s", err)
-            return {"twitter_status": f"Failed: uploadpost={err}", "twitter_post_id": ""}
+            logger.warning("Upload-post fallback failed for Twitter: %s", err)
+            return {"twitter_status": f"Failed: zernio+uploadpost={err}", "twitter_post_id": pid or ""}
     except Exception as e:
-        logger.warning("upload_post_agent unavailable or failed: %s", e)
+        logger.warning("upload_post fallback unavailable: %s", e)
 
-    # No upload-post available or enabled — mark as routed for buffer (post_buffer_node runs later)
-    logger.info("Twitter posting routed to buffer/queued by later nodes (no direct Composio calls).")
-    return {"twitter_status": "Routed: upload-post or buffer", "twitter_post_id": ""}
+    return {"twitter_status": f"Failed: zernio ({pid or 'no post_id'})", "twitter_post_id": pid or "failed"}
 
 
 @traceable(name="post_facebook")

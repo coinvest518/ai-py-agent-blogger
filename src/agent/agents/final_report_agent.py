@@ -104,7 +104,7 @@ def gather_context(state: dict) -> Dict[str, Any]:
         "strategy": state.get("ai_strategy") or {},
         "statuses": {
             k: state.get(k) for k in [
-                "twitter_url", "facebook_status", "linkedin_status",
+                "twitter_url", "twitter_status", "facebook_status", "linkedin_status",
                 "instagram_status", "telegram_status", "upload_post_status",
                 "blog_status", "comment_status",
             ] if state.get(k)

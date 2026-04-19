@@ -63,6 +63,7 @@ class AgentState(TypedDict, total=False):
     # ── Posting results ──
     twitter_url: str
     twitter_post_id: str
+    twitter_status: Annotated[str, _last_nonempty]
     twitter_reply_status: str
     facebook_status: Annotated[str, _last_nonempty]
     facebook_post_id: Annotated[str, _last_nonempty]
