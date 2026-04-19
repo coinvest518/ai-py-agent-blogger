@@ -231,49 +231,6 @@ def build_briefing(state: dict) -> str:
     return body + plan_md if plan_md else body
 
 
-def _send_gmail(md: str) -> Dict[str, Any]:
-    """Self-send the briefing via Gmail (Composio). Silent on missing creds."""
-    entity = os.getenv("COMPOSIO_ENTITY_ID") or os.getenv("COMPOSIO_USER_ID")
-    to_addr = os.getenv("BRIEFING_EMAIL_TO")
-    if not entity or not to_addr:
-        return {"skipped": True, "reason": "BRIEFING_EMAIL_TO not set"}
-    try:
-        from src.agent.tools.composio_tools import get_composio_client, _execute_with_fallback
-        client = get_composio_client()
-        resp = _execute_with_fallback(
-            "GMAIL_SEND_EMAIL",
-            {
-                "recipient_email": to_addr,
-                "subject": f"FDWA briefing {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
-                "body": md,
-                "is_html": False,
-            },
-            entity,
-        )
-        if resp.get("successful"):
-            return {"success": True, "raw": resp.get("error")}
-        composio_err = resp.get("error")
-    except Exception as e:
-        composio_err = str(e)
-    try:
-        from src.agent.tools import pipedream_mcp
-        if pipedream_mcp.is_configured():
-            pd = pipedream_mcp.send_gmail(
-                to=[to_addr],
-                subject=f"FDWA briefing {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
-                body=md,
-                body_type="html",
-            )
-            if pd.get("success"):
-                return {"success": True, "via": "pipedream"}
-            if pd.get("connect_url"):
-                return {"success": False, "error": f"composio={composio_err}; pipedream-auth: {pd['connect_url']}"}
-            return {"success": False, "error": f"composio={composio_err}; pipedream={pd.get('error')}"}
-    except Exception as e:
-        return {"success": False, "error": f"composio={composio_err}; pipedream-exc={e}"}
-    return {"success": False, "error": composio_err}
-
-
 def run(state: dict) -> dict:
     """Graph entry — build the briefing and store it in state.
 
@@ -282,18 +239,14 @@ def run(state: dict) -> dict:
     Gmail self-send fires here because there's no dedicated graph node for it.
     """
     md = build_briefing(state)
-    # Provide a plain-text fallback for channels that don't need Markdown (Telegram)
     try:
         from src.agent.agents.content_agent import strip_markdown
         text = strip_markdown(md)
     except Exception:
-        # best-effort fallback
         text = md.replace("#", "").replace("**", "")[:3500]
 
-    gmail_result = _send_gmail(md)
     return {
         "final_briefing_markdown": md,
         "final_briefing_text": text[:3500],
         "briefing_title": f"FDWA run {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
-        "briefing_gmail": gmail_result,
     }

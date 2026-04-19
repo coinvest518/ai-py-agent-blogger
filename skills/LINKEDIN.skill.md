@@ -2,9 +2,19 @@
 
 Purpose: Provide explicit, machine-friendly guidance about LinkedIn's API, required identifiers, rate limits, and recommended fallback and backoff behaviour so AI agents can make safe, compliant decisions when posting to LinkedIn.
 
-Summary:
-- Preferred path: use `Composio` toolkit integrations when available and accepted (handles account wiring and toolkit versions).
-- Fallback path: when Composio is unavailable, returns toolkit/version errors, or is rate-limited, agents MAY use the direct LinkedIn REST API if valid application credentials and a valid member access token are configured.
+CURRENT POSTING ORDER IN FDWA (as of 2026-04-19):
+1. **Pipedream MCP** — PRIMARY. Uses `linkedin-create-image-post-user` if `image_url` present, else `linkedin-create-text-post-user`. Auth via `PIPEDREAM_CLIENT_ID/SECRET/PROJECT_ID` + `PIPEDREAM_EXTERNAL_USER_ID=fdwa-owner`, env `development`. One-time OAuth click on first run returns a Connect Link URL.
+2. **Composio** — fallback. Our LinkedIn developer app is missing the "Share on LinkedIn" product so direct Composio tokens 403 with `"Forbidden. You don't have permission to create posts."` until LinkedIn approves the product. Keep Composio wired because it may start working after product review.
+3. **upload-post** — last-resort image-only fallback (10/mo cap, env `UPLOAD_POST_ENABLE`).
+
+Why Pipedream is primary:
+- Pipedream runs its own LinkedIn OAuth app with `w_member_social` already granted, so posts succeed without touching our LinkedIn dev portal.
+- Live-verified 2026-04-18: `{'success': True, 'exports': {'$summary': 'Successfully created a new Post as User'}}`.
+- `external_user_id=fdwa-owner` must be stable — each distinct id re-prompts for auth.
+
+Summary (legacy paths still supported):
+- `Composio` toolkit integrations remain available and are retried after Pipedream fails.
+- Direct LinkedIn REST API path (`LINKEDIN_ACCESS_TOKEN`) exists in `linkedin_direct.py` but is not in the default chain.
 - Author identity: Always use a Person URN for the author (format `urn:li:person:<id>`). Activity URNs (`urn:li:activity:...`) are NOT valid as an author and must NOT be used.
 
 Key facts (quick):

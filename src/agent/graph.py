@@ -464,7 +464,6 @@ def final_report_node(state: AgentState) -> dict:
     result = final_report_agent.run(state)
     _broadcast_sync("complete_step", "final_report", {
         "len": len(result.get("final_briefing_markdown", "")),
-        "gmail": result.get("briefing_gmail"),
     })
     return result
 

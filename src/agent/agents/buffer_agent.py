@@ -161,9 +161,24 @@ async def _pinterest_board_service_id(channel_id: str) -> Optional[str]:
     return boards[0].get("serviceId")
 
 
+_EMOJI_RE = __import__("re").compile(
+    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F600-\U0001F64F\u2700-\u27BF\uFE0F]",
+)
+
+
 def _pin_title(text: str) -> str:
+    """Pinterest pin titles: ≤100 chars, no emojis, no URLs, no leading '#'."""
+    import re
+
     first = (text or "").strip().splitlines()[0] if text else ""
-    return (first or text or "FDWA")[:100]
+    s = first or text or "FDWA Update"
+    s = re.sub(r"https?://\S+", "", s)
+    s = _EMOJI_RE.sub("", s)
+    s = re.sub(r"#\S+", "", s)
+    s = re.sub(r"\s+", " ", s).strip(" .,:;-|")
+    if not s:
+        s = "FDWA Update"
+    return s[:100]
 
 
 async def _create_one(
@@ -181,6 +196,8 @@ async def _create_one(
 
     if svc in VIDEO_REQUIRED_SERVICES and not video_url:
         return {"service": svc, "skipped": True, "reason": "no video"}
+    if svc == "pinterest" and not image_url:
+        return {"service": svc, "skipped": True, "reason": "no image (pinterest requires image)"}
 
     args: Dict[str, Any] = {
         "channelId": cid,

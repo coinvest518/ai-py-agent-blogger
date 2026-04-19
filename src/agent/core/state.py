@@ -85,7 +85,6 @@ class AgentState(TypedDict, total=False):
     final_briefing_markdown: str
     briefing_markdown: str
     briefing_title: str
-    briefing_gmail: dict
     gdocs_status: str
     gdocs_url: str
     gdocs_document_id: str

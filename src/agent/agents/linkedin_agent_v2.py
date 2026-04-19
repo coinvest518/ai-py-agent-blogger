@@ -101,10 +101,32 @@ def run(state: dict) -> dict:
     except Exception:
         brain_snippet = ""
 
+    # Primary: Pipedream MCP (reliable OAuth with w_member_social scope)
+    pd_err = None
+    if pipedream_mcp.is_configured():
+        img = state.get("image_url")
+        if img and not str(img).startswith("file://"):
+            pd_res = pipedream_mcp.post_linkedin_image(li_text, img)
+        else:
+            pd_res = pipedream_mcp.post_linkedin_text(li_text)
+        if pd_res.get("success"):
+            record_post(li_text, "linkedin")
+            logger.info("LinkedIn posted via Pipedream MCP")
+            return {"linkedin_text": li_text, "linkedin_status": "Posted (pipedream)", "linkedin_brain_snippet": brain_snippet}
+        if pd_res.get("connect_url"):
+            logger.warning("Pipedream LinkedIn needs authorization: %s", pd_res["connect_url"])
+            return {
+                "linkedin_text": li_text,
+                "linkedin_status": f"Failed: pipedream-auth-required: {pd_res['connect_url']}",
+                "linkedin_brain_snippet": brain_snippet,
+            }
+        pd_err = pd_res.get("error", "Unknown")
+        logger.warning("LinkedIn Pipedream failed: %s — trying Composio", pd_err)
+
+    # Fallback 1: Composio
     author_urn = get_linkedin_author_urn(os.getenv("LINKEDIN_AUTHOR_URN"))
     composio_err = None
     if not author_urn:
-        logger.error("LinkedIn creds missing: LINKEDIN_AUTHOR_URN not set or discoverable")
         composio_err = "creds missing"
     else:
         image_url = state.get("image_url")
@@ -115,40 +137,19 @@ def run(state: dict) -> dict:
                 result = _composio_post(author_urn, li_text)
         except Exception as e:
             result = {"success": False, "error": str(e)}
-
         if result.get("success"):
             record_post(li_text, "linkedin")
             logger.info("LinkedIn posted via Composio")
-            return {"linkedin_text": li_text, "linkedin_status": "Posted", "linkedin_brain_snippet": brain_snippet}
+            return {"linkedin_text": li_text, "linkedin_status": "Posted (composio)", "linkedin_brain_snippet": brain_snippet}
         composio_err = result.get("error", "Unknown")
-        logger.warning("LinkedIn Composio failed: %s — trying upload-post fallback", composio_err)
-
-    # Fallback 1: Pipedream MCP (image if present, else text)
-    if pipedream_mcp.is_configured():
-        img = state.get("image_url")
-        if img and not str(img).startswith("file://"):
-            pd_res = pipedream_mcp.post_linkedin_image(li_text, img)
-        else:
-            pd_res = pipedream_mcp.post_linkedin_text(li_text)
-        if pd_res.get("success"):
-            record_post(li_text, "linkedin")
-            logger.info("LinkedIn posted via Pipedream MCP fallback")
-            return {"linkedin_text": li_text, "linkedin_status": "Posted (pipedream)", "linkedin_brain_snippet": brain_snippet}
-        if pd_res.get("connect_url"):
-            logger.warning("Pipedream LinkedIn needs authorization: %s", pd_res["connect_url"])
-            return {
-                "linkedin_text": li_text,
-                "linkedin_status": f"Failed: {composio_err} | pipedream-auth-required: {pd_res['connect_url']}",
-                "linkedin_brain_snippet": brain_snippet,
-            }
-        logger.warning("Pipedream LinkedIn failed: %s — trying upload-post", pd_res.get("error"))
+        logger.warning("LinkedIn Composio failed: %s — trying upload-post", composio_err)
 
     # Fallback 2: upload-post (image-only path)
     image_url = state.get("image_url")
     if not image_url:
-        return {"linkedin_text": li_text, "linkedin_status": f"Failed: {composio_err} (no image for fallback)", "linkedin_brain_snippet": brain_snippet}
+        return {"linkedin_text": li_text, "linkedin_status": f"Failed: pipedream={pd_err}; composio={composio_err} (no image for fallback)", "linkedin_brain_snippet": brain_snippet}
     if upload_post_agent.remaining_quota() <= 0:
-        return {"linkedin_text": li_text, "linkedin_status": f"Failed: {composio_err} (upload-post cap reached)", "linkedin_brain_snippet": brain_snippet}
+        return {"linkedin_text": li_text, "linkedin_status": f"Failed: pipedream={pd_err}; composio={composio_err} (upload-post cap reached)", "linkedin_brain_snippet": brain_snippet}
 
     fb = upload_post_agent.upload(
         platforms=["linkedin"],
