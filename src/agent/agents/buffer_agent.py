@@ -35,6 +35,7 @@ DEFAULT_MODE = os.getenv("BUFFER_DEFAULT_MODE", "shareNow")
 PINTEREST_SOURCE_URL = os.getenv(
     "BUFFER_PINTEREST_SOURCE_URL", "https://futuristicwealth.gumroad.com/"
 )
+FALLBACK_IMAGE_URL = os.getenv("BUFFER_FALLBACK_IMAGE_URL", "").strip() or None
 IMMEDIATE_DELAY_SECS = int(os.getenv("BUFFER_IMMEDIATE_DELAY_SECS", "90"))
 
 VIDEO_REQUIRED_SERVICES = {"tiktok", "youtube"}
@@ -294,8 +295,10 @@ async def _create_update_async(
     for r in results:
         svc = r.get("service", "unknown")
         if r.get("skipped"):
-            skipped.append(f"{svc}({r.get('reason')})")
-            by_service[svc] = "skipped(no-video)"
+            reason = r.get("reason", "skipped")
+            skipped.append(f"{svc}({reason})")
+            short = "no-video" if "video" in reason else ("no-image" if "image" in reason else "skipped")
+            by_service[svc] = f"skipped({short})"
             continue
         if r.get("success"):
             by_service[svc] = "posted"
@@ -391,9 +394,17 @@ def run(state: dict) -> dict:
 
     image_url = state.get("image_url")
     if image_url and str(image_url).startswith("file://"):
+        logger.warning("Buffer: dropping local file:// image_url (need public HTTPS)")
         image_url = None
+    if not image_url and FALLBACK_IMAGE_URL:
+        logger.info("Buffer: using BUFFER_FALLBACK_IMAGE_URL so Pinterest can still post")
+        image_url = FALLBACK_IMAGE_URL
     video_url = state.get("video_url") or None
     scheduled_at = state.get("buffer_scheduled_at")
+    logger.info(
+        "Buffer input: text_len=%d image=%s video=%s scheduled_at=%s",
+        len(text), bool(image_url), bool(video_url), scheduled_at,
+    )
 
     result = create_update(
         text=text[:2000],
