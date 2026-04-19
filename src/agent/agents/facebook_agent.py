@@ -7,6 +7,7 @@ import time
 from src.agent.agents.content_agent import generate_facebook
 from src.agent.tools.composio_tools import post_facebook, comment_facebook
 from src.agent.tools.image_tools import download_image
+from src.agent.tools import pipedream_mcp
 from src.agent.duplicate_detector import record_post
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,18 @@ def run(state: dict) -> dict:
         return {"facebook_text": fb_text, "facebook_status": f"Posted: {post_id}", "facebook_post_id": post_id}
     else:
         err = result.get("error", "Unknown")
-        # Detect expired/revoked account connections
+        logger.warning("Facebook Composio failed: %s — trying Pipedream fallback", err)
+        if pipedream_mcp.is_configured():
+            pd_res = pipedream_mcp.post_facebook_page(fb_text)
+            if pd_res.get("success"):
+                data = pd_res.get("data") or {}
+                post_id = str(data.get("id") or data.get("post_id") or "")
+                record_post(fb_text, "facebook", post_id=post_id, image_url=image_url)
+                logger.info("Facebook posted via Pipedream fallback")
+                return {"facebook_text": fb_text, "facebook_status": f"Posted (pipedream): {post_id}", "facebook_post_id": post_id}
+            if pd_res.get("connect_url"):
+                return {"facebook_text": fb_text, "facebook_status": f"Failed: {err} | pipedream-auth-required: {pd_res['connect_url']}", "facebook_post_id": ""}
+            logger.warning("Facebook Pipedream failed: %s", pd_res.get("error"))
         if "EXPIRED" in str(err).upper() or "410" in str(err):
             logger.error("Facebook account connection EXPIRED — reconnect at composio.dev")
             return {"facebook_text": fb_text, "facebook_status": "Failed: Account EXPIRED — reconnect at composio.dev", "facebook_post_id": ""}

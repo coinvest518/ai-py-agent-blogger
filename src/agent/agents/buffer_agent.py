@@ -1,207 +1,311 @@
-"""Buffer scheduling sub-agent (GraphQL API).
+"""Buffer scheduling sub-agent (MCP transport).
 
-Buffer migrated from `api.bufferapp.com/1/*` REST to `api.buffer.com` GraphQL.
-This agent uses the new GraphQL surface with a Bearer API key.
+Uses Buffer's official MCP server at https://mcp.buffer.com/mcp with a bearer
+token. This replaces the hand-rolled GraphQL path so per-service metadata
+(Pinterest boardServiceId/title/url, Instagram userTags, etc.) is validated
+by Buffer's own schema and tool calls show up in LangSmith as child spans.
 
 Env:
-  BUFFER_API_KEY     — Bearer token from Buffer developer dashboard
-  BUFFER_CHANNEL_IDS (optional) — comma-separated channel IDs to post to;
-    otherwise every channel under every organization is used.
+  BUFFER_API_KEY                  — Bearer token from Buffer dashboard
+  BUFFER_MCP_URL                  — default https://mcp.buffer.com/mcp
+  BUFFER_PINTEREST_SOURCE_URL     — default https://futuristicwealth.gumroad.com/
+  BUFFER_PINTEREST_BOARD_SERVICE_ID — optional; else auto-pick "Cryptocurrency"
+                                     or first board on the pinterest channel
+  BUFFER_DEFAULT_MODE             — shareNow (default) | customScheduled
+  BUFFER_CHANNEL_IDS              — optional csv to restrict targets
 
-State keys read:
-  buffer_text           — post body (falls back to tweet_text / linkedin_text)
-  image_url             — public image URL attached as `assets.images[]`
-  buffer_scheduled_at   — ISO-8601; if present, uses `schedulingType: custom`
-                          otherwise the agent creates a post immediately
-                          via `mode: customScheduled`.
-
-Returns state keys:
-  buffer_status, buffer_post_ids
+State keys read: buffer_text, tweet_text/linkedin_text/facebook_text, image_url,
+video_url, buffer_scheduled_at.
+State keys returned: buffer_status, buffer_post_ids.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-import requests
-
 logger = logging.getLogger(__name__)
 
-API_URL = "https://api.buffer.com"
-_channels_cache: Optional[List[Dict[str, Any]]] = None
-
-# Default posting mode when state["buffer_scheduled_at"] is NOT provided.
-# By default this creates a Buffer post immediately (via customScheduled),
-# rather than appending it to the channel queue. This avoids queue-only
-# behavior and lets Buffer publish as soon as it processes the item.
-BUFFER_DEFAULT_MODE = os.getenv("BUFFER_DEFAULT_MODE", "immediate").lower()
+MCP_URL = os.getenv("BUFFER_MCP_URL", "https://mcp.buffer.com/mcp")
+DEFAULT_MODE = os.getenv("BUFFER_DEFAULT_MODE", "shareNow")
+PINTEREST_SOURCE_URL = os.getenv(
+    "BUFFER_PINTEREST_SOURCE_URL", "https://futuristicwealth.gumroad.com/"
+)
 IMMEDIATE_DELAY_SECS = int(os.getenv("BUFFER_IMMEDIATE_DELAY_SECS", "90"))
 
+VIDEO_REQUIRED_SERVICES = {"tiktok", "youtube"}
 
-def _now_plus_iso(seconds: int) -> str:
-    """Return ISO-8601 UTC timestamp for `seconds` from now (Buffer-accepted)."""
-    dt = datetime.now(timezone.utc) + timedelta(seconds=seconds)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+_tools_cache: Optional[Dict[str, Any]] = None
+_channels_cache: Optional[List[Dict[str, Any]]] = None
+_boards_cache: Dict[str, List[Dict[str, Any]]] = {}
+_org_id_cache: Optional[str] = None
 
 
 def _token() -> Optional[str]:
     return os.getenv("BUFFER_API_KEY") or os.getenv("BUFFER_ACCESS_TOKEN")
 
 
-def _headers() -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {_token() or ''}",
-        "Content-Type": "application/json",
-    }
+def _now_plus_iso(seconds: int) -> str:
+    dt = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
-def _gql(query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    if not _token():
-        return {"error": "BUFFER_API_KEY not set"}
-    payload = {"query": query, "variables": variables or {}}
+def _extract_text(raw: Any) -> str:
+    """MCP tools return langchain ToolMessage content; pull the JSON text out."""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list) and raw:
+        first = raw[0]
+        if isinstance(first, dict):
+            return first.get("text") or ""
+        return getattr(first, "text", "") or ""
+    if isinstance(raw, dict):
+        return raw.get("text") or json.dumps(raw)
+    return str(raw)
+
+
+def _parse(raw: Any) -> Any:
+    txt = _extract_text(raw)
     try:
-        r = requests.post(API_URL, headers=_headers(), json=payload, timeout=30)
-    except Exception as e:
-        return {"error": f"Request exception: {e}"}
-    if r.status_code >= 400:
-        return {"error": f"HTTP {r.status_code}: {r.text[:240]}"}
-    body = r.json()
-    if body.get("errors"):
-        return {"error": str(body["errors"])[:240], "data": body.get("data")}
-    return body
+        return json.loads(txt)
+    except Exception:
+        return txt
 
 
-def _list_organizations() -> List[str]:
-    res = _gql("query { account { organizations { id } } }")
-    if "error" in res:
-        logger.warning("Buffer organizations query failed: %s", res["error"])
-        return []
-    data = ((res.get("data") or {}).get("account") or {}).get("organizations") or []
-    return [str(o.get("id")) for o in data if o.get("id")]
+async def _get_tools() -> Dict[str, Any]:
+    global _tools_cache
+    if _tools_cache is not None:
+        return _tools_cache
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    client = MultiServerMCPClient(
+        {
+            "buffer": {
+                "url": MCP_URL,
+                "headers": {"Authorization": f"Bearer {_token() or ''}"},
+                "transport": "streamable_http",
+            }
+        }
+    )
+    tools = await client.get_tools()
+    _tools_cache = {t.name: t for t in tools}
+    return _tools_cache
+
+
+def _run_sync(coro):
+    """Run a coroutine from sync code even if an event loop is already running."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # Running loop: hand to a worker thread to avoid nested-loop error.
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+async def _get_account_org() -> Optional[str]:
+    global _org_id_cache
+    if _org_id_cache:
+        return _org_id_cache
+    tools = await _get_tools()
+    acct = _parse(await tools["get_account"].ainvoke({}))
+    orgs = (acct or {}).get("organizations") if isinstance(acct, dict) else []
+    if orgs:
+        _org_id_cache = orgs[0].get("id")
+    return _org_id_cache
+
+
+async def _list_channels_async() -> List[Dict[str, Any]]:
+    global _channels_cache
+    if _channels_cache is not None:
+        return _channels_cache
+    tools = await _get_tools()
+    org = await _get_account_org()
+    if not org:
+        _channels_cache = []
+        return _channels_cache
+    data = _parse(await tools["list_channels"].ainvoke({"organizationId": org}))
+    _channels_cache = data if isinstance(data, list) else []
+    return _channels_cache
 
 
 def list_channels(refresh: bool = False) -> List[Dict[str, Any]]:
-    """Return all channels across every organization in the account (cached)."""
     global _channels_cache
-    if _channels_cache is not None and not refresh:
-        return _channels_cache
-    channels: List[Dict[str, Any]] = []
-    for org_id in _list_organizations():
-        res = _gql(
-            "query($orgId: OrganizationId!) { channels(input: {organizationId: $orgId}) { id name service } }",
-            {"orgId": org_id},
-        )
-        if "error" in res:
-            logger.warning("Buffer channels query failed for %s: %s", org_id, res["error"])
-            continue
-        for c in (res.get("data") or {}).get("channels") or []:
-            if c.get("id"):
-                channels.append({"id": c["id"], "name": c.get("name"), "service": c.get("service"), "organization_id": org_id})
-    _channels_cache = channels
-    return channels
+    if refresh:
+        _channels_cache = None
+    return _run_sync(_list_channels_async())
 
 
-def _target_channel_ids() -> List[str]:
-    explicit = os.getenv("BUFFER_CHANNEL_IDS", "").strip()
-    if explicit:
-        return [c.strip() for c in explicit.split(",") if c.strip()]
-    return [c["id"] for c in list_channels()]
-
-
-# Services that REQUIRE a video — skip if no video_url available
-VIDEO_REQUIRED_SERVICES = {"tiktok", "youtube"}
-
-# Services that accept image+text (video also accepted where platform allows)
-IMAGE_SERVICES = {
-    "pinterest", "googlebusiness", "instagram", "facebook",
-    "threads", "bluesky", "mastodon", "start_page", "linkedin",
-}
-
-# Services that are text-first (image optional)
-TEXT_SERVICES = {"twitter", "threads", "bluesky", "mastodon"}
-
-
-def _pick_assets(service: str, image_url: Optional[str], video_url: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Return the assets dict Buffer expects for this channel's service.
-
-    - Video-required services (TikTok, YouTube): return video asset or None (skip).
-    - Image services: return image asset if we have one.
-    - Text services: attach image if available, else no assets.
-    """
-    svc = (service or "").lower()
-    if svc in VIDEO_REQUIRED_SERVICES:
-        if video_url:
-            return {"video": {"url": video_url}}
-        return None  # signal: skip this channel
-    # Non-video channels: prefer image if present
-    if image_url:
-        return {"images": [{"url": image_url}]}
-    return {}  # empty = text-only
-
-
-CREATE_POST_MUTATION = """
-mutation CreatePost($input: CreatePostInput!) {
-  createPost(input: $input) {
-    ... on PostActionSuccess {
-      post { id text }
-    }
-    ... on MutationError {
-      message
-    }
-  }
-}
-"""
-
-
-def create_post_on_channel(
-    channel_id: str,
-    text: str,
-    image_url: Optional[str] = None,
-    scheduled_at: Optional[str] = None,
-    video_url: Optional[str] = None,
-    service: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Create one post on a single channel. Returns {success, post_id, error, skipped}.
-
-    If `service` is a video-only platform (TikTok/YouTube) and no `video_url`
-    is provided, returns {success: False, skipped: True, reason: ...} so the
-    caller can distinguish "we chose not to post" from "it failed".
-    """
-    assets = _pick_assets(service or "", image_url, video_url)
-    if assets is None:
-        return {"success": False, "skipped": True, "reason": f"{service} requires video"}
-
-    input_obj: Dict[str, Any] = {
-        "channelId": channel_id,
-        "text": text,
-        "schedulingType": "automatic",
-    }
-
-    # Mode resolution:
-    #   1. Explicit scheduled_at (ISO-8601) → customScheduled at that time
-    #   2. Otherwise, use customScheduled at now+IMMEDIATE_DELAY_SECS.
-    #      This avoids Buffer queueing and creates a post immediately.
-    if scheduled_at:
-        input_obj["mode"] = "customScheduled"
-        input_obj["dueAt"] = scheduled_at
+async def _pinterest_board_service_id(channel_id: str) -> Optional[str]:
+    override = os.getenv("BUFFER_PINTEREST_BOARD_SERVICE_ID")
+    if override:
+        return override
+    if channel_id in _boards_cache:
+        boards = _boards_cache[channel_id]
     else:
-        input_obj["mode"] = "customScheduled"
-        input_obj["dueAt"] = _now_plus_iso(IMMEDIATE_DELAY_SECS)
+        tools = await _get_tools()
+        ch = _parse(await tools["get_channel"].ainvoke({"channelId": channel_id}))
+        boards = ((ch or {}).get("metadata") or {}).get("boards") or []
+        _boards_cache[channel_id] = boards
+    if not boards:
+        return None
+    for b in boards:
+        if "crypto" in (b.get("name") or "").lower():
+            return b.get("serviceId")
+    return boards[0].get("serviceId")
 
+
+def _pin_title(text: str) -> str:
+    first = (text or "").strip().splitlines()[0] if text else ""
+    return (first or text or "FDWA")[:100]
+
+
+async def _create_one(
+    *,
+    channel: Dict[str, Any],
+    text: str,
+    image_url: Optional[str],
+    video_url: Optional[str],
+    mode: str,
+    due_at: Optional[str],
+) -> Dict[str, Any]:
+    tools = await _get_tools()
+    svc = (channel.get("service") or "").lower()
+    cid = channel.get("id")
+
+    if svc in VIDEO_REQUIRED_SERVICES and not video_url:
+        return {"service": svc, "skipped": True, "reason": "no video"}
+
+    args: Dict[str, Any] = {
+        "channelId": cid,
+        "schedulingType": "automatic",
+        "mode": mode,
+        "text": (text or "")[:2000],
+    }
+    if mode == "customScheduled":
+        args["dueAt"] = due_at or _now_plus_iso(IMMEDIATE_DELAY_SECS)
+
+    assets: Dict[str, Any] = {}
+    if video_url:
+        assets["videos"] = [{"url": video_url}]
+    elif image_url:
+        assets["images"] = [
+            {"url": image_url, "metadata": {"altText": _pin_title(text)}}
+        ]
     if assets:
-        input_obj["assets"] = assets
+        args["assets"] = assets
 
-    res = _gql(CREATE_POST_MUTATION, {"input": input_obj})
-    if "error" in res:
-        return {"success": False, "error": res["error"]}
-    payload = ((res.get("data") or {}).get("createPost") or {})
-    if payload.get("message"):
-        return {"success": False, "error": payload["message"]}
-    post = payload.get("post") or {}
-    return {"success": True, "post_id": post.get("id"), "response": payload}
+    if svc == "pinterest":
+        board_id = await _pinterest_board_service_id(cid)
+        if not board_id:
+            return {"service": svc, "success": False, "error": "no pinterest board"}
+        args["metadata"] = {
+            "pinterest": {
+                "title": _pin_title(text),
+                "url": PINTEREST_SOURCE_URL,
+                "boardServiceId": board_id,
+            }
+        }
+
+    try:
+        raw = await tools["create_post"].ainvoke(args)
+        data = _parse(raw)
+    except Exception as e:
+        return {"service": svc, "success": False, "error": f"{type(e).__name__}: {e}"[:200]}
+
+    if isinstance(data, dict) and data.get("id"):
+        return {"service": svc, "success": True, "post_id": data.get("id"), "raw": data}
+    if isinstance(data, dict) and (data.get("message") or data.get("error")):
+        return {"service": svc, "success": False, "error": str(data.get("message") or data.get("error"))[:200]}
+    return {"service": svc, "success": True, "post_id": None, "raw": data}
+
+
+async def _create_update_async(
+    text: str,
+    image_url: Optional[str],
+    video_url: Optional[str],
+    scheduled_at: Optional[str],
+    channel_ids: Optional[List[str]],
+) -> Dict[str, Any]:
+    if not _token():
+        return {"success": False, "error": "BUFFER_API_KEY not set"}
+    if not (text or "").strip():
+        return {"success": False, "error": "empty text"}
+
+    all_channels = await _list_channels_async()
+    if channel_ids:
+        wanted = set(channel_ids)
+        channels = [c for c in all_channels if c.get("id") in wanted]
+    else:
+        explicit = os.getenv("BUFFER_CHANNEL_IDS", "").strip()
+        if explicit:
+            wanted = {c.strip() for c in explicit.split(",") if c.strip()}
+            channels = [c for c in all_channels if c.get("id") in wanted]
+        else:
+            channels = all_channels
+
+    if not channels:
+        return {"success": False, "error": "no Buffer channels resolved"}
+
+    mode = "customScheduled" if scheduled_at else DEFAULT_MODE
+
+    results = await asyncio.gather(
+        *[
+            _create_one(
+                channel=c,
+                text=text,
+                image_url=image_url,
+                video_url=video_url,
+                mode=mode,
+                due_at=scheduled_at,
+            )
+            for c in channels
+        ],
+        return_exceptions=False,
+    )
+
+    post_ids: List[str] = []
+    errors: List[str] = []
+    skipped: List[str] = []
+    by_service: Dict[str, str] = {}
+    for r in results:
+        svc = r.get("service", "unknown")
+        if r.get("skipped"):
+            skipped.append(f"{svc}({r.get('reason')})")
+            by_service[svc] = "skipped(no-video)"
+            continue
+        if r.get("success"):
+            by_service[svc] = "posted"
+            if r.get("post_id"):
+                post_ids.append(r["post_id"])
+        else:
+            err = str(r.get("error", "unknown"))[:80]
+            errors.append(f"{svc}: {err}")
+            by_service[svc] = f"fail({err[:30]})"
+
+    out: Dict[str, Any] = {"by_service": by_service, "post_ids": post_ids}
+    if post_ids and not errors:
+        out["success"] = True
+        if skipped:
+            out["skipped"] = skipped
+        return out
+    if post_ids and errors:
+        out["success"] = True
+        out["partial_errors"] = errors
+        if skipped:
+            out["skipped"] = skipped
+        return out
+    out["success"] = False
+    out["error"] = "; ".join(errors) or (
+        f"all channels skipped: {', '.join(skipped)}" if skipped else "no posts created"
+    )
+    return out
 
 
 def create_update(
@@ -211,79 +315,9 @@ def create_update(
     channel_ids: Optional[List[str]] = None,
     video_url: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Fan-out a post to every configured channel, routing by service type.
-
-    Video-only services (TikTok, YouTube) are SKIPPED unless `video_url` is
-    set. Image-capable services get the image. Services get their per-type
-    asset payload via `_pick_assets()`.
-    """
-    if not _token():
-        return {"success": False, "error": "BUFFER_API_KEY not set"}
-    if not text:
-        return {"success": False, "error": "empty text"}
-
-    # Resolve channels with their service type so we can route correctly.
-    explicit = os.getenv("BUFFER_CHANNEL_IDS", "").strip()
-    if channel_ids:
-        all_channels = list_channels()
-        id_to_svc = {c["id"]: c.get("service") for c in all_channels}
-        resolved = [{"id": cid, "service": id_to_svc.get(cid, "")} for cid in channel_ids]
-    elif explicit:
-        all_channels = list_channels()
-        id_to_svc = {c["id"]: c.get("service") for c in all_channels}
-        resolved = [
-            {"id": cid.strip(), "service": id_to_svc.get(cid.strip(), "")}
-            for cid in explicit.split(",") if cid.strip()
-        ]
-    else:
-        resolved = [{"id": c["id"], "service": c.get("service", "")} for c in list_channels()]
-
-    if not resolved:
-        return {"success": False, "error": "no Buffer channels resolved"}
-
-    post_ids: List[str] = []
-    errors: List[str] = []
-    skipped: List[str] = []
-    by_service: Dict[str, str] = {}
-
-    for ch in resolved:
-        cid = ch["id"]
-        svc = (ch.get("service") or "unknown").lower()
-        res = create_post_on_channel(
-            channel_id=cid,
-            text=text,
-            image_url=image_url,
-            scheduled_at=scheduled_at,
-            video_url=video_url,
-            service=svc,
-        )
-        if res.get("skipped"):
-            skipped.append(f"{svc}({res.get('reason', 'skipped')})")
-            by_service[svc] = "skipped(no-video)"
-            continue
-        if res.get("success") and res.get("post_id"):
-            post_ids.append(res["post_id"])
-            by_service[svc] = "posted"
-        else:
-            err = str(res.get("error", "unknown"))[:80]
-            errors.append(f"{svc}:{cid[:6]}: {err}")
-            by_service[svc] = f"fail({err[:30]})"
-
-    result: Dict[str, Any] = {"by_service": by_service, "post_ids": post_ids}
-    if post_ids and not errors:
-        result["success"] = True
-        if skipped:
-            result["skipped"] = skipped
-        return result
-    if post_ids and errors:
-        result["success"] = True
-        result["partial_errors"] = errors
-        if skipped:
-            result["skipped"] = skipped
-        return result
-    result["success"] = False
-    result["error"] = "; ".join(errors) or (f"all channels skipped: {', '.join(skipped)}" if skipped else "no posts created")
-    return result
+    return _run_sync(
+        _create_update_async(text, image_url, video_url, scheduled_at, channel_ids)
+    )
 
 
 def post_now(
@@ -292,16 +326,11 @@ def post_now(
     video_url: Optional[str] = None,
     channel_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Fire-and-forget immediate post. Uses customScheduled at now+IMMEDIATE_DELAY_SECS.
-
-    Convenience wrapper the AI / Telegram /buffer_now can call to bypass the
-    graph state. Returns the same shape as create_update.
-    """
     return create_update(
         text=text,
         image_url=image_url,
         video_url=video_url,
-        scheduled_at=_now_plus_iso(IMMEDIATE_DELAY_SECS),
+        scheduled_at=None,
         channel_ids=channel_ids,
     )
 
@@ -313,16 +342,10 @@ def schedule_post(
     video_url: Optional[str] = None,
     channel_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Schedule a post for a specific time.
-
-    Args:
-        when: ISO-8601 string (e.g. "2026-03-10T15:00:00.000Z") OR a datetime
-              (naive treated as UTC). Must be in the future.
-    """
     if isinstance(when, datetime):
         if when.tzinfo is None:
             when = when.replace(tzinfo=timezone.utc)
-        iso = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        iso = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
     else:
         iso = str(when).strip()
     return create_update(
@@ -335,8 +358,7 @@ def schedule_post(
 
 
 def run(state: dict) -> dict:
-    """Graph-compatible entry — push a post to every linked Buffer channel."""
-    logger.info("--- BUFFER AGENT ---")
+    logger.info("--- BUFFER AGENT (MCP) ---")
     if not _token():
         return {"buffer_status": "Skipped: BUFFER_API_KEY not set", "buffer_post_ids": []}
 

@@ -166,9 +166,15 @@ envVarGroups:
       - key: LINKEDIN_DAILY_LIMIT
         value: "1"
 
-      # Buffer (scheduler/image aggregator)
+      # Buffer (MCP transport + Pinterest source URL)
       - key: BUFFER_API_KEY
         sync: false
+      - key: BUFFER_MCP_URL
+        value: https://mcp.buffer.com/mcp
+      - key: BUFFER_PINTEREST_SOURCE_URL
+        value: https://futuristicwealth.gumroad.com/
+      - key: BUFFER_DEFAULT_MODE
+        value: shareNow
 
       # Upload-post (DISABLED until we have video gen)
       - key: UPLOAD_POST_ENABLE
@@ -257,6 +263,18 @@ envVarGroups:
         sync: false
       - key: AGENT_WALLET_PRIVATE_KEY
         sync: false
+
+      # Pipedream MCP (fallback when Composio fails)
+      - key: PIPEDREAM_CLIENT_ID
+        sync: false
+      - key: PIPEDREAM_CLIENT_SECRET
+        sync: false
+      - key: PIPEDREAM_PROJECT_ID
+        sync: false
+      - key: PIPEDREAM_ENVIRONMENT
+        value: development
+      - key: PIPEDREAM_EXTERNAL_USER_ID
+        value: fdwa-owner
 
       # Sandbox / compute
       - key: DAYTONA_API_KEY

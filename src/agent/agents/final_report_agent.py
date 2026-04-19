@@ -250,9 +250,28 @@ def _send_gmail(md: str) -> Dict[str, Any]:
             },
             entity,
         )
-        return {"success": bool(resp.get("successful")), "raw": resp.get("error")}
+        if resp.get("successful"):
+            return {"success": True, "raw": resp.get("error")}
+        composio_err = resp.get("error")
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        composio_err = str(e)
+    try:
+        from src.agent.tools import pipedream_mcp
+        if pipedream_mcp.is_configured():
+            pd = pipedream_mcp.send_gmail(
+                to=[to_addr],
+                subject=f"FDWA briefing {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
+                body=md,
+                body_type="html",
+            )
+            if pd.get("success"):
+                return {"success": True, "via": "pipedream"}
+            if pd.get("connect_url"):
+                return {"success": False, "error": f"composio={composio_err}; pipedream-auth: {pd['connect_url']}"}
+            return {"success": False, "error": f"composio={composio_err}; pipedream={pd.get('error')}"}
+    except Exception as e:
+        return {"success": False, "error": f"composio={composio_err}; pipedream-exc={e}"}
+    return {"success": False, "error": composio_err}
 
 
 def run(state: dict) -> dict:

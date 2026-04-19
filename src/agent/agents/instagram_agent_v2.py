@@ -11,6 +11,7 @@ from src.agent.agents.content_agent import generate_instagram
 from src.agent.core.config import COMPOSIO_ENTITY_ID, INSTAGRAM_USER_ID
 from src.agent.duplicate_detector import record_post
 from src.agent.tools.composio_tools import post_instagram, post_facebook
+from src.agent.tools import pipedream_mcp
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,18 @@ def run(state: dict) -> dict:
             logger.info("Instagram posted: %s", post_id)
             return {"instagram_caption": caption, "instagram_status": "Posted", "instagram_post_id": post_id}
         err = result.get("error") or result.get("instagram_status") or "Unknown"
+        logger.warning("IG Composio failed: %s — trying Pipedream fallback", err)
+        if pipedream_mcp.is_configured() and image_url:
+            pd_res = pipedream_mcp.post_instagram(caption, image_url)
+            if pd_res.get("success"):
+                data = pd_res.get("data") or {}
+                post_id = str(data.get("id") or data.get("post_id") or "")
+                record_post(caption, "instagram", post_id=post_id, image_url=image_url)
+                logger.info("Instagram posted via Pipedream fallback")
+                return {"instagram_caption": caption, "instagram_status": "Posted (pipedream)", "instagram_post_id": post_id}
+            if pd_res.get("connect_url"):
+                return {"instagram_caption": caption, "instagram_status": f"Failed: {err} | pipedream-auth-required: {pd_res['connect_url']}", "instagram_post_id": ""}
+            logger.warning("IG Pipedream failed: %s", pd_res.get("error"))
         logger.error("IG publish failed: %s", err)
         return {"instagram_caption": caption, "instagram_status": f"Failed: {err}", "instagram_post_id": ""}
     except Exception as e:

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from src.agent.agents.content_agent import generate_linkedin, strip_markdown
 from src.agent.agents import upload_post_agent
+from src.agent.tools import pipedream_mcp
 from src.agent.tools.composio_tools import (
     get_linkedin_author_urn,
     post_linkedin as _composio_post,
@@ -122,6 +123,27 @@ def run(state: dict) -> dict:
         composio_err = result.get("error", "Unknown")
         logger.warning("LinkedIn Composio failed: %s — trying upload-post fallback", composio_err)
 
+    # Fallback 1: Pipedream MCP (image if present, else text)
+    if pipedream_mcp.is_configured():
+        img = state.get("image_url")
+        if img and not str(img).startswith("file://"):
+            pd_res = pipedream_mcp.post_linkedin_image(li_text, img)
+        else:
+            pd_res = pipedream_mcp.post_linkedin_text(li_text)
+        if pd_res.get("success"):
+            record_post(li_text, "linkedin")
+            logger.info("LinkedIn posted via Pipedream MCP fallback")
+            return {"linkedin_text": li_text, "linkedin_status": "Posted (pipedream)", "linkedin_brain_snippet": brain_snippet}
+        if pd_res.get("connect_url"):
+            logger.warning("Pipedream LinkedIn needs authorization: %s", pd_res["connect_url"])
+            return {
+                "linkedin_text": li_text,
+                "linkedin_status": f"Failed: {composio_err} | pipedream-auth-required: {pd_res['connect_url']}",
+                "linkedin_brain_snippet": brain_snippet,
+            }
+        logger.warning("Pipedream LinkedIn failed: %s — trying upload-post", pd_res.get("error"))
+
+    # Fallback 2: upload-post (image-only path)
     image_url = state.get("image_url")
     if not image_url:
         return {"linkedin_text": li_text, "linkedin_status": f"Failed: {composio_err} (no image for fallback)", "linkedin_brain_snippet": brain_snippet}
