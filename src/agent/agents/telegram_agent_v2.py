@@ -146,11 +146,10 @@ def run(state: dict) -> dict:
 
 
 def _save_tokens_to_sheets(crypto_analysis: dict):
-    """Save top crypto tokens to Google Sheets in a single batch call."""
-    if not SHEETS_ENABLED or not crypto_analysis:
-        return
+    """Dormant — Sheets logging disabled on the hot path."""
+    return
 
-    try:
+    try:  # pragma: no cover — unreachable, retained for manual re-enable
         token_rows = []
         for group in ["best_gainers", "best_losers"]:
             for token in crypto_analysis.get(group, []):

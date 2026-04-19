@@ -786,11 +786,7 @@ async def startup():
         except Exception as e:
             logger.warning("Notion boot notification failed (non-critical): %s", e)
 
-    try:
-        from src.agent.sheets_agent import initialize_google_sheets
-        initialize_google_sheets()
-    except Exception as e:
-        logger.warning("Google Sheets initialization failed (non-critical): %s", e)
+    # Sheets dormant — not auto-initialized. Import sheets_agent explicitly if needed.
 
 
 @app.on_event("shutdown")

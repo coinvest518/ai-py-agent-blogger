@@ -109,7 +109,8 @@ def _merge_run_state(rollup: Dict, state: dict) -> Dict:
 
 
 def _best_effort_sheets_sync(rollup: Dict) -> bool:
-    """Append today's row to a Daily Analytics tab. Skips silently on failure."""
+    """Dormant — Sheets logging disabled on the hot path."""
+    return False
     sheet_id = os.getenv("GOOGLESHEETS_POSTS_SPREADSHEET_ID")
     if not sheet_id:
         return False

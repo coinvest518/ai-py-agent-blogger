@@ -466,6 +466,56 @@ def upload_to_imgbb(image_bytes: bytes, timeout: int = 30) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+def host_image_bytes(image_bytes: bytes, prefer: str | None = None) -> Dict[str, Any]:
+    """Cascade image hosting: ImgBB → Imgur (anon) → Google Drive (Composio).
+
+    First success wins. Returns {"success", "url", "provider"} or
+    {"success": False, "error", "attempts": [...]}. Pipedream→Cloudinary
+    stub reserved for future (needs Connect Link flow).
+    """
+    attempts = []
+    order = ["imgbb", "imgur", "gdrive"]
+    if prefer and prefer in order:
+        order.remove(prefer)
+        order.insert(0, prefer)
+
+    for provider in order:
+        try:
+            if provider == "imgbb":
+                r = upload_to_imgbb(image_bytes)
+            elif provider == "imgur":
+                from src.agent.hf_image_gen import upload_to_imgur
+                r = upload_to_imgur(image_bytes)
+            elif provider == "gdrive":
+                import tempfile
+                from src.agent.video_gen.gdrive_upload import upload_and_share
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+                    tf.write(image_bytes)
+                    tmp_path = tf.name
+                gr = upload_and_share(tmp_path, mime_type="image/png")
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                if gr.get("success"):
+                    r = {"success": True, "url": gr.get("direct_link")}
+                else:
+                    r = {"success": False, "error": gr.get("error")}
+            else:
+                continue
+        except Exception as e:
+            logger.warning("host_image_bytes[%s] exception: %s", provider, e)
+            r = {"success": False, "error": str(e)}
+
+        if r.get("success") and r.get("url"):
+            logger.info("✅ host_image_bytes succeeded via %s", provider)
+            return {"success": True, "url": r["url"], "provider": provider}
+        attempts.append({"provider": provider, "error": r.get("error")})
+        logger.warning("host_image_bytes[%s] failed: %s", provider, r.get("error"))
+
+    return {"success": False, "error": "all hosts failed", "attempts": attempts}
+
+
 # Test function
 def test_pollinations_image_gen():
     """Test Pollinations.ai image generation."""

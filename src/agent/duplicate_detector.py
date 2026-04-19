@@ -146,19 +146,8 @@ def record_post(content: str, platform: str, post_id: str | None = None,
         _save_post_history(history)
         logger.info(f"✓ Recorded {platform} post to history (Total: {len(history['posts'])})")
         
-        # Also save to Google Sheets for persistent cloud storage
-        if SHEETS_ENABLED:
-            try:
-                save_post_to_sheets(
-                    platform=platform,
-                    content=content,
-                    post_id=post_id or "",
-                    image_url=image_url or "",
-                    metadata=metadata
-                )
-            except Exception as sheets_error:
-                logger.warning(f"Failed to save to Google Sheets: {sheets_error}")
-        
+        # Sheets logging dormant — social_media_history.json is the source of truth.
+
     except Exception as e:
         logger.error(f"Failed to record post: {e}")
 

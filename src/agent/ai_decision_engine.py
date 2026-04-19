@@ -195,15 +195,8 @@ class AIDecisionEngine:
             logger.error("Could not save memory: %s", e)
     
     def get_recent_posts_from_sheets(self, days_back: int = 7) -> List[Dict]:
-        """Query Google Sheets for recent posts and engagement data."""
-        try:
-            from src.agent.sheets_agent import search_posts_in_sheets
-            posts = search_posts_in_sheets(platform=None, days_back=days_back)
-            logger.info("📊 Found %d recent posts in Google Sheets", len(posts))
-            return posts
-        except Exception as e:
-            logger.warning("Could not fetch from Google Sheets: %s", e)
-            return []
+        """Dormant — Sheets read disabled on the hot path."""
+        return []
     
     def _normalize_product(self, product: Dict) -> Dict:
         """Normalize product shape across business_profile (structured) and markdown catalog."""

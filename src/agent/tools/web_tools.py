@@ -170,7 +170,7 @@ def scrape_url(url: str, formats: list[str] | None = None) -> dict[str, Any]:
             params = FetchParams(
                 url=url,
                 outputs=FetchOutputOptions(
-                    formats=[FetchOutputMarkdown()],
+                    formats=[FetchOutputMarkdown(type="markdown")],
                 ),
             )
             result = hb.web.fetch(params)

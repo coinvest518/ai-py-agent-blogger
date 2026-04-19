@@ -314,7 +314,7 @@ def generate_image_node(state: AgentState) -> dict:
         from src.agent.pollinations_image_gen import (
             generate_image_with_fallback,
             save_image_locally as save_img,
-            upload_to_imgbb,
+            host_image_bytes,
         )
 
         result = generate_image_with_fallback(prompt=prompt, width=1024, height=1024, timeout=90)
@@ -325,8 +325,12 @@ def generate_image_node(state: AgentState) -> dict:
             path = save_img(result["image_bytes"], f"{provider}_{ts}.png",
                             provider=result.get("provider", "pollinations"))
 
-            upload = upload_to_imgbb(result["image_bytes"])
-            url = upload.get("url") if upload.get("success") else None  # Never use file:// — platforms need public HTTP URL
+            upload = host_image_bytes(result["image_bytes"])
+            url = upload.get("url") if upload.get("success") else None
+            if url:
+                logger.info("Image hosted via %s: %s", upload.get("provider"), url)
+            else:
+                logger.error("All image hosts failed: %s", upload.get("attempts"))
 
             _broadcast_sync("complete_step", "generate_image", {"url": url, "path": path})
             return {"image_path": path, "image_url": url}

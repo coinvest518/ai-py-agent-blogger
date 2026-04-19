@@ -1,5 +1,10 @@
 """Google Sheets integration for tracking posts and crypto tokens.
 
+DORMANT BY DEFAULT — not called on the agent hot path. Import explicitly
+if you need to push to Sheets manually. Auto-calls were removed from
+duplicate_detector, analytics_agent, telegram_agent_v2, ai_decision_engine,
+and api startup to stop noisy Composio toolkit-rename warnings.
+
 This module provides AI agents with persistent storage in Google Sheets for:
 1. Social media posts tracking (prevent duplicates, analytics)
 2. Crypto tokens from Telegram (mentioned tokens, prices, trends)

@@ -38,10 +38,10 @@ def _enabled() -> bool:
 
 
 def _broadcast(step: str, text: str) -> None:
-    try:
-        broadcaster.update(step, text)  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    # broadcaster.update is async — scheduling it from sync context created
+    # "coroutine was never awaited" warnings. Log-only here; the graph's own
+    # _broadcast_sync handles the real UI updates.
+    logger.info("[supervisor:%s] %s", step, text)
 
 
 def _recent_mem0(query: str = "recent run", k: int = 5) -> list[dict]:
@@ -64,6 +64,8 @@ Consider:
   - LinkedIn: Pipedream MCP PRIMARY, Composio fallback, upload-post last resort.
   - Facebook/Instagram: Composio primary, Pipedream fallback.
   - Buffer MCP: Pinterest/YouTube/TikTok (image+text).
+- Image hosting cascade (for image_url): ImgBB → Imgur (anon) → Google Drive (Composio). First success wins.
+- Google Sheets logging is DORMANT — do not plan steps that rely on it. `social_media_history.json` is the history source of truth.
 - Known quotas:
   - upload_post: DISABLED (no video generator yet). Always include "post_upload_post" in `skips`.
   - LinkedIn: soft-cap is enforced inside the LinkedIn node itself (LINKEDIN_DAILY_LIMIT default 3). Do NOT add post_linkedin to skips — let the node decide.
