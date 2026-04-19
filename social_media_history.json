@@ -197,6 +197,24 @@
       "post_id": "N/A",
       "image_url": null,
       "metadata": {}
+    },
+    {
+      "timestamp": "2026-04-19T09:42:46.020025",
+      "platform": "linkedin",
+      "content_hash": "eec676d654062867badc71805ff179d2",
+      "content_preview": "We just shipped our Free x402 Payment skill and paid Alpaca Trading agent, built with LangChain and Composio. Our autonomous AI agents for wealth building are gaining traction, with 75% of users seein",
+      "post_id": null,
+      "image_url": null,
+      "metadata": {}
+    },
+    {
+      "timestamp": "2026-04-19T10:19:20.428043",
+      "platform": "linkedin",
+      "content_hash": "eab22d66d0c4c338a8ffed9053d150c3",
+      "content_preview": "Just wrapped up a test run with Zernio integration planning phase at FDWA. We're building OpenClaw skills and AI agent tooling with LangChain and Composio. Key takeaways: \n✅ seamless data exchange \n✅ ",
+      "post_id": null,
+      "image_url": null,
+      "metadata": {}
     }
   ],
   "hashes": [
@@ -221,7 +239,9 @@
     "63ef0a11a1de8408452f828eb56fc156",
     "5232953c945e973f539b94195546d4b8",
     "db4545860858898a3f1c004517c5fb8a",
-    "1f35face6d3386441d2feec5e25d0ac3"
+    "1f35face6d3386441d2feec5e25d0ac3",
+    "eec676d654062867badc71805ff179d2",
+    "eab22d66d0c4c338a8ffed9053d150c3"
   ],
-  "last_updated": "2026-04-16T14:22:05.325476"
+  "last_updated": "2026-04-19T10:19:20.429651"
 }

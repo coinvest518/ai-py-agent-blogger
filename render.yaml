@@ -166,6 +166,12 @@ envVarGroups:
       - key: LINKEDIN_DAILY_LIMIT
         value: "1"
 
+      # Zernio (MCP transport for Twitter/X and future platforms)
+      - key: ZERNIO_API_KEY
+        sync: false
+      - key: ZERNIO_MCP_URL
+        value: https://mcp.zernio.com/mcp
+
       # Buffer (MCP transport + Pinterest source URL)
       - key: BUFFER_API_KEY
         sync: false
