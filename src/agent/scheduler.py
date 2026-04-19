@@ -282,17 +282,24 @@ def start_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
     _scheduler = scheduler
 
-    # Default 3h agent tick
+    # Default 3h agent tick — gated by AGENT_AUTORUN to prevent token burn
+    # on every deploy while we're iterating. Default OFF; set
+    # AGENT_AUTORUN=true to re-enable automatic cycles.
+    autorun = os.getenv("AGENT_AUTORUN", "false").lower() in ("1", "true", "yes")
     default_minutes = int(os.getenv("AGENT_TICK_MINUTES", "180"))
-    scheduler.add_job(
-        run_agent_task,
-        'interval',
-        minutes=default_minutes,
-        id='agent_task',
-        name='Run FDWA Agent',
-        replace_existing=True,
-        next_run_time=datetime.now(),
-    )
+    if autorun:
+        scheduler.add_job(
+            run_agent_task,
+            'interval',
+            minutes=default_minutes,
+            id='agent_task',
+            name='Run FDWA Agent',
+            replace_existing=True,
+            next_run_time=datetime.now(),
+        )
+        logger.info("Agent autorun ENABLED: every %d min, first run immediate", default_minutes)
+    else:
+        logger.info("Agent autorun DISABLED (AGENT_AUTORUN not set). Manual /post still works.")
 
     # Notion inbox poll (only if NOTION_CONTROL_DB_ID is set)
     if os.getenv("NOTION_CONTROL_DB_ID"):
@@ -321,7 +328,10 @@ def start_scheduler() -> AsyncIOScheduler:
             logger.warning("Could not restore job %s: %s", spec.get("id"), e)
 
     scheduler.start()
-    logger.info("Scheduler started - default tick every %dmin, first run immediate, %d custom jobs restored", default_minutes, len(_load_jobs_file()))
+    logger.info(
+        "Scheduler started - autorun=%s, %d custom jobs restored",
+        autorun, len(_load_jobs_file()),
+    )
 
     load_status()
     return scheduler
