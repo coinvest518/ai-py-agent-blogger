@@ -21,7 +21,10 @@ GDRIVE_FOLDER_ID = os.getenv("GDRIVE_VIDEO_FOLDER_ID")
 
 
 def _direct_link(file_id: str) -> str:
-    return f"https://drive.google.com/uc?export=download&id={file_id}"
+    # Thumbnail endpoint streams actual image bytes for any public file.
+    # The /uc?export=download path returns an HTML virus-scan page for
+    # files >~100KB, which breaks Buffer/Pinterest image-dimension fetch.
+    return f"https://drive.google.com/thumbnail?id={file_id}&sz=w2000"
 
 
 def _web_link(file_id: str) -> str:

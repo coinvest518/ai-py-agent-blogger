@@ -423,7 +423,9 @@ def post_linkedin_node(state: AgentState) -> dict:
 
 @traceable(name="post_telegram")
 def post_telegram_node(state: AgentState) -> dict:
-    """Post to Telegram — prefer the final-report briefing when available."""
+    """Post to Telegram — this is the per-run briefing channel, not a
+    content distribution channel. No cooldown: we want the briefing on
+    every cycle, even if it's "Skipped: cooldown" across the board."""
     if supervisor_agent.should_skip(state, "post_telegram"):
         logger.info("post_telegram skipped by supervisor plan")
         return {"telegram_status": "skipped_by_supervisor"}
@@ -505,6 +507,9 @@ def post_buffer_node(state: AgentState) -> dict:
     logger.info("──── POST: BUFFER ────")
     if supervisor_agent.should_skip(state, "post_buffer"):
         return {"buffer_status": "skipped_by_supervisor", "buffer_post_ids": []}
+    from src.agent.duplicate_detector import posted_within
+    if posted_within("pinterest") or posted_within("buffer"):
+        return {"buffer_status": "Skipped: cooldown (<3h since last Buffer/Pinterest post)", "buffer_post_ids": []}
 
     caption = (
         state.get("buffer_text")
@@ -581,7 +586,13 @@ def comment_facebook_node(state: AgentState) -> dict:
 
 @traceable(name="generate_blog")
 def generate_blog_node(state: AgentState) -> dict:
+    """Blog is the email-to-blogger content channel. 6h cooldown so we
+    don't republish the same cycle's content if autorun re-fires fast."""
     logger.info("──── BLOG ────")
+    from src.agent.duplicate_detector import posted_within
+    if posted_within("blog"):
+        logger.info("generate_blog skipped by cooldown")
+        return {"blog_status": "Skipped: cooldown (<6h since last blog email)"}
     _broadcast_sync("start_step", "generate_blog", "Generating blog email…")
     result = blog_agent.run(state)
     _broadcast_sync("complete_step", "generate_blog", result)

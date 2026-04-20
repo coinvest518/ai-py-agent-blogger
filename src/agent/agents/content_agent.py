@@ -49,6 +49,65 @@ def strip_markdown(text: str) -> str:
     return text.strip()
 
 
+def md_to_html(md: str) -> str:
+    """Minimal Markdown → HTML for briefing emails + GDocs.
+
+    Stdlib-only (no new dependency). Handles: # H1/H2/H3, **bold**, *italic*,
+    [text](url), `code`, bullet lists, blank-line paragraphs. Good enough for
+    a run briefing; not a general MD renderer.
+    """
+    import html as _html
+
+    lines = (md or "").split("\n")
+    out: list[str] = []
+    in_ul = False
+
+    def _inline(s: str) -> str:
+        s = _html.escape(s, quote=False)
+        s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s, flags=re.DOTALL)
+        s = re.sub(r"(?<!\*)\*(?!\*)([^*]+?)\*(?!\*)", r"<em>\1</em>", s)
+        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+        s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', s)
+        s = re.sub(r"(?<!href=\")(https?://\S+)", r'<a href="\1">\1</a>', s)
+        return s
+
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip():
+            if in_ul:
+                out.append("</ul>")
+                in_ul = False
+            out.append("")
+            continue
+
+        m = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if m:
+            if in_ul:
+                out.append("</ul>")
+                in_ul = False
+            level = min(len(m.group(1)), 6)
+            out.append(f"<h{level}>{_inline(m.group(2))}</h{level}>")
+            continue
+
+        if re.match(r"^\s*[-*]\s+", line):
+            if not in_ul:
+                out.append("<ul>")
+                in_ul = True
+            item = re.sub(r"^\s*[-*]\s+", "", line)
+            out.append(f"  <li>{_inline(item)}</li>")
+            continue
+
+        if in_ul:
+            out.append("</ul>")
+            in_ul = False
+        out.append(f"<p>{_inline(line)}</p>")
+
+    if in_ul:
+        out.append("</ul>")
+
+    return "\n".join(out).strip()
+
+
 def _llm_generate(prompt: str, purpose: str) -> str:
     """Call cascading LLM and return cleaned text."""
     try:

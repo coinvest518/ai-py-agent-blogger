@@ -72,7 +72,7 @@ class AgentState(TypedDict, total=False):
     instagram_post_id: Annotated[str, _last_nonempty]
     instagram_comment_status: Annotated[str, _last_nonempty]
     comment_status: str
-    telegram_status: str
+    telegram_status: Annotated[str, _last_nonempty]
 
     # ── Blog ──
     blog_status: str
@@ -96,7 +96,7 @@ class AgentState(TypedDict, total=False):
     onchain_snapshot: dict
 
     # ── Buffer ──
-    buffer_status: str
+    buffer_status: Annotated[str, _last_nonempty]
     buffer_post_ids: list
     buffer_text: str
     buffer_scheduled_at: str

@@ -106,7 +106,8 @@ def gather_context(state: dict) -> Dict[str, Any]:
             k: state.get(k) for k in [
                 "twitter_url", "twitter_status", "facebook_status", "linkedin_status",
                 "instagram_status", "telegram_status", "upload_post_status",
-                "blog_status", "comment_status",
+                "blog_status", "comment_status", "buffer_status",
+                "buffer_post_ids", "pinterest_post_url", "image_url",
             ] if state.get(k)
         },
         "errors": state.get("error"),
@@ -124,6 +125,11 @@ and the outcome at a glance.
 ## Platforms posted
 Per platform (Twitter, Facebook, LinkedIn, Instagram, Telegram, Upload-Post, Buffer,
 Blog), list: status, URL if available, and a short preview of what was posted.
+CRITICAL: the context includes `statuses` with real values — cite them verbatim.
+If `telegram_status` starts with "Posted", say Telegram POSTED and include the
+message_id. If `buffer_status` starts with "Posted", say Buffer POSTED and list
+the per-service breakdown (pinterest/youtube/tiktok). Only say a platform did
+NOT post when its status is missing, empty, or starts with "Failed"/"Skipped".
 
 ## Sources & data pulled
 List every source this run pulled from: trend research APIs (SerpAPI/Tavily),

@@ -64,8 +64,16 @@ Consider:
   - LinkedIn: Pipedream MCP PRIMARY, Composio fallback, upload-post last resort.
   - Facebook/Instagram: Composio primary, Pipedream fallback.
   - Buffer MCP: Pinterest/YouTube/TikTok (image+text).
-- Image hosting cascade (for image_url): ImgBB → Imgur (anon) → Google Drive (Composio). First success wins.
+- Image hosting cascade (for image_url): ImgBB → GDrive thumbnail → Imgur. First success wins; GDrive comes before Imgur because Pinterest rejects imgur hotlinks.
 - Google Sheets logging is DORMANT — do not plan steps that rely on it. `social_media_history.json` is the history source of truth.
+- Per-platform cooldowns (check the "Per-platform cooldown" line in the user
+  message). If a platform is flagged '*' (still in its cooldown window), add
+  its post_* node to `skips`. Cooldown defaults: Pinterest/Buffer 3h, Twitter
+  1h, LinkedIn 24h (node enforces its own daily cap), Instagram/Facebook 3h,
+  Telegram 2h, Blog 6h. Valid skip targets for cooldown: post_buffer,
+  post_telegram, post_notion, post_blog. Do NOT skip core channels
+  (post_facebook, post_instagram, post_twitter, post_linkedin) even if they
+  are in cooldown — those nodes enforce their own caps internally.
 - Known quotas:
   - upload_post: DISABLED (no video generator yet). Always include "post_upload_post" in `skips`.
   - LinkedIn: soft-cap is enforced inside the LinkedIn node itself (LINKEDIN_DAILY_LIMIT default 3). Do NOT add post_linkedin to skips — let the node decide.
@@ -122,6 +130,17 @@ def plan(state: dict) -> dict:
     upload_post_enabled = _upload_post_enabled()
     linkedin_daily_limit = os.getenv("LINKEDIN_DAILY_LIMIT", "1")
 
+    try:
+        from src.agent.duplicate_detector import platform_cooldowns
+        cooldowns = platform_cooldowns()
+    except Exception as e:
+        logger.warning("Supervisor: cooldown lookup failed: %s", e)
+        cooldowns = {}
+    cooldowns_brief = ", ".join(
+        f"{p}={v.get('hours_since_last')}h" + ("*" if v.get("in_cooldown") else "")
+        for p, v in cooldowns.items()
+    ) or "(no history)"
+
     now = datetime.utcnow().isoformat(timespec="minutes") + "Z"
     user_msg = (
         f"Time: {now}\n"
@@ -130,6 +149,8 @@ def plan(state: dict) -> dict:
         f"Recent Mem0: {recent_brief or '(none)'}\n"
         f"Quotas: upload_post_weekly_remaining={upload_post_remaining}, "
         f"linkedin_daily_limit={linkedin_daily_limit}\n"
+        f"Per-platform cooldown (hours since last post; '*' = still inside "
+        f"its cooldown window): {cooldowns_brief}\n"
         "Produce the JSON plan now."
     )
 

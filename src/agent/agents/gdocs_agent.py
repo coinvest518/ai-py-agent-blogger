@@ -31,14 +31,15 @@ def create_document(title: str, markdown: str) -> Dict[str, Any]:
         from src.agent.tools.composio_tools import get_composio_client, _execute_with_fallback
         client = get_composio_client()
 
-        # Try preferred create variant first: GOOGLEDOCS_CREATE_DOCUMENT with `text`.
+        # Prefer the markdown-aware variants so headings/bold render as
+        # formatted doc content, not literal "##" / "**" characters.
         tried = []
         tried_order = [
+            ("GOOGLEDOCS_CREATE_DOCUMENT_MARKDOWN", "markdown"),
+            ("GOOGLEDOCS_CREATE_DOCUMENT", "markdown_content"),
+            ("GOOGLEDOCS_CREATE_DOCUMENT", "markdown"),
             ("GOOGLEDOCS_CREATE_DOCUMENT", "text"),
             ("GOOGLEDOCS_CREATE_DOCUMENT", "content"),
-            ("GOOGLEDOCS_CREATE_DOCUMENT_MARKDOWN", "markdown"),
-            ("GOOGLEDOCS_CREATE_DOCUMENT", "markdown"),
-            ("GOOGLEDOCS_CREATE_DOCUMENT", "markdown_content"),
         ]
         for slug, key in tried_order:
             args = {"title": title[:200]}

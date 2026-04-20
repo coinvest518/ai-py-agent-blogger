@@ -29,6 +29,30 @@ logger = logging.getLogger(__name__)
 # Path to the post-history file used for the daily cap check.
 _HISTORY_PATH = Path(__file__).resolve().parent.parent.parent.parent / "social_media_history.json"
 
+# In-memory cache of today's transport failures. Keyed by UTC date so it
+# resets at midnight. Used to fast-fail when Pipedream + Composio both
+# refused today AND upload-post quota is 0.
+_FAILED_TRANSPORTS: dict[str, set[str]] = {}
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _mark_failed(transport: str) -> None:
+    _FAILED_TRANSPORTS.setdefault(_today(), set()).add(transport)
+
+
+def _all_exhausted() -> bool:
+    """True if upload-post cap is reached AND both other transports failed today."""
+    failed = _FAILED_TRANSPORTS.get(_today(), set())
+    if not ({"pipedream", "composio"} <= failed):
+        return False
+    try:
+        return upload_post_agent.remaining_quota() <= 0
+    except Exception:
+        return False
+
 
 def _linkedin_posts_today() -> int:
     """Return the number of LinkedIn posts already recorded for today (UTC)."""
@@ -81,6 +105,10 @@ def run(state: dict) -> dict:
         logger.info("LinkedIn daily cap reached (%d/%d) — skipping", posted_today, daily_limit)
         return {"linkedin_text": "", "linkedin_status": f"Skipped: daily cap {posted_today}/{daily_limit}"}
 
+    if _all_exhausted():
+        logger.info("LinkedIn: all transports exhausted today — fast-skip")
+        return {"linkedin_text": "", "linkedin_status": "Skipped: all transports exhausted today"}
+
     insights = state.get("base_insights", "")
     strategy = state.get("ai_strategy")
 
@@ -121,6 +149,7 @@ def run(state: dict) -> dict:
                 "linkedin_brain_snippet": brain_snippet,
             }
         pd_err = pd_res.get("error", "Unknown")
+        _mark_failed("pipedream")
         logger.warning("LinkedIn Pipedream failed: %s — trying Composio", pd_err)
 
     # Fallback 1: Composio
@@ -142,6 +171,7 @@ def run(state: dict) -> dict:
             logger.info("LinkedIn posted via Composio")
             return {"linkedin_text": li_text, "linkedin_status": "Posted (composio)", "linkedin_brain_snippet": brain_snippet}
         composio_err = result.get("error", "Unknown")
+        _mark_failed("composio")
         logger.warning("LinkedIn Composio failed: %s — trying upload-post", composio_err)
 
     # Fallback 2: upload-post (image-only path)

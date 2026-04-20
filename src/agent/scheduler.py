@@ -282,10 +282,10 @@ def start_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
     _scheduler = scheduler
 
-    # Default 3h agent tick — gated by AGENT_AUTORUN to prevent token burn
-    # on every deploy while we're iterating. Default OFF; set
-    # AGENT_AUTORUN=true to re-enable automatic cycles.
-    autorun = os.getenv("AGENT_AUTORUN", "false").lower() in ("1", "true", "yes")
+    # Default 3h agent tick. Supervisor + per-node cooldown checks prevent
+    # re-posting within the platform's window, so autorun is safe to leave
+    # ON. Set AGENT_AUTORUN=false on Railway to kill automatic cycles.
+    autorun = os.getenv("AGENT_AUTORUN", "true").lower() in ("1", "true", "yes")
     default_minutes = int(os.getenv("AGENT_TICK_MINUTES", "180"))
     if autorun:
         scheduler.add_job(

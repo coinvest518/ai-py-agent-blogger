@@ -3,7 +3,7 @@
 import hashlib
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -177,6 +177,75 @@ def get_recent_posts(platform: str | None = None, limit: int = 10) -> List[Dict]
     except Exception as e:
         logger.error(f"Failed to get recent posts: {e}")
         return []
+
+
+PLATFORM_COOLDOWNS_HOURS = {
+    "pinterest": 3,
+    "buffer": 3,
+    "youtube": 6,
+    "tiktok": 6,
+    "twitter": 1,
+    "linkedin": 24,
+    "instagram": 3,
+    "facebook": 3,
+    "telegram": 2,
+    "blog": 6,
+}
+
+
+def _parse_ts(ts: str) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        # Strip Z → +00:00 so fromisoformat handles it
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def platform_cooldowns() -> Dict[str, Dict]:
+    """Return per-platform cooldown state sourced from social_media_history.json.
+
+    Shape: {platform: {"hours_since_last": float|None, "last_at": str|None,
+                       "cooldown_hours": int, "in_cooldown": bool}}.
+    """
+    now = datetime.now(timezone.utc)
+    out: Dict[str, Dict] = {}
+    for platform, hours in PLATFORM_COOLDOWNS_HOURS.items():
+        latest = get_recent_posts(platform=platform, limit=1)
+        entry: Dict = {"cooldown_hours": hours, "hours_since_last": None,
+                       "last_at": None, "in_cooldown": False}
+        if latest:
+            ts = _parse_ts(str(latest[0].get("timestamp") or ""))
+            if ts is not None:
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                delta_h = (now - ts).total_seconds() / 3600.0
+                entry["hours_since_last"] = round(delta_h, 2)
+                entry["last_at"] = latest[0].get("timestamp")
+                entry["in_cooldown"] = delta_h < hours
+        out[platform] = entry
+    return out
+
+
+def posted_within(platform: str, hours: float | None = None) -> bool:
+    """True if `platform` has a history entry newer than `hours` ago.
+    If `hours` is None, use the PLATFORM_COOLDOWNS_HOURS default.
+    """
+    platform = (platform or "").lower()
+    if hours is None:
+        hours = PLATFORM_COOLDOWNS_HOURS.get(platform, 0) or 0
+    if not hours:
+        return False
+    latest = get_recent_posts(platform=platform, limit=1)
+    if not latest:
+        return False
+    ts = _parse_ts(str(latest[0].get("timestamp") or ""))
+    if ts is None:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0 < hours
 
 
 def clear_old_posts(days: int = 90) -> int:
