@@ -181,6 +181,19 @@ def _pin_title(text: str) -> str:
     return s[:100]
 
 
+def _pin_description(text: str, max_len: int = 480) -> str:
+    """Pinterest pin descriptions: strip raw URLs (Pinterest flags 3+ as spam).
+    Keeps hashtags + emojis. ≤500 chars hard cap.
+    """
+    import re
+
+    s = re.sub(r"https?://\S+", "", text or "")
+    s = re.sub(r"\s+", " ", s).strip(" .,:;-|")
+    if not s:
+        s = "FDWA Update"
+    return s[:max_len]
+
+
 async def _create_one(
     *,
     channel: Dict[str, Any],
@@ -199,11 +212,12 @@ async def _create_one(
     if svc == "pinterest" and not image_url:
         return {"service": svc, "skipped": True, "reason": "no image (pinterest requires image)"}
 
+    post_text = _pin_description(text) if svc == "pinterest" else (text or "")[:2000]
     args: Dict[str, Any] = {
         "channelId": cid,
         "schedulingType": "automatic",
         "mode": mode,
-        "text": (text or "")[:2000],
+        "text": post_text,
     }
     if mode == "customScheduled":
         args["dueAt"] = due_at or _now_plus_iso(IMMEDIATE_DELAY_SECS)

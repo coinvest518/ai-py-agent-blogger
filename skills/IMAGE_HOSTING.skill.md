@@ -11,14 +11,15 @@ and returns raw bytes. Hosting then runs `host_image_bytes(image_bytes)` in
 `src/agent/pollinations_image_gen.py`, which cascades:
 
 1. **ImgBB** — `upload_to_imgbb()`. Needs `IMGBB_API_KEY`. Primary.
-   Fails on payloads >32MB or occasionally on malformed bytes.
-2. **Imgur (anonymous)** — `src/agent/hf_image_gen.upload_to_imgur()`.
-   No API key needed (uses public Client-ID). Second try.
-3. **Google Drive (Composio)** — `src/agent/video_gen/gdrive_upload.upload_and_share`
+   Auto-skipped when payload >5MB (it 400s on large PNGs).
+2. **Google Drive (Composio)** — `src/agent/video_gen/gdrive_upload.upload_and_share`
    with `mime_type="image/png"`. Returns
    `https://drive.google.com/uc?export=download&id={file_id}` which
    Pinterest / Instagram / LinkedIn accept as a public image URL.
-   Requires `COMPOSIO_ENTITY_ID`.
+   Requires `COMPOSIO_ENTITY_ID`. GDrive is second — not third — because
+   Pinterest blocks imgur hotlinks but accepts drive.google.com URLs.
+3. **Imgur (anonymous)** — `src/agent/hf_image_gen.upload_to_imgur()`.
+   No API key needed. Last-resort for X/LinkedIn, not Pinterest.
 
 First success wins. Return shape: `{"success": True, "url": "...", "provider": "imgbb|imgur|gdrive"}`.
 Only caller today is `generate_image_node` in `graph.py`.

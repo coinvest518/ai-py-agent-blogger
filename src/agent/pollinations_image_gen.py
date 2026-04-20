@@ -466,15 +466,25 @@ def upload_to_imgbb(image_bytes: bytes, timeout: int = 30) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-def host_image_bytes(image_bytes: bytes, prefer: str | None = None) -> Dict[str, Any]:
-    """Cascade image hosting: ImgBB → Imgur (anon) → Google Drive (Composio).
+_IMGBB_MAX_BYTES = 5 * 1024 * 1024  # ImgBB gets flaky on 1024x1024 PNGs >5MB
 
-    First success wins. Returns {"success", "url", "provider"} or
-    {"success": False, "error", "attempts": [...]}. Pipedream→Cloudinary
-    stub reserved for future (needs Connect Link flow).
+
+def host_image_bytes(image_bytes: bytes, prefer: str | None = None) -> Dict[str, Any]:
+    """Cascade image hosting: ImgBB → GDrive (Composio) → Imgur (anon).
+
+    GDrive is second because Pinterest reliably accepts drive.google.com/uc
+    links but has been blocking imgur hotlinks since ~2024. Imgur is last-
+    resort for channels that don't care (X/LinkedIn). Large payloads
+    (>5MB) skip ImgBB because it 400s on them.
+
+    Returns {"success", "url", "provider"} or
+    {"success": False, "error", "attempts": [...]}.
     """
     attempts = []
-    order = ["imgbb", "imgur", "gdrive"]
+    order = ["imgbb", "gdrive", "imgur"]
+    if len(image_bytes) > _IMGBB_MAX_BYTES:
+        logger.info("host_image_bytes: payload %d bytes >5MB, skipping ImgBB", len(image_bytes))
+        order = ["gdrive", "imgur"]
     if prefer and prefer in order:
         order.remove(prefer)
         order.insert(0, prefer)
