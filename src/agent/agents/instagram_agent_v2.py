@@ -21,6 +21,14 @@ def run(state: dict) -> dict:
 
     Returns dict with instagram_caption, instagram_status, instagram_post_id.
     """
+    # Instagram posting disabled — set SKIP_INSTAGRAM=false to re-enable.
+    if os.getenv("SKIP_INSTAGRAM", "true").lower() in ("1", "true", "yes"):
+        logger.info("SKIP_INSTAGRAM set — instagram_agent skipping")
+        return {
+            "instagram_caption": "",
+            "instagram_post_id": "skipped",
+            "instagram_status": "Skipped (disabled)",
+        }
     logger.info("--- INSTAGRAM AGENT ---")
 
     insights = state.get("base_insights", "")

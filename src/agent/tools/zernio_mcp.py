@@ -97,11 +97,23 @@ async def _call_async(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     tool = tools.get(tool_name)
     if not tool:
         return {"success": False, "error": f"tool {tool_name} not found", "available": list(tools.keys())[:30]}
+    logger.debug(
+        "zernio call %s args=%s",
+        tool_name,
+        {k: (f"<{len(v)}c>" if k == "content" and isinstance(v, str) else v) for k, v in args.items()},
+    )
     try:
         raw = await tool.ainvoke(args)
     except Exception as e:
         return {"success": False, "error": f"{type(e).__name__}: {e}"[:300]}
-    return _parse(raw)
+    result = _parse(raw)
+    if not result.get("success"):
+        logger.warning(
+            "zernio %s failed: %s",
+            tool_name,
+            result.get("error") or str(result.get("raw", ""))[:200],
+        )
+    return result
 
 
 def call_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -121,7 +133,7 @@ def list_accounts() -> Dict[str, Any]:
 def publish_now(content: str, platform: str, media_urls: Optional[List[str]] = None, title: str = "") -> Dict[str, Any]:
     args: Dict[str, Any] = {"content": content, "platform": platform}
     if media_urls:
-        args["media_urls"] = ",".join(media_urls)
+        args["media_urls"] = list(media_urls)
     if title:
         args["title"] = title
     return call_tool("posts_publish_now", args)
@@ -134,7 +146,7 @@ def cross_post(content: str, platforms: List[str], media_urls: Optional[List[str
         "publish_now": publish_immediately,
     }
     if media_urls:
-        args["media_urls"] = ",".join(media_urls)
+        args["media_urls"] = list(media_urls)
     return call_tool("posts_cross_post", args)
 
 
